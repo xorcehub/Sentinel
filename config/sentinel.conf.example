@@ -1,0 +1,32 @@
+# sentinel.conf — example runtime configuration.
+# Sentinel currently reads paths from CLI flags (see `sentinel -h`); this file
+# documents the intended knobs and their defaults. Phase 2 will switch main.go
+# to loading this file directly.
+
+# --- paths ---
+rules_dir       = "rules.d"                 # Sigma .yml rule files
+allowlist_path  = "config/allowlist.json"   # JSONC allowlist (04-TELEMETRY.md §2)
+state_path      = "state.db"                # bbolt dedup state
+log_path        = "sentinel.log"            # structured log (append)
+heartbeat_path  = "heartbeat.log"           # periodic alive+counts (05-ALERTING.md §5)
+
+# --- logging ---
+debug           = true                      # debug-level during Phase 1; drop to info after tuning
+
+# --- ingestion ---
+sysmon_channel  = "Microsoft-Windows-Sysmon/Operational"
+
+# --- heartbeat ---
+heartbeat_interval = "5m"                   # <0 disables; 0 = default 5m
+
+# --- single instance ---
+# Empty (default) => derived at runtime as Global\Sentinel-Running-<current-user>.
+# Set explicitly only if you need to override (e.g. run multiple instances per user).
+mutex_name      = ""
+
+# --- alerting (Phase 2+) ---
+event_log_source = "Sentinel"               # registered via scripts/register-eventsource.ps1
+# webhook_url     = ""                      # optional Discord/Slack/Teams
+
+# --- RE / maintenance mode (04-TELEMETRY.md §4) ---
+# Set via CLI: `sentinel --suspend 90m --reason "pe_triage session"`. Max 4h.

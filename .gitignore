@@ -1,0 +1,5 @@
+docs/*
+heartbeat.log
+sentinel.log
+sentinel.exe
+state.db
