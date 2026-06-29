@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,16 +102,81 @@ func formatHit(h event.Hit) string {
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	return fmt.Sprintf("[%s] %-8s rule=%-12s title=%s\n    image : %s\n    cmd   : %s\n    match : %s\n    action: %s",
+	var b strings.Builder
+	fmt.Fprintf(&b, "[%s] %-8s rule=%-12s title=%s\n    image : %s\n    cmd   : %s",
 		ts.Format(time.RFC3339),
 		upper(string(h.Severity)),
 		h.RuleID,
 		h.RuleName,
 		h.Event.Image,
 		trunc(h.Event.CmdLine, 200),
+	)
+	for _, line := range contextLines(h.Event) {
+		fmt.Fprintf(&b, "\n    %s", line)
+	}
+	fmt.Fprintf(&b, "\n    match : %s\n    action: %s",
 		trunc(h.Matched, 200),
 		joinActions(h.AlertTo),
 	)
+	return b.String()
+}
+
+// contextLines returns human-readable "label : value" lines for whichever Event
+// fields are non-empty AND relevant to the hit's EID. Process-create alerts
+// (EID 1) have none of these set, so they stay compact (just image+cmd).
+// Network / injection / file / registry / DNS alerts gain the context that
+// makes them actionable — the dst IP:port, the victim process, the loaded DLL,
+// the target file, etc. Shared by LogAlerter, PopupAlerter, EventLogAlerter so
+// every channel surfaces the same context (05-ALERTING.md observability).
+func contextLines(e event.Event) []string {
+	var lines []string
+	// EID 3 (NetworkConnect)
+	if e.DstIP != "" {
+		dst := e.DstIP
+		if e.DstPort != 0 {
+			dst = fmt.Sprintf("%s:%d", dst, e.DstPort)
+		}
+		if e.DstProto != "" {
+			dst += "/" + e.DstProto
+		}
+		lines = append(lines, fmt.Sprintf("%-6s: %s", "dst", dst))
+	}
+	// EID 7 (ImageLoad)
+	if e.ImageLoaded != "" {
+		lines = append(lines, fmt.Sprintf("%-6s: %s", "loaded", e.ImageLoaded))
+		if e.Signed != "" {
+			lines = append(lines, fmt.Sprintf("%-6s: %s", "signed", e.Signed))
+		}
+		if e.Signature != "" {
+			lines = append(lines, fmt.Sprintf("%-6s: %s", "signer", e.Signature))
+		}
+	}
+	// EID 8 / 10 (CreateRemoteThread / ProcessAccess)
+	if e.TargetImage != "" {
+		lines = append(lines, fmt.Sprintf("%-6s: %s", "target", e.TargetImage))
+		if e.GrantedAccess != "" {
+			lines = append(lines, fmt.Sprintf("%-6s: %s", "access", e.GrantedAccess))
+		}
+	}
+	// EID 11 / 23 (FileCreate / FileDelete)
+	if e.TargetFile != "" {
+		lines = append(lines, fmt.Sprintf("%-6s: %s", "file", e.TargetFile))
+	}
+	// EID 12 / 13 (Registry)
+	if e.TargetRegKey != "" {
+		lines = append(lines, fmt.Sprintf("%-6s: %s", "regkey", e.TargetRegKey))
+		if e.Details != "" {
+			lines = append(lines, fmt.Sprintf("%-6s: %s", "detail", e.Details))
+		}
+	}
+	// EID 22 (DNSQuery)
+	if e.QueryName != "" {
+		lines = append(lines, fmt.Sprintf("%-6s: %s", "query", e.QueryName))
+		if e.QueryResults != "" {
+			lines = append(lines, fmt.Sprintf("%-6s: %s", "results", e.QueryResults))
+		}
+	}
+	return lines
 }
 
 func formatSuppression(s Suppression) string {

@@ -91,6 +91,15 @@ func run(args []string) error {
 		return err
 	}
 
+	// Resolve path flags relative to the EXE directory, not the launch CWD.
+	// Task Scheduler launches with CWD = %SystemRoot%\system32 (NOT the exe's
+	// folder), which would make every relative default resolve against system32
+	// — rules.d/ wouldn't be found (engine degrades to no-op passthrough), and
+	// state.db/sentinel.log/ALERTS.log would get created in system32. Explicit
+	// absolute paths from the CLI pass through unchanged. Must run before
+	// --self-test (which also uses fl.rulesDir).
+	resolveExeRelative(fl)
+
 	// --self-test: run the incident-coverage regression against the catalog and
 	// exit. No mutex, no ingestion, no alerters — pure engine check. Portable.
 	if fl.selfTest {
@@ -343,6 +352,38 @@ func makeMockEvents(n int) []event.Event {
 // defaultMutexName derives a per-user global mutex name from the current OS user,
 // so no username is hardcoded in source. Falls back to a generic name if the user
 // can't be resolved. Strips any DOMAIN\ prefix to keep the mutex name flat.
+// exeDir returns the directory of the running executable. Returns "" on error
+// (callers fall back to CWD-relative behavior — fine for dev/test where the exe
+// sits next to its data).
+func exeDir() string {
+	p, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(p)
+}
+
+// resolveExeRelative makes each path flag absolute relative to the EXE
+// directory if it isn't already absolute. This is what makes the app work when
+// launched by Task Scheduler (CWD = system32). Explicit absolute CLI overrides
+// pass through unchanged; relative overrides become exe-relative.
+func resolveExeRelative(fl *flags) {
+	resolve := func(p *string) {
+		if *p == "" || filepath.IsAbs(*p) {
+			return
+		}
+		if dir := exeDir(); dir != "" {
+			*p = filepath.Join(dir, *p)
+		}
+	}
+	resolve(&fl.rulesDir)
+	resolve(&fl.allowlistPath)
+	resolve(&fl.statePath)
+	resolve(&fl.logPath)
+	resolve(&fl.heartbeatPath)
+	resolve(&fl.alertsPath)
+}
+
 func defaultMutexName() string {
 	name := "sentinel"
 	if u, err := user.Current(); err == nil && u.Username != "" {

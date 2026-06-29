@@ -346,3 +346,62 @@ func TestTargetKeyTemplateRendersFields(t *testing.T) {
 		t.Errorf("targetKey = %q, want %q", tk, want)
 	}
 }
+
+// TestEID8_10ActorImagePopulated is the regression for the live INJECT-001 bug:
+// a Defender thread-injection event fired with image="" (blank) and
+// "INJECT-001 on " (empty matched-on) because EID 8/10 Sysmon XML has
+// SourceImage (the actor), not Image. normalize() must copy SourceImage->Image
+// for these EIDs so behavior rules' `except: image_in_allowlist` can suppress
+// and the Hit display shows the injector. Uses the CRED-002 (EID 10) fixture.
+func TestEID8_10ActorImagePopulated(t *testing.T) {
+	eng := newEngine(t, &fakeAL{trustedSHA: map[string]bool{}, loopback: map[string]bool{}})
+	// EID 10 lsass access: SourceImage set (the actor), Image empty (as Sysmon
+	// reports it), TargetImage = victim. NOT allowlisted -> should fire.
+	ev := event.Event{
+		EID:         10,
+		SourceImage: `C:\Users\user01\Downloads\mimikatz.exe`,
+		TargetImage: `C:\Windows\System32\lsass.exe`,
+	}
+	res := eng.Evaluate(&ev)
+	var hit *event.Hit
+	for i := range res.Hits {
+		if res.Hits[i].RuleID == "CRED-002" {
+			hit = &res.Hits[i]
+			break
+		}
+	}
+	if hit == nil {
+		t.Fatalf("CRED-002 should have fired; hits=%v", res.Hits)
+	}
+	if hit.Event.Image == "" {
+		t.Errorf("Image is blank for EID 10 — SourceImage was not copied (normalize bug). Hit: %+v", hit.Event)
+	}
+	if strings.Contains(hit.Matched, "on ") && strings.HasSuffix(strings.TrimSpace(hit.Matched), "on") {
+		t.Errorf("Matched ends with 'on' (empty actor): %q", hit.Matched)
+	}
+	if !strings.Contains(hit.Matched, "mimikatz") {
+		t.Errorf("Matched should reference the actor (mimikatz.exe): %q", hit.Matched)
+	}
+}
+
+// TestMatchedActorFallback asserts the display string is never empty even when
+// no actor field is populated (the "INJECT-001 on " bug).
+func TestMatchedActorFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   event.Event
+		want string
+	}{
+		{name: "image set", ev: event.Event{Image: "a.exe"}, want: "a.exe"},
+		{name: "sourceImage fallback", ev: event.Event{SourceImage: "b.exe"}, want: "b.exe"},
+		{name: "targetImage fallback", ev: event.Event{TargetImage: "c.exe"}, want: "c.exe"},
+		{name: "all empty", ev: event.Event{}, want: "<unknown>"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := matchedActor(&c.ev); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}

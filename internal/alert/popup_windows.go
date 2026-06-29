@@ -5,6 +5,7 @@ package alert
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"golang.org/x/sys/windows"
 
@@ -68,19 +69,24 @@ func (p *PopupAlerter) Alert(h event.Hit) error {
 // formatPopup builds the message body + window caption for a critical hit.
 func formatPopup(h event.Hit) (text, caption string) {
 	caption = fmt.Sprintf("🛑 SENTINEL — %s", upper(string(h.Severity)))
-	text = fmt.Sprintf(
+	var b strings.Builder
+	fmt.Fprintf(&b,
 		"Rule:   %s  (%s)\n"+
 			"Time:   %s\n"+
 			"Proc:   %s\n"+
 			"  cmd:  %s\n"+
-			"Parent: %s\n"+
-			"\nMatch: %s",
+			"Parent: %s",
 		h.RuleID, h.RuleName,
 		h.Event.Time.Format("2006-01-02 15:04:05"),
 		h.Event.Image,
 		trunc(h.Event.CmdLine, 300),
 		h.Event.ParentImage,
-		trunc(h.Matched, 200),
 	)
-	return
+	// Rule-relevant context (dst IP, victim process, loaded DLL, target file…)
+	// so a critical popup is actionable without opening the log.
+	for _, line := range contextLines(h.Event) {
+		fmt.Fprintf(&b, "\n  %s", line)
+	}
+	fmt.Fprintf(&b, "\n\nMatch: %s", trunc(h.Matched, 200))
+	return b.String(), caption
 }

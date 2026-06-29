@@ -254,10 +254,28 @@ func (eng *Engine) buildHit(r *sigmaeval.Rule, e *event.Event, targetKey string)
 		RuleName: r.Title,
 		Severity: sev,
 		Event:    *e,
-		Matched:  fmt.Sprintf("%s on %s", r.XID, e.Image),
+		Matched:  fmt.Sprintf("%s on %s", r.XID, matchedActor(e)),
 		AlertTo:  alerters(r, sev),
 		Time:     time.Now(),
 	}
+}
+
+// matchedActor returns the best available actor identifier for the matched-on
+// display string. Image is normally the actor; for EID 8/10 it's already been
+// copied from SourceImage in normalize(). Fall back to SourceImage, then
+// TargetImage, then a placeholder so the string is never empty ("INJECT-001 on "
+// was a real bug from EID 8 having no Image field).
+func matchedActor(e *event.Event) string {
+	if e.Image != "" {
+		return e.Image
+	}
+	if e.SourceImage != "" {
+		return e.SourceImage
+	}
+	if e.TargetImage != "" {
+		return e.TargetImage
+	}
+	return "<unknown>"
 }
 
 // ---- flood collapse ----
@@ -308,6 +326,15 @@ func ruleID(r *sigmaeval.Rule) string {
 // normalize lowercases path-valued fields (and collapses /x/ -> X:\) so rule
 // and allowlist matching are form-insensitive. Registry paths are left alone.
 func (eng *Engine) normalize(e *event.Event) {
+	// EID 8 (CreateRemoteThread) and EID 10 (ProcessAccess) report the acting
+	// process as SourceImage, NOT Image - Sysmon's XML has no <Image> for these
+	// events. Rules/alerts expect Image to be the actor ("the thing that did
+	// it"), so copy SourceImage into Image when Image is empty. Without this,
+	// INJECT-001 (EID 8) and CRED-002 (EID 10) alerts show a blank injector and
+	// `except: image_in_allowlist` can never suppress them.
+	if e.Image == "" && (e.EID == 8 || e.EID == 10) && e.SourceImage != "" {
+		e.Image = e.SourceImage
+	}
 	e.Image = pathnorm.NormalizePath(e.Image)
 	e.ParentImage = pathnorm.NormalizePath(e.ParentImage)
 	e.ImageLoaded = pathnorm.NormalizePath(e.ImageLoaded)

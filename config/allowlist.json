@@ -20,8 +20,16 @@
       "\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:cursor|.*?vscode.*?|python)\\\\.*\\.exe$",
       "\\\\users\\\\[^\\\\]+\\\\.cursor\\\\extensions\\\\.*\\\\claude-code-.*\\\\native-binary\\\\claude\\.exe$",
       "\\\\users\\\\[^\\\\]+\\\\.local\\\\bin\\\\claude\\.exe$",
-      "\\\\windows\\\\system32\\\\.*\\.exe$",
-      "\\\\windows\\\\syswow64\\\\.*\\.exe$",
+      // Benign Windows session/service binaries BY NAME (NOT a blanket
+      // System32 glob). Trusting \windows\system32\.*\.exe was a design
+      // bug: it also trusted the LOLBins (powershell, conhost, mshta,
+      // certutil, wscript, cscript, schtasks, regsvr32, rundll32, bitsadmin,
+      // msiexec, forfiles, msdt) - the EXACT actors the behavior rules
+      // target - so every rule with `except: image_in_allowlist` was silently
+      // disabled for the incident binaries. This explicit list quiets
+      // NET-002/003 (svchost/explorer phoning home) WITHOUT trusting the
+      // LOLBins. Add a binary here only if it is NOT a LOLBin.
+      "\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost)\\.exe$)",
       "\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
       "\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
       "\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"

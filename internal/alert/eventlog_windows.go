@@ -40,9 +40,16 @@ func (e *EventLogAlerter) Name() string { return "eventlog" }
 // Alert writes one event to the Application log.
 func (e *EventLogAlerter) Alert(h event.Hit) error {
 	evtType, evtID := severityToEvent(h.Severity)
-	body := fmt.Sprintf("[%s] %s\nRule: %s\nProc: %s\nCmd: %s",
+	// Build the event body. Image/Cmd first (always relevant), then rule-specific
+	// context (dst IP, victim process, loaded DLL, target file…), then the match.
+	var body strings.Builder
+	fmt.Fprintf(&body, "[%s] %s\nRule: %s\nProc: %s\nCmd: %s",
 		upper(string(h.Severity)), h.RuleName, h.RuleID,
 		h.Event.Image, trunc(h.Event.CmdLine, 300))
+	for _, line := range contextLines(h.Event) {
+		fmt.Fprintf(&body, "\n%s", line)
+	}
+	fmt.Fprintf(&body, "\nMatch: %s", trunc(h.Matched, 200))
 
 	// eventcreate /ID <id> /T <type> /L APPLICATION /SO <source> /D "<body>"
 	// Body length cap: eventcreate accepts ~31000 chars; we're well under.
@@ -51,7 +58,7 @@ func (e *EventLogAlerter) Alert(h event.Hit) error {
 		"/T", evtType,
 		"/L", "APPLICATION",
 		"/SO", e.source,
-		"/D", body,
+		"/D", body.String(),
 	)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

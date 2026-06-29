@@ -61,6 +61,79 @@ func TestLogAlerterFormat(t *testing.T) {
 	}
 }
 
+// TestLogAlerterShowsNetworkContext is the regression for the pi-lite gap:
+// a NET-002 hit must surface the dst IP:port/proto, not just image+cmd. The
+// original formatHit hardcoded only those two fields and dropped DstIP/DstPort
+// even though they were parsed and carried in Hit.Event.
+func TestLogAlerterShowsNetworkContext(t *testing.T) {
+	var buf bytes.Buffer
+	la := NewLogAlerterTo(&buf)
+	h := event.Hit{
+		RuleID: "NET-002", RuleName: "Outbound to public host",
+		Severity: event.SevSuspicious,
+		Event: event.Event{
+			EID:     3,
+			Image:   `C:\dev\pi-lite.exe`,
+			DstIP:   "142.93.4.11",
+			DstPort: 443,
+			DstProto: "tcp",
+		},
+		Matched: "NET-002 on ...pi-lite.exe",
+		AlertTo: []string{"toast", "log", "eventlog"},
+		Time:    time.Date(2026, 6, 29, 12, 54, 54, 0, time.UTC),
+	}
+	if err := la.Alert(h); err != nil {
+		t.Fatalf("Alert: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"dst   : 142.93.4.11:443/tcp", "image :", "rule=NET-002"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in output:\n%s", want, out)
+		}
+	}
+}
+
+// TestContextLines covers every EID family: process-create (empty), network,
+// image-load (+signed), process-access (target+access), file, registry, DNS.
+// Ensures each non-empty field yields a labeled line and empty fields stay
+// absent (so EID 1 alerts remain compact).
+func TestContextLines(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   event.Event
+		want []string
+	}{
+		{name: "process create (no context)", ev: event.Event{Image: "a.exe"}, want: nil},
+		{name: "network", ev: event.Event{DstIP: "1.2.3.4", DstPort: 80, DstProto: "tcp"},
+			want: []string{"dst   : 1.2.3.4:80/tcp"}},
+		{name: "network no port", ev: event.Event{DstIP: "1.2.3.4"},
+			want: []string{"dst   : 1.2.3.4"}},
+		{name: "image load", ev: event.Event{ImageLoaded: `C:\Temp\x.dll`, Signed: "false"},
+			want: []string{"loaded: C:\\Temp\\x.dll", "signed: false"}},
+		{name: "process access", ev: event.Event{TargetImage: "lsass.exe", GrantedAccess: "0x1010"},
+			want: []string{"target: lsass.exe", "access: 0x1010"}},
+		{name: "file create", ev: event.Event{TargetFile: `C:\Temp\logins.json`},
+			want: []string{"file  : C:\\Temp\\logins.json"}},
+		{name: "registry", ev: event.Event{TargetRegKey: `HKCU\...\Run\X`, Details: "cmd.exe"},
+			want: []string{"regkey: HKCU\\...\\Run\\X", "detail: cmd.exe"}},
+		{name: "dns", ev: event.Event{QueryName: "evil.example", QueryResults: "1.2.3.4"},
+			want: []string{"query : evil.example", "results: 1.2.3.4"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := contextLines(c.ev)
+			if len(got) != len(c.want) {
+				t.Fatalf("got %d lines %v, want %d %v", len(got), got, len(c.want), c.want)
+			}
+			for i, w := range c.want {
+				if got[i] != w {
+					t.Errorf("line %d: got %q, want %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
 func TestLogAlerterWritesSuppression(t *testing.T) {
 	var buf bytes.Buffer
 	la := NewLogAlerterTo(&buf)

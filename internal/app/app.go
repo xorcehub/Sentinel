@@ -186,18 +186,34 @@ func (a *App) writeHeartbeat(t time.Time) {
 // NewLogger returns a slog logger writing to both a file (append) and stderr.
 // Rotation is deferred to Phase 2 (05-ALERTING.md says rotate at 10MB × 5).
 func NewLogger(path string, level slog.Level) (*slog.Logger, func(), error) {
-	var sink io.Writer = os.Stderr
+	// stderr is wrapped to discard write errors: when the binary is built with
+	// the windowsgui subsystem (production — no console window), os.Stderr is a
+	// handle to a non-existent console and Write errors. io.MultiWriter stops on
+	// the first error, so an unwrapped stderr would prevent the FILE from ever
+	// being written. Discarding stderr errors keeps the file log intact regardless
+	// of console presence. (Dev console builds still show stderr normally.)
+	var sink io.Writer = safeStderr{os.Stderr}
 	cleanup := func() {}
 	if path != "" {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return nil, nil, fmt.Errorf("open log %s: %w", path, err)
 		}
-		sink = io.MultiWriter(os.Stderr, f)
+		sink = io.MultiWriter(safeStderr{os.Stderr}, f)
 		cleanup = func() { _ = f.Close() }
 	}
 	h := slog.NewTextHandler(sink, &slog.HandlerOptions{Level: level})
 	return slog.New(h), cleanup, nil
+}
+
+// safeStderr wraps an io.Writer (os.Stderr) and discards write errors so that a
+// broken/absent console (windowsgui subsystem) cannot break a MultiWriter that
+// also contains a file. Console output still works when a console is present.
+type safeStderr struct{ w io.Writer }
+
+func (s safeStderr) Write(p []byte) (int, error) {
+	_, _ = s.w.Write(p)
+	return len(p), nil
 }
 
 func truncate(s string, n int) string {

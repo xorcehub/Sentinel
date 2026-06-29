@@ -2,6 +2,17 @@
 # Creates the session-scoped scheduled task that launches sentinel.exe at logon
 # and keeps it alive. Run once from an elevated (admin) PowerShell.
 #
+# Prerequisite: build sentinel.exe as a WINDOWS-GUI-subsystem binary so Task
+# Scheduler can launch it WITHOUT allocating a console window:
+#
+#     go build -ldflags "-H windowsgui" -o sentinel.exe ./cmd/sentinel
+#
+# A default `go build` produces a console-subsystem binary; launched with no
+# parent console (Task Scheduler), Windows allocates a fresh one and sentinel.exe
+# pops a console window. -H windowsgui (same approach as a tray app) makes the
+# PE subsystem GUI so no console is auto-created. MessageBox/EventLog/Toast all
+# work regardless of subsystem (they create their own windows via API).
+#
 # Replaces the legacy BeaconHunt task once Sentinel Phase 2 passes.
 #
 # Session-0 constraint (02-ARCHITECTURE.md §1): the task MUST run only when the
@@ -19,7 +30,13 @@
 # UAC prompt (same model as the operator's PowerPlan Switcher).
 
 param(
-    [string]$ExePath = (Join-Path $PSScriptRoot "..\cmd\sentinel\sentinel.exe"),
+    # Default to the repo-root sentinel.exe — this is where
+    #   go build -o sentinel.exe ./cmd/sentinel
+    # outputs the binary (the -o path is relative to CWD, i.e. the repo root).
+    # It MUST live at repo root, not in cmd\sentinel\: resolveExeRelative() in
+    # main.go makes rules.d/ + config/ + logs relative to the EXE directory, so
+    # the exe needs rules.d/ as a sibling (true at repo root, false in cmd/sentinel).
+    [string]$ExePath = (Join-Path $PSScriptRoot "..\sentinel.exe"),
     [string]$TaskName = "Sentinel",
     [string]$User     = $env:USERNAME
 )
@@ -27,7 +44,7 @@ param(
 # Resolve to an absolute path (scheduled tasks need it).
 $ExePath = (Resolve-Path $ExePath -ErrorAction Stop).Path
 
-$action    = New-ScheduledTaskAction -Execute $ExePath
+$action    = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory (Split-Path $ExePath -Parent)
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERDOMAIN\$User
 
 # Restart on failure (RestartCount 999 — the 3-try cliff was a security hole),

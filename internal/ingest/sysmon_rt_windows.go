@@ -35,13 +35,16 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf16"
 
 	"sentinel/internal/event"
+	"sentinel/internal/pathnorm"
 	"sentinel/internal/sysmonxml"
 )
 
@@ -55,11 +58,18 @@ var defaultEIDs = []int{1, 3, 7, 8, 10, 11, 12, 13, 19, 20, 21, 22, 23, 25}
 
 // sysmonRT is the production (PowerShell poller) ingester.
 type sysmonRT struct {
-	channel     string
-	eids        []int
-	log         *slog.Logger
-	interval    time.Duration
-	maxPerPoll  int
+	channel    string
+	eids       []int
+	log        *slog.Logger
+	interval   time.Duration
+	maxPerPoll int
+	// selfExe is the normalized path of sentinel.exe itself. Events whose
+	// ParentImage matches are skipped: the poller's powershell.exe child and the
+	// toast/eventlog alerters' powershell.exe children are all spawned by
+	// sentinel.exe, and ingesting them floods the log + buries real activity at
+	// ~1 EID 1/sec. An attacker cannot make sentinel.exe their parent without
+	// already controlling the process, so this filter has no false-negative risk.
+	selfExe string
 }
 
 // NewSysmonRT constructs the default Sysmon ingester (PowerShell poller).
@@ -73,7 +83,20 @@ func NewSysmonRT(channel, _query string, log *slog.Logger) (Ingester, error) {
 		log:        log,
 		interval:   defaultPollInterval,
 		maxPerPoll: defaultMaxPerPoll,
+		selfExe:    ownExePath(),
 	}, nil
+}
+
+// ownExePath returns the normalized absolute path of the running sentinel.exe,
+	// or "" if it can't be determined (in which case self-ingestion filtering is
+// disabled — safe, just noisier). Normalized via pathnorm so it matches Sysmon's
+// reported ParentImage regardless of slash/case form.
+func ownExePath() string {
+	p, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return pathnorm.NormalizePath(p)
 }
 
 // Start implements Ingester.
@@ -119,12 +142,26 @@ func (s *sysmonRT) pollAndEmit(ctx context.Context, highWater *int64, out chan<-
 		*highWater = newMax
 	}
 	for _, ev := range events {
+		// Self-ingestion filter (see isSelfChild).
+		if s.isSelfChild(ev) {
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case out <- ev:
 		}
 	}
+}
+
+// isSelfChild reports whether ev is a process spawned by sentinel.exe itself —
+// the poller's powershell.exe child (every poll cycle) and the toast/eventlog
+// alerters' powershell.exe children (every alert). Together ~1 EID 1/sec of
+// self-noise that buries real activity. An attacker cannot make sentinel.exe
+// their parent without already controlling the process, so no false-negative
+// risk. ParentImage is only meaningful for EID 1, so we gate on EID.
+func (s *sysmonRT) isSelfChild(ev event.Event) bool {
+	return ev.EID == 1 && s.selfExe != "" && pathnorm.NormalizePath(ev.ParentImage) == s.selfExe
 }
 
 // poll runs one Get-WinEvent query and returns the parsed new events (RecordId
@@ -141,6 +178,12 @@ func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// CREATE_NO_WINDOW (0x08000000): when launched by Task Scheduler there is no
+	// inherited console, so Windows would allocate a fresh one for powershell.exe
+	// each poll cycle — flashing a window on the desktop every 1-3s (annoying +
+	// an OPSEC tell). This allocates NO console instead of a hidden one, which is
+	// the correct semantic for a headless child with captured stdout/stderr.
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
 	if err := cmd.Run(); err != nil {
 		return nil, 0, fmt.Errorf("powershell: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
