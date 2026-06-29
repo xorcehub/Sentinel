@@ -1,0 +1,70 @@
+# Sentinel catalog — Injection / defense evasion (03-RULES.md §E)
+
+title: CreateRemoteThread into a foreign process
+id: b4bdd625-7ac6-5880-9d68-21c9b5e8f4c9
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 8
+  condition: selection
+level: high
+tags: [attack.privilege_escalation, attack.t1055]
+x-sentinel:
+  id: INJECT-001
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "Any EID 8 is suspicious unless both source+target are allowlisted."
+---
+title: Unsigned or user-writable-path DLL loaded
+id: 1b484fd8-84ee-53bc-b4ea-12215c9041fa
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 7
+    ImageLoaded|re: '(?i)(Temp|AppData|ProgramData|Downloads).*\.dll$'
+    Signed: 'false'
+  condition: selection
+level: medium
+tags: [attack.privilege_escalation, attack.t1055.001]
+x-sentinel:
+  id: INJECT-002
+  severity: suspicious
+  alert: [toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "EID 7: Image = loader; ImageLoaded = the DLL. Match on ImageLoaded + module's Signed (NOT the process signature)."
+---
+title: Process tampering (hollowing/herpaderping)
+id: bb5ba944-a68a-5602-bb99-ce45807ed344
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 25
+  condition: selection
+level: high
+tags: [attack.defense_evasion, attack.t1055]
+x-sentinel:
+  id: INJECT-003
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+---
+title: Process touching amsi.dll / System.dll via Reflection (AMSI patching)
+id: 5bad55f1-f250-5008-8c04-f19aaca1225c
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: [1, 7]
+    CommandLine|contains: ['amsi','AmsiUtils','GetAssemblies','System.dll','GlobalAssemblyCache']
+  condition: selection
+level: high
+tags: [attack.defense_evasion, attack.t1562.002]
+x-sentinel:
+  id: EVADE-001
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "The AMSI-bypass that named this family 'MaleficAms'."

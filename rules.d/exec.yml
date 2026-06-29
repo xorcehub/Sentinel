@@ -1,0 +1,118 @@
+# Sentinel catalog — Suspicious execution / LOLBins (03-RULES.md §B)
+
+title: PowerShell with bypass/encoded, or obfuscation/injection primitives in args
+id: 6f4894a4-f484-5400-bc9f-ecdac0b190fe
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection_image:
+    Image|endswith: ['\powershell.exe', '\pwsh.exe']
+  selection_broker:
+    # LOLBin/script brokers that host powershell as a child. The real incident
+    # used `conhost --headless powershell -ep bypass ...` — Image is conhost,
+    # not powershell, so selection_image alone misses it. The broker scoping
+    # (plus the strong CLI keyword) prevents false positives on processes that
+    # merely mention "powershell" in a path/argument.
+    Image|endswith: ['\conhost.exe', '\cmd.exe', '\wscript.exe', '\cscript.exe', '\mshta.exe']
+  selection_cli:
+    CommandLine|contains:
+      - '-ExecutionPolicy Bypass'
+      - '-ep bypass'
+      - '-exec bypass'
+      - '-EncodedCommand'
+      - '-enc '
+      - '-e '
+      - '-Hidden'
+      - '-w hidden'
+      - 'FromBase64String'
+      - 'DownloadString'
+      - 'DownloadFile'
+      - 'IEX'
+      - 'Invoke-Expression'
+      - 'Reflection.Emit'
+      - 'GetProcAddress'
+      - 'VirtualAlloc'
+      - 'WriteProcessMemory'
+      - 'amsi.dll'
+      - 'AmsiUtils'
+  condition: selection_cli and (selection_image or selection_broker)
+level: high
+tags: [attack.execution, attack.t1059.001, attack.defense_evasion]
+x-sentinel:
+  id: EXEC-001
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "Every launch of the broker tripped this. Covers AMSI-patching + reflective loading + base64. selection_broker catches the conhost --headless / cmd / wscript launch vectors where Image is the broker, not powershell.exe — the exact evasion from the incident."
+---
+title: conhost --headless powershell (headless PS launch vector)
+id: f456f516-ed43-5fb4-a7f8-e9d76fcacac1
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 1
+    Image|endswith: '\conhost.exe'
+    CommandLine|contains|all: ['--headless', 'powershell']
+  condition: selection
+level: high
+tags: [attack.execution, attack.t1059.001]
+x-sentinel:
+  id: EXEC-002
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+---
+title: LOLBin reaching network or running script/http
+id: d609881b-3a8b-5537-9cb0-3c7168a54aa2
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection_image:
+    EventID: 1
+    Image|endswith: ['\mshta.exe','\certutil.exe','\bitsadmin.exe','\msiexec.exe','\regsvr32.exe','\rundll32.exe','\wscript.exe','\cscript.exe','\forfiles.exe','\msdt.exe','\dpi.exe']
+  selection_cli:
+    CommandLine|contains: ['http://', 'https://', '.ps1', '.bat', '.vbs', 'script', 'url']
+  condition: selection_image and selection_cli
+level: medium
+tags: [attack.execution, attack.t1218]
+x-sentinel:
+  id: EXEC-003
+  severity: suspicious
+  alert: [toast, log, eventlog]
+  note: "Paired with http/script to reduce noise."
+---
+title: Executable with random/hex/GUID name from Temp/AppData/ProgramData
+id: 59932e07-ceb1-5d19-a589-22e58ee51443
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 1
+    Image|re: '(?i)(Temp|AppData|ProgramData).*(\\|/)([0-9a-f]{6,}|[0-9a-f]{8}-[0-9a-f]{4})\.exe$'
+  condition: selection
+level: medium
+tags: [attack.execution, attack.t1027]
+x-sentinel:
+  id: EXEC-004
+  severity: suspicious
+  alert: [toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "FP on installer self-extraction (Inno 'is-*.tmp', Defender {GUID}); allowlist those path patterns."
+---
+title: Child script/exe spawned from Office / PDF reader / browser
+id: a99b1cfa-6576-56ff-8b14-9bddeef82d21
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection_child:
+    EventID: 1
+    Image|endswith: ['\cmd.exe','\powershell.exe','\wscript.exe','\cscript.exe','\mshta.exe','\rundll32.exe']
+  selection_parent:
+    ParentImage|endswith: ['\winword.exe','\excel.exe','\powerpnt.exe','\outlook.exe','\acrord32.exe','\reader.exe','\msedge.exe','\firefox.exe','\chrome.exe']
+  condition: selection_child and selection_parent
+level: medium
+tags: [attack.execution, attack.t1204, attack.t1566]
+x-sentinel:
+  id: EXEC-005
+  severity: suspicious
+  alert: [toast, log, eventlog]

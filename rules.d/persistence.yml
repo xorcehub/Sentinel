@@ -1,0 +1,112 @@
+# Sentinel catalog — Persistence rules (03-RULES.md §A)
+# How malware survives reboot / login.
+
+title: Scheduled task with bypass/headless from user-writable path
+id: 2cd63037-0db9-5c16-a54d-b365c535e26a
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection_launch:
+    EventID: 1
+    Image|endswith: ['\schtasks.exe', '\powershell.exe', '\pwsh.exe', '\conhost.exe', '\cmd.exe']
+    CommandLine|contains: ['/create', '-ExecutionPolicy Bypass', '--headless', '-Enc']
+  selection_path:
+    CommandLine|contains: ['ProgramData', 'AppData', '\Temp\', '\Users\Public\']
+  condition: selection_launch and selection_path
+level: high
+tags: [attack.persistence, attack.t1053.005]
+falsepositives: [legitimate installers running from temp]
+x-sentinel:
+  id: PERSIST-001
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "XblGameCachesTask used 'conhost.exe --headless powershell -ep bypass -file C:\\ProgramData\\onedrive-sync.ps1'."
+---
+title: WMI permanent event subscription (fileless persistence)
+id: 517559af-2a66-501a-8eaa-563edd9fcd80
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: [19, 20, 21]
+  filter_scm:
+    CommandLine|contains: 'SCM Event Log'
+  condition: selection and not filter_scm
+level: high
+tags: [attack.persistence, attack.t1546.003]
+x-sentinel:
+  id: PERSIST-002
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "Filter+Consumer+Binding = fileless. The only legit one on this box is 'SCM Event Log Filter/Consumer' — filtered above."
+---
+title: Persistence via Run-key / Winlogon / AppInit_DLLs / Userinit
+id: d8e18883-9f73-5aa0-8645-72ae6c5b78a6
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 13
+    TargetObject|contains: ['\CurrentVersion\Run', '\RunOnce', '\Winlogon', '\AppInit_DLLs', '\Userinit']
+  condition: selection
+level: high
+tags: [attack.persistence, attack.t1060, attack.t1547.001]
+x-sentinel:
+  id: PERSIST-003
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+---
+title: Executable/script written to Startup folder
+id: e2fd1b0e-9740-5de6-a75a-79cf02366945
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 11
+    TargetFilename|contains: '\Start Menu\Programs\Startup'
+    TargetFilename|re: '(?i)\.(exe|ps1|bat|cmd|vbs|js|lnk)$'
+  condition: selection
+level: high
+tags: [attack.persistence, attack.t1547.001]
+x-sentinel:
+  id: PERSIST-004
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+---
+title: New service with ImagePath in user-writable directory
+id: 294ffc37-f4b3-5630-aaad-1025b458eadf
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 13
+    TargetObject|contains: '\System\CurrentControlSet\Services'
+  condition: selection
+level: medium
+tags: [attack.persistence, attack.t1543.003]
+x-sentinel:
+  id: PERSIST-005
+  severity: suspicious
+  alert: [toast, log, eventlog]
+  engine_helper: "On hit, resolve service ImagePath from registry; mark suspicious only if it resolves to AppData/Temp/ProgramData/Users/Public (else drop)."
+  note: "Needs engine helper to read service ImagePath from registry on hit."
+---
+title: COM hijack - HKCU CLSID InprocServer32
+id: 131fdd2d-3274-5701-95d7-30a624d60566
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 13
+    TargetObject|contains: ['Classes\CLSID', 'InprocServer32']
+  condition: selection
+level: medium
+tags: [attack.persistence, attack.t1546.015]
+x-sentinel:
+  id: PERSIST-006
+  severity: suspicious
+  alert: [toast, log, eventlog]
+  engine_helper: "Refine to HKCU hive only; Sysmon reports HKCU as \\REGISTRY\\USER\\<sid>\\... — adjust matcher during tuning."

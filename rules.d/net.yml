@@ -1,0 +1,100 @@
+# Sentinel catalog — Network anomalies / C2 / exfil (03-RULES.md §C)
+
+title: New loopback listener on high port (broker pattern)
+id: 0c77f539-6b83-53a8-b322-f16a64aa3c3a
+status: experimental
+logsource: { product: sentinel-baseline }
+detection:
+  selection:
+    Source: baseline
+    TargetFilename|startswith: 'LISTEN 127.'
+  condition: selection
+level: medium
+tags: [attack.command_and_control, attack.t1571]
+x-sentinel:
+  id: NET-001
+  severity: suspicious
+  alert: [toast, log, eventlog]
+  note: "Baseline pseudo-event. 58172 listener would have been new. Pairs with NET-005 (traffic to the listener)."
+---
+title: Outbound connection to a PUBLIC host from a non-allowlisted image
+id: a7557169-de6e-5e45-975e-065da04ebe0f
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 3
+    DestinationIp|re: '^[0-9a-fA-F:.]+$'   # any IP-shaped dest; private/loopback are excepted below
+  condition: selection
+level: medium
+tags: [attack.command_and_control, attack.t1071]
+x-sentinel:
+  id: NET-002
+  severity: suspicious
+  alert: [toast, log, eventlog]
+  except:
+    image_in_allowlist: trusted_binaries
+    dst_in_allowlist: allowed_destinations   # CIDRs: RFC1918, loopback, link-local, multicast, Cloudflare DNS
+    image_in_dev_tools: dev_tool_paths
+  note: "SCOPED: any dest, then subtract allowed_destinations (private/loopback/LAN) + dev_tool_paths. RE2 (Go's regex) has no lookahead, so the 'public only' filter is expressed as match-all + except, not (?!...) — which is also cleaner Sigma."
+---
+title: Non-browser process to a raw IP with no recent DNS resolution (BEST-EFFORT)
+id: 59c46bc5-9b25-5d2b-aa8d-c16c94727c4f
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 3
+    DestinationIp|re: '^[0-9a-fA-F:.]+$'   # any IP-shaped dest; private/loopback excepted below
+  condition: selection
+level: informational
+tags: [attack.command_and_control, attack.t1071]
+x-sentinel:
+  id: NET-003
+  severity: info
+  dedup: 30m
+  alert: [log]
+  except:
+    image_in_allowlist: trusted_binaries
+    dst_in_allowlist: allowed_destinations
+    image_in_dev_tools: dev_tool_paths
+  engine_helper: "DNS correlation: rolling set of (name->IP) from EID 22, TTL ~5-10min; flag EID 3 dsts not seen resolved."
+  note: "BEST-EFFORT — DoH caveat. info-only until trusted. Public-only filter is match-all + except (RE2 has no lookahead)."
+---
+title: Process in Temp/AppData/ProgramData making outbound connection
+id: 2b550738-741c-5213-9325-de0228569a8b
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 3
+    Image|contains: ['Temp', 'AppData', 'ProgramData']
+  condition: selection
+level: high
+tags: [attack.command_and_control]
+x-sentinel:
+  id: NET-004
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+---
+title: Loopback connection to non-baseline listener (broker driver channel)
+id: 785787a7-8a92-5364-a31c-09af26b4c43a
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 3
+    DestinationIp|re: '^(127\.|::1)'
+  condition: selection
+level: high
+tags: [attack.command_and_control, attack.t1571]
+x-sentinel:
+  id: NET-005
+  severity: critical
+  dedup: 5m
+  target_key: "{{.ID}}|{{.Image}}|{{.DstIP}}:{{.DstPort}}"
+  alert: [popup, toast, log, eventlog]
+  except:
+    dst_in_allowlist: known_loopback_listeners
+  note: "THE gap-closer. Driver POSTs commands to broker at 127.0.0.1:<high port> over loopback. NET-001 catches the listener; this catches traffic to it."

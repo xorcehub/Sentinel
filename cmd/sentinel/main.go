@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"sentinel/internal/alert"
 	"sentinel/internal/allowlist"
 	"sentinel/internal/app"
 	"sentinel/internal/event"
@@ -33,6 +34,7 @@ import (
 	"sentinel/internal/ingest/mock"
 	"sentinel/internal/proc"
 	"sentinel/internal/rules"
+	"sentinel/internal/selftest"
 	"sentinel/internal/sigmaeval"
 	"sentinel/internal/state"
 )
@@ -50,6 +52,7 @@ type flags struct {
 	statePath     string
 	logPath       string
 	heartbeatPath string
+	alertsPath    string
 	debug         bool
 	mock          bool
 	mockEvents    int
@@ -58,6 +61,7 @@ type flags struct {
 	sysmonChannel string
 	sysmonQuery   string
 	sysmonNative  bool
+	selfTest      bool
 }
 
 func parseFlags(args []string) (*flags, *flag.FlagSet) {
@@ -68,6 +72,7 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.StringVar(&out.statePath, "state", "state.db", "bbolt state file path")
 	f.StringVar(&out.logPath, "log", "sentinel.log", "log file (append)")
 	f.StringVar(&out.heartbeatPath, "heartbeat", "heartbeat.log", "heartbeat file")
+	f.StringVar(&out.alertsPath, "alerts", "ALERTS.log", "ALERTS.log file (append)")
 	f.BoolVar(&out.debug, "debug", true, "debug-level logging")
 	f.BoolVar(&out.mock, "mock", false, "use the mock ingester (testing / smoke)")
 	f.IntVar(&out.mockEvents, "mock-events", 5, "number of mock events to emit (with -mock)")
@@ -76,6 +81,7 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.StringVar(&out.sysmonChannel, "sysmon-channel", "Microsoft-Windows-Sysmon/Operational", "Sysmon event channel")
 	f.StringVar(&out.sysmonQuery, "sysmon-query", "", "override the Sysmon XPath filter (diagnostic; use \"*\" to subscribe to all events)")
 	f.BoolVar(&out.sysmonNative, "sysmon-native", false, "use the experimental native EvtSubscribe ingester (known broken: ERROR_INVALID_PARAMETER)")
+	f.BoolVar(&out.selfTest, "self-test", false, "run the incident-coverage regression against the catalog and exit")
 	return out, f
 }
 
@@ -83,6 +89,12 @@ func run(args []string) error {
 	fl, fs := parseFlags(args)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	// --self-test: run the incident-coverage regression against the catalog and
+	// exit. No mutex, no ingestion, no alerters — pure engine check. Portable.
+	if fl.selfTest {
+		return runSelfTest(fl)
 	}
 
 	// Single-instance enforcement. If mutexName is unset (the default), derive
@@ -142,11 +154,21 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	// Build the alert dispatcher (Phase 2). ALERTS.log is always wired; the
+	// Windows-only alerters (popup/eventlog/toast) register too. If the log
+	// file can't open, degrade to no-dispatcher (hits still logged via slog).
+	disp := buildDispatcher(fl, logger)
+	if disp != nil {
+		go disp.Run(ctx)
+		defer disp.Close()
+	}
+
 	a, err := app.New(app.Options{
 		Logger:        logger,
 		Ingester:      ing,
 		Engine:        eng,
 		HeartbeatPath: fl.heartbeatPath,
+		Dispatcher:    disp,
 	})
 	if err != nil {
 		return err
@@ -155,6 +177,62 @@ func run(args []string) error {
 		return err
 	}
 	logger.Info("sentinel exited cleanly")
+	return nil
+}
+
+// buildDispatcher assembles the alert delivery chain. ALERTS.log is always
+// present (the audit trail); popup/eventlog/toast are Windows-only. Returns
+// nil if the mandatory ALERTS.log can't be opened (so the app degrades to
+// slog-only rather than refusing to run).
+func buildDispatcher(fl *flags, logger *slog.Logger) *alert.Dispatcher {
+	logPath := fl.alertsPath
+	if logPath == "" {
+		logPath = "ALERTS.log"
+	}
+	logAlerter, err := alert.NewLogAlerter(logPath)
+	if err != nil {
+		logger.Warn("ALERTS.log open failed; alerts will be slog-only", "path", logPath, "err", err)
+		return nil
+	}
+	alerters := []alert.Alerter{logAlerter, alert.NewPopupAlerter(logger), alert.NewEventLogAlerter("Sentinel", logger), alert.NewToastAlerter(logger)}
+	return alert.New(alerters, 256, logger)
+}
+
+// runSelfTest loads the catalog and runs the incident-coverage regression.
+// Prints per-case results and returns an error if any case failed (so the exit
+// code reflects pass/fail).
+func runSelfTest(fl *flags) error {
+	catalog, err := loadRulesDir(fl.rulesDir)
+	if err != nil {
+		return fmt.Errorf("load rules: %w", err)
+	}
+	if len(catalog) == 0 {
+		return fmt.Errorf("no .yml rule files in %s", fl.rulesDir)
+	}
+	results, allPassed, err := selftest.Run(catalog)
+	if err != nil {
+		return err
+	}
+	passed := 0
+	for _, r := range results {
+		mark := "✓"
+		if !r.Passed {
+			mark = "✗"
+		} else {
+			passed++
+		}
+		fmt.Printf("  %s %s\n", mark, r.Case.Name)
+		if !r.Passed {
+			fmt.Printf("      fired: %v\n      %s\n", r.Fired, r.Detail)
+		} else if len(r.Fired) > 0 {
+			fmt.Printf("      fired: %v\n", r.Fired)
+		}
+	}
+	fmt.Printf("\n%d/%d cases passed\n", passed, len(results))
+	if !allPassed {
+		return fmt.Errorf("self-test failed")
+	}
+	fmt.Println("self-test PASSED")
 	return nil
 }
 
@@ -221,11 +299,16 @@ func loadRulesDir(dir string) ([]byte, error) {
 			return nil, err
 		}
 		out = append(out, b...)
-		// ensure documents are separated if the file didn't end with one
+		// Ensure the file ends with a newline, then a YAML document separator
+		// (---) before the next file's content. Without this, concatenating two
+		// multi-doc files merges the last doc of one with the first of the next
+		// into a single mapping with duplicate keys (the yaml.v3 loader sees
+		// them as one document). Each file is itself a valid multi-doc stream;
+		// the inter-file separator keeps that property across concatenation.
 		if len(b) > 0 && b[len(b)-1] != '\n' {
 			out = append(out, '\n')
 		}
-		out = append(out, '\n')
+		out = append(out, "---\n"...)
 	}
 	return out, nil
 }

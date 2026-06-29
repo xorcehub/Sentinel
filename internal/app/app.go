@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sentinel/internal/alert"
 	"sentinel/internal/event"
 	"sentinel/internal/ingest"
 	"sentinel/internal/rules"
@@ -31,6 +32,12 @@ type Options struct {
 
 	HeartbeatPath     string        // empty = no heartbeat file
 	HeartbeatInterval time.Duration // 0 (with path) = default 5m; set <0 to disable
+
+	// Dispatcher receives Hits asynchronously (Phase 2). If set, every Hit is
+	// Submit-ed non-blocking; the dispatcher fans out to alerters (log/popup/
+	// eventlog/toast) on its own goroutine(s). If nil, hits are only logged +
+	// passed to OnHit (Phase 1 behavior / tests).
+	Dispatcher *alert.Dispatcher
 
 	// OnHit / OnEvent are optional callbacks (mainly for tests / self-test).
 	OnHit   func(event.Hit)
@@ -136,6 +143,9 @@ func (a *App) handleEvent(ev event.Event) {
 			"alert", h.AlertTo,
 			"image", h.Event.Image,
 			"matched", truncate(h.Matched, 120))
+		if a.opts.Dispatcher != nil {
+			a.opts.Dispatcher.Submit(h) // non-blocking; drops+counts on overflow
+		}
 		if a.opts.OnHit != nil {
 			a.opts.OnHit(h)
 		}

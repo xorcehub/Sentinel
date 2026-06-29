@@ -1,0 +1,55 @@
+# Sentinel catalog — Credential access (03-RULES.md §D)
+
+title: Non-browser process writing/copying a browser vault file (stealer pattern)
+id: dae7614a-3368-5f47-88fa-307f911484a0
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: [11, 23]
+    TargetFilename|endswith: ['logins.json','key4.db','key3.db','signons.sqlite','cookies.sqlite','formhistory.sqlite','Login Data','Cookies','Login Data For Account','Web Data','Local State']
+  condition: selection
+level: high
+tags: [attack.credential_access, attack.t1555]
+x-sentinel:
+  id: CRED-001
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "Catches the *copy* reliably. Does NOT catch silent in-place read (no Sysmon read event) — 2FA is the backstop."
+---
+title: Non-Microsoft process opening lsass.exe (credential dump)
+id: 4167ab7d-ab09-5b76-8ded-321908515ea1
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 10
+    TargetImage|endswith: '\lsass.exe'
+  condition: selection
+level: high
+tags: [attack.credential_access, attack.t1003.001]
+x-sentinel:
+  id: CRED-002
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  note: "EID 10 victim = TargetImage (NOT TargetFilename — see 04-TELEMETRY.md §1.1)."
+---
+title: Access to SAM/SYSTEM/SECURITY hives or ntds.dit outside maintenance
+id: f6a380a2-360b-5a0b-a044-8895ff879ea1
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: [10, 11]
+    TargetFilename|re: '(?i)(\\SAM$|\\SYSTEM$|\\SECURITY$|ntds\.dit)'
+  condition: selection
+level: high
+tags: [attack.credential_access, attack.t1003.002]
+x-sentinel:
+  id: CRED-003
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
+  engine_helper: "EID 10 carries TargetImage (process), not a hive file path; reliable on EID 11 only. During tuning, confirm whether EID 10 here fires usefully."

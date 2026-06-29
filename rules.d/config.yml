@@ -1,0 +1,23 @@
+# Sentinel catalog — Self-protection (03-RULES.md §8)
+# Config tamper tripwire. Sentinel runs as the user; so does the malware — these
+# files are user-writable. Detect (not prevent): raises the bar, leaves traces.
+
+title: Sentinel config/state files written by a process other than sentinel.exe
+id: 489aab76-cf21-5bfc-898e-477d6f680b89
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 11
+    TargetFilename|contains: ['rules.d\', 'allowlist.json', 'baseline_clean.json', 'baseline_2', 'state.db', 'sentinel.conf']
+  filter_sentinel:
+    Image|endswith: '\sentinel.exe'
+  condition: selection and not filter_sentinel
+level: high
+tags: [attack.defense_evasion, attack.t1562.001]
+x-sentinel:
+  id: CONFIG-001
+  severity: critical
+  alert: [popup, toast, log, eventlog]
+  engine_helper: "PLUS startup + periodic SHA256 of all config files (hashes in state.db): alert if a hash differs from last-known-good AND no corresponding EID 11 from sentinel.exe preceded it."
+  note: "Detect config tampering (rule disabling / self-allowlisting). NOT a defense against a kernel/rootkit attacker (out of scope)."

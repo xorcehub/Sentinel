@@ -5,6 +5,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"sentinel/internal/event"
@@ -23,6 +24,13 @@ type stubRT struct {
 // The query parameter overrides the default EID filter on Windows (ignored here).
 func NewSysmonRT(channel, query string, log *slog.Logger) (Ingester, error) {
 	return &stubRT{channel: channel, log: log}, nil
+}
+
+// NewSysmonRTNative is the experimental EvtSubscribe ingester (Windows-only).
+// On non-Windows it returns an error immediately so the symbol resolves for
+// main.go's -sysmon-native path without breaking the build.
+func NewSysmonRTNative(channel, query string, log *slog.Logger) (Ingester, error) {
+	return nil, fmt.Errorf("native EvtSubscribe ingester requires Windows")
 }
 
 func (s *stubRT) Start(ctx context.Context) (<-chan event.Event, error) {
