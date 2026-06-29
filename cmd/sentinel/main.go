@@ -207,9 +207,16 @@ func buildDispatcher(fl *flags, logger *slog.Logger) *alert.Dispatcher {
 	return alert.New(alerters, 256, logger)
 }
 
-// runSelfTest loads the catalog and runs the incident-coverage regression.
-// Prints per-case results and returns an error if any case failed (so the exit
-// code reflects pass/fail).
+// runSelfTest loads the catalog and runs the incident-coverage regression and
+// writes a per-case report. Returns an error if any case failed (exit code
+// reflects pass/fail).
+//
+// Output handling: the report is written to self-test.txt next to the EXE AND
+// to stdout. The file is mandatory because the production build uses
+// -ldflags "-H windowsgui" - under the GUI subsystem os.Stdout is a dead
+// handle, so fmt.Printf prints to nothing. The file always works regardless of
+// subsystem. For interactive use, build a console binary
+// (`go build ./cmd/sentinel` without the windowsgui ldflag) and stdout works too.
 func runSelfTest(fl *flags) error {
 	catalog, err := loadRulesDir(fl.rulesDir)
 	if err != nil {
@@ -222,6 +229,8 @@ func runSelfTest(fl *flags) error {
 	if err != nil {
 		return err
 	}
+
+	var b strings.Builder
 	passed := 0
 	for _, r := range results {
 		mark := "✓"
@@ -230,18 +239,39 @@ func runSelfTest(fl *flags) error {
 		} else {
 			passed++
 		}
-		fmt.Printf("  %s %s\n", mark, r.Case.Name)
+		fmt.Fprintf(&b, "  %s %s\n", mark, r.Case.Name)
 		if !r.Passed {
-			fmt.Printf("      fired: %v\n      %s\n", r.Fired, r.Detail)
+			fmt.Fprintf(&b, "      fired: %v\n      %s\n", r.Fired, r.Detail)
 		} else if len(r.Fired) > 0 {
-			fmt.Printf("      fired: %v\n", r.Fired)
+			fmt.Fprintf(&b, "      fired: %v\n", r.Fired)
 		}
 	}
-	fmt.Printf("\n%d/%d cases passed\n", passed, len(results))
+	fmt.Fprintf(&b, "\n%d/%d cases passed\n", passed, len(results))
 	if !allPassed {
-		return fmt.Errorf("self-test failed")
+		b.WriteString("self-test FAILED\n")
+	} else {
+		b.WriteString("self-test PASSED\n")
 	}
-	fmt.Println("self-test PASSED")
+
+	report := b.String()
+	// Best-effort stdout (works for console builds; silent under windowsgui).
+	fmt.Print(report)
+
+	// Mandatory file write - the channel that works under the windowsgui build.
+	reportPath := filepath.Join(exeDir(), "self-test.txt")
+	if exeDir() == "" {
+		reportPath = "self-test.txt" // fallback to CWD if exe dir unknown
+	}
+	if werr := os.WriteFile(reportPath, []byte(report), 0o644); werr != nil {
+		return fmt.Errorf("self-test: write report %s: %w (report below)\n%s", reportPath, werr, report)
+	}
+	// If stdout was usable, the report already printed above; under windowsgui
+	// the operator reads self-test.txt. We can't print "see self-test.txt" via
+	// stdout (dead handle), so the file IS the contract.
+
+	if !allPassed {
+		return fmt.Errorf("self-test FAILED (see %s)", reportPath)
+	}
 	return nil
 }
 
