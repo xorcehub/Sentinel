@@ -25,6 +25,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"sentinel/internal/alert"
 	"sentinel/internal/allowlist"
@@ -41,9 +42,26 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "sentinel: %v\n", err)
-		os.Exit(1)
+		failExit(err)
 	}
+}
+
+// failExit reports a fatal error from run(). Under the production windowsgui
+// build os.Stderr is a dead handle, so printing there alone would make a
+// startup failure (mutex conflict, missing rules dir, locked state.db) silent.
+// We also append the error to sentinel.log via a direct file open — best-effort
+// (the structured logger may not be initialized yet at the failure point, and
+// the log file may not be openable). Console builds still get stderr output.
+func failExit(err error) {
+	// Best-effort log file write. Don't use the slog logger: it may not exist
+	// yet (failure can happen before NewLogger), and we want a clear fatal marker.
+	if f, ferr := os.OpenFile("sentinel.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
+		fmt.Fprintf(f, "%s [FATAL] sentinel: %v\n", time.Now().Format(time.RFC3339), err)
+		_ = f.Close()
+	}
+	// Best-effort stderr (dead under windowsgui, works for console builds).
+	fmt.Fprintf(os.Stderr, "sentinel: %v\n", err)
+	os.Exit(1)
 }
 
 type flags struct {
