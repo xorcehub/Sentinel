@@ -318,20 +318,13 @@ func runSelfTest(fl *flags) error {
 	}
 
 	report := b.String()
-	// Best-effort stdout (works for console builds; silent under windowsgui).
-	fmt.Print(report)
-
-	// Mandatory file write - the channel that works under the windowsgui build.
-	reportPath := filepath.Join(exeDir(), "self-test.txt")
-	if exeDir() == "" {
-		reportPath = "self-test.txt" // fallback to CWD if exe dir unknown
+	// Dual-write: stdout (console builds) + self-test.txt (mandatory; works
+	// under windowsgui where stdout is a dead handle). The file IS the contract
+	// for the production build.
+	reportPath, werr := writeReport("self-test", report)
+	if werr != nil {
+		return fmt.Errorf("self-test: %w", werr)
 	}
-	if werr := os.WriteFile(reportPath, []byte(report), 0o644); werr != nil {
-		return fmt.Errorf("self-test: write report %s: %w (report below)\n%s", reportPath, werr, report)
-	}
-	// If stdout was usable, the report already printed above; under windowsgui
-	// the operator reads self-test.txt. We can't print "see self-test.txt" via
-	// stdout (dead handle), so the file IS the contract.
 
 	if !allPassed {
 		return fmt.Errorf("self-test FAILED (see %s)", reportPath)
@@ -367,14 +360,20 @@ func runBaselineSnapshot(fl *flags) error {
 	// suppressed by a stale "already alerted" record if it ever reappears. Reset
 	// the Phase 3d alert-once set. Best-effort (state may be locked by a running
 	// daemon; bbolt's 2s write-lock timeout normally suffices).
+	var warn string
 	if st, serr := state.Open(fl.statePath); serr == nil {
 		if rerr := st.ResetBaselineAlerted(); rerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: reset baseline alert set: %v\n", rerr)
+			warn = fmt.Sprintf("warning: reset baseline alert set: %v\n", rerr)
 		}
 		st.Close()
 	}
-	fmt.Printf("wrote %s (%d entries, %d bytes)\n", fl.baselineClean, len(snap.Entries), len(raw))
-	fmt.Println("Review the file, then commit it as the clean baseline.")
+	var b strings.Builder
+	b.WriteString(warn)
+	fmt.Fprintf(&b, "wrote %s (%d entries, %d bytes)\n", fl.baselineClean, len(snap.Entries), len(raw))
+	b.WriteString("Review the file, then commit it as the clean baseline.\n")
+	if _, werr := writeReport("baseline-snapshot", b.String()); werr != nil {
+		return werr
+	}
 	return nil
 }
 
@@ -407,25 +406,30 @@ func runBaselineNow(fl *flags) error {
 		return fmt.Errorf("parse daily capture: %w", err)
 	}
 	events := baseline.Diff(clean, daily)
+
+	var b strings.Builder
 	if len(events) == 0 {
-		fmt.Printf("no new persistence entries (clean=%d entries, daily=%d)\n", len(clean.Entries), len(daily.Entries))
-		return nil
+		fmt.Fprintf(&b, "no new persistence entries (clean=%d entries, daily=%d)\n", len(clean.Entries), len(daily.Entries))
+	} else {
+		fmt.Fprintf(&b, "%d NEW persistence entr%s (clean=%d, daily=%d):\n", len(events), pluralIES(len(events)), len(clean.Entries), len(daily.Entries))
+		for _, e := range events {
+			where := e.TargetRegKey
+			if where == "" {
+				where = e.TargetFile
+			}
+			fmt.Fprintf(&b, "  NEW  %s\n", where)
+			if e.User != "" {
+				fmt.Fprintf(&b, "        signer: %s\n", e.User)
+			}
+			if e.CmdLine != "" {
+				fmt.Fprintf(&b, "        launch: %s\n", e.CmdLine)
+			}
+		}
+		b.WriteString("\n(The daemon routes these through BASE-001 -> toast/log/eventlog automatically.)\n")
 	}
-	fmt.Printf("%d NEW persistence entr%s (clean=%d, daily=%d):\n", len(events), pluralIES(len(events)), len(clean.Entries), len(daily.Entries))
-	for _, e := range events {
-		where := e.TargetRegKey
-		if where == "" {
-			where = e.TargetFile
-		}
-		fmt.Printf("  NEW  %s\n", where)
-		if e.User != "" {
-			fmt.Printf("        signer: %s\n", e.User)
-		}
-		if e.CmdLine != "" {
-			fmt.Printf("        launch: %s\n", e.CmdLine)
-		}
+	if _, werr := writeReport("baseline-now", b.String()); werr != nil {
+		return werr
 	}
-	fmt.Println("\n(Phase 3d will route these through BASE-001 -> toast/log/eventlog automatically.)")
 	return nil
 }
 
@@ -460,6 +464,26 @@ func pluralIES(n int) string {
 		return "y"
 	}
 	return "ies"
+}
+
+// writeReport writes text to stdout (best-effort — a dead handle under the
+// windowsgui production build) AND to <name>.txt next to the exe (mandatory —
+// works under both console and windowsgui subsystems). All three one-shot
+// commands (self-test, baseline-snapshot, baseline-now) route their
+// human-readable output through this so a run under the windowsgui build
+// (e.g. a Task Scheduler action) still produces a visible result file.
+// Returns the report path (so callers can reference it in errors) and an
+// error only if the file write fails (stdout failures are ignored).
+func writeReport(name, text string) (reportPath string, err error) {
+	fmt.Print(text) // best-effort; silent under windowsgui
+	reportPath = filepath.Join(exeDir(), name+".txt")
+	if exeDir() == "" {
+		reportPath = name + ".txt" // fallback to CWD if exe dir unknown
+	}
+	if werr := os.WriteFile(reportPath, []byte(text), 0o644); werr != nil {
+		return reportPath, fmt.Errorf("write %s: %w (report below)\n%s", reportPath, werr, text)
+	}
+	return reportPath, nil
 }
 
 func buildEngine(fl *flags, st *state.State, logger *slog.Logger) (*rules.Engine, error) {

@@ -7,3 +7,9 @@ ALERTS.log
 data/*
 sentinel-cli.exe
 baseline_clean.csv
+
+# generated one-shot command reports (self-test/baseline-* write these next
+# to the exe so output survives the windowsgui build's dead stdout handle)
+self-test.txt
+baseline-now.txt
+baseline-snapshot.txt
