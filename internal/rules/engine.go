@@ -39,6 +39,7 @@ import (
 type Allowlist interface {
 	ImageTrusted(e *event.Event) bool
 	ImageInDevTools(imagePath string) bool
+	CmdLineInDevScripts(cmdline string) bool
 	DstInCIDR(ip string) bool
 	DstIsKnownLoopback(ip string, port int) bool
 }
@@ -163,6 +164,10 @@ func (eng *Engine) exceptSuppresses(r *sigmaeval.Rule, e *event.Event) bool {
 			}
 		case "image_in_dev_tools":
 			if eng.al.ImageInDevTools(e.Image) {
+				return true
+			}
+		case "cmdline_in_dev_scripts":
+			if eng.al.CmdLineInDevScripts(e.CmdLine) {
 				return true
 			}
 		case "dst_in_allowlist":

@@ -42,8 +42,10 @@ x-sentinel:
   id: EXEC-001
   severity: critical
   alert: [popup, toast, log, eventlog]
-  except: { image_in_allowlist: trusted_binaries }
-  note: "Every launch of the broker tripped this. Covers AMSI-patching + reflective loading + base64. selection_broker catches the conhost --headless / cmd / wscript launch vectors where Image is the broker, not powershell.exe — the exact evasion from the incident."
+  except:
+    image_in_allowlist: trusted_binaries
+    cmdline_in_dev_scripts: dev_scripts
+  note: "Every launch of the broker tripped this. Covers AMSI-patching + reflective loading + base64. selection_broker catches the conhost --headless / cmd / wscript launch vectors where Image is the broker, not powershell.exe — the exact evasion from the incident. dev_scripts (CmdLine-anchored) quiets a developer's own `powershell -ep bypass -File <dev.ps1>` WITHOUT trusting powershell.exe (which would blind this rule to every PS-bypass attack)."
 ---
 title: conhost --headless powershell (headless PS launch vector)
 id: f456f516-ed43-5fb4-a7f8-e9d76fcacac1

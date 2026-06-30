@@ -56,7 +56,20 @@
       "\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\npm\\\\.*\\.exe$",
       "\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
       "\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\lm studio\\\\.*\\.exe$",
-      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\pnpm\\\\.*\\.exe$"
+      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\pnpm\\\\.*\\.exe$",
+      // pi-lite (operator's dev AI agent) — quiets NET-002/003. Scoped to the
+      // built binary path, NOT the whole tree. Its API endpoints (128.14.69.x)
+      // rotate, so trust the image rather than chasing each IP. NET-004
+      // (Temp/AppData/ProgramData outbound) + NET-005 (loopback) still apply.
+      "\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pi-lite\\\\dist\\\\pi-lite\\.exe$"
     ]
-  }
+  },
+  // dev_scripts: CmdLine-anchored exceptions for EXEC-001 (see allowlist doc).
+  // The operator's own dev scripts run via `powershell -ep bypass -File <x>`;
+  // anchoring on the script filename keeps EXEC-001 armed for everything else.
+  // Filename anchor covers BOTH absolute (-File C:\\...\\pe-triage-docker.ps1)
+  // and relative (-File ./scripts/pe-triage-docker.ps1) invocations.
+  "dev_scripts": [
+    "pe-triage-docker\\.ps1"
+  ]
 }

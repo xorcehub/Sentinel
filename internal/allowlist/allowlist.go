@@ -2,11 +2,20 @@
 // `except` checks referenced by Sigma rules' x-sentinel.except block
 // (docs/03-RULES.md §3, docs/04-TELEMETRY.md §2).
 //
-// Four sets, mapping 1:1 to the except operators:
+// Five sets, mapping 1:1 to the except operators:
 //   image_in_allowlist: trusted_binaries   -> ImageTrusted(hash or path)
 //   image_in_dev_tools: dev_tool_paths     -> ImageInDevTools(path)
+//   cmdline_in_dev_scripts: dev_scripts    -> CmdLineInDevScripts(cmdline)
 //   dst_in_allowlist: allowed_destinations -> DstInCIDR(ip)
 //   dst_in_allowlist: known_loopback_listeners -> DstIsKnownLoopback(ip, port)
+//
+// dev_scripts is the ONLY set anchored on the CommandLine rather than the
+// Image. It exists for the dev-workflow EXEC-001 case: a developer running
+// their OWN script as `powershell -ExecutionPolicy Bypass -File <dev.ps1>`.
+// The Image is powershell.exe (a system binary), so image-based sets can't
+// scope it without blinding EXEC-001 to every PS-bypass attack. Anchoring on
+// the script in the commandline suppresses ONLY the named dev workflow while
+// keeping EXEC-001 armed for everything else.
 //
 // The allowlist file is JSONC (allows // comments), matching the docs' format.
 // We strip comments before json.Unmarshal so the operator can annotate freely.
@@ -31,6 +40,7 @@ type Allowlist struct {
 	tbSHA     map[string]bool       // lowercased sha256
 	tbPath    []*regexp.Regexp      // path patterns, matched on normalized lower path
 	devPath   []*regexp.Regexp
+	devScript []*regexp.Regexp      // commandline anchors (dev scripts run via a LOLBin)
 	cidrs     []*net.IPNet
 	loopback  map[string]bool       // "host:port" lowercased
 }
@@ -72,6 +82,17 @@ func Compile(jsonBytes []byte) (*Allowlist, error) {
 			return nil, fmt.Errorf("bad dev_tool_paths regex %q: %w", p, err)
 		}
 		a.devPath = append(a.devPath, re)
+	}
+	for _, p := range doc.DevScripts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		re, err := regexp.Compile("(?i)" + p)
+		if err != nil {
+			return nil, fmt.Errorf("bad dev_scripts regex %q: %w", p, err)
+		}
+		a.devScript = append(a.devScript, re)
 	}
 	for _, c := range doc.AllowedDestinations.CIDR {
 		_, n, err := net.ParseCIDR(strings.TrimSpace(c))
@@ -128,6 +149,27 @@ func (a *Allowlist) ImageInDevTools(image string) bool {
 	return false
 }
 
+// CmdLineInDevScripts reports whether cmdline references a developer-trusted
+// script. Used by EXEC-001's `cmdline_in_dev_scripts` except so a developer's
+// own `powershell -ep bypass -File <dev.ps1>` workflow doesn't fire while
+// EXEC-001 stays armed for every other PS-bypass launch. Matched on the raw
+// (un-normalized) commandline with case-insensitive regex; anchor on the
+// script filename or path so it survives both absolute and relative -File
+// invocations. Evasion note: an attacker who names a payload exactly like a
+// trusted dev script AND runs it via powershell -ep bypass would evade
+// EXEC-001 — keep dev_scripts entries specific and review them.
+func (a *Allowlist) CmdLineInDevScripts(cmdline string) bool {
+	if a == nil || cmdline == "" {
+		return false
+	}
+	for _, re := range a.devScript {
+		if re.MatchString(cmdline) {
+			return true
+		}
+	}
+	return false
+}
+
 // DstInCIDR reports whether ip falls in any allowed_destinations CIDR.
 func (a *Allowlist) DstInCIDR(ip string) bool {
 	if a == nil || ip == "" {
@@ -169,6 +211,9 @@ type rawDoc struct {
 	DevToolPaths struct {
 		Path []string `json:"path"`
 	} `json:"dev_tool_paths"`
+	// dev_scripts: commandline anchors (regex), NOT image paths. Flat array —
+	// see CmdLineInDevScripts / the package doc for why this set is CmdLine-based.
+	DevScripts []string `json:"dev_scripts"`
 }
 
 // stripJSONC removes // line comments that are outside double-quoted strings,

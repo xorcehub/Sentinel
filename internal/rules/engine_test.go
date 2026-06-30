@@ -72,6 +72,7 @@ type fakeAL struct {
 	trustedSHA  map[string]bool
 	trustedPath []*regexp.Regexp
 	devPath     []*regexp.Regexp
+	devScript   []*regexp.Regexp
 	cidrs       []*net.IPNet
 	loopback    map[string]bool
 }
@@ -94,6 +95,15 @@ func (a *fakeAL) ImageInDevTools(p string) bool {
 	np := strings.ToLower(p)
 	for _, re := range a.devPath {
 		if re.MatchString(np) {
+			return true
+		}
+	}
+	return false
+}
+func (a *fakeAL) CmdLineInDevScripts(cmdline string) bool {
+	lc := strings.ToLower(cmdline)
+	for _, re := range a.devScript {
+		if re.MatchString(lc) {
 			return true
 		}
 	}

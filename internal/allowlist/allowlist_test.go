@@ -196,6 +196,44 @@ func TestDevToolPathRegexCompiles(t *testing.T) {
 	}
 }
 
+// TestCmdLineInDevScripts pins the commandline-anchored exception used by
+// EXEC-001's `cmdline_in_dev_scripts`. Unlike the image-based sets, this matches
+// the CommandLine so a developer's own `powershell -ep bypass -File <dev.ps1>`
+// workflow can be suppressed WITHOUT trusting powershell.exe (which would blind
+// EXEC-001 to every PS-bypass attack). Must match both absolute and relative
+// -File invocations of the trusted script, and must NOT match a hostile script
+// of a different name.
+func TestCmdLineInDevScripts(t *testing.T) {
+	a, err := Compile([]byte(`{
+  "dev_scripts": [
+    "pe-triage-docker\\.ps1"
+  ]
+}`))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	abs := `powershell -ExecutionPolicy Bypass -File C:\Users\user01\Documents\Github\pe_triage\scripts\pe-triage-docker.ps1 arg`
+	rel := `powershell -ExecutionPolicy Bypass -File ./scripts/pe-triage-docker.ps1`
+	if !a.CmdLineInDevScripts(abs) {
+		t.Error("absolute -File invocation of dev script must match")
+	}
+	if !a.CmdLineInDevScripts(rel) {
+		t.Error("relative -File invocation of dev script must match")
+	}
+	// Hostile script of a different name must NOT match (EXEC-001 stays armed).
+	if a.CmdLineInDevScripts(`powershell -ep bypass -File C:\ProgramData\evil.ps1`) {
+		t.Error("unrelated hostile script must NOT match dev_scripts")
+	}
+	// Empty cmdline + nil allowlist must be safe (no panic).
+	if a.CmdLineInDevScripts("") {
+		t.Error("empty cmdline should not match")
+	}
+	var nilAL *Allowlist
+	if nilAL.CmdLineInDevScripts(abs) {
+		t.Error("nil allowlist must be safe and not match")
+	}
+}
+
 // TestProductionAllowlistDoesNotTrustLOLBins is the regression guard for the
 // design bug where the starter allowlist blanket-trusted \windows\system32\.*.exe,
 // which silently disabled EVERY behavior rule (EXEC-001, PERSIST-001, EVADE-001,
@@ -267,5 +305,59 @@ func TestProductionAllowlistDoesNotTrustLOLBins(t *testing.T) {
 		if !a.ImageTrusted(&event.Event{Image: bin}) {
 			t.Errorf("benign Windows binary should be trusted (removing it will add NET-002 noise): %s", bin)
 		}
+	}
+}
+
+// TestProductionAllowlistDevTuning pins the operator's FP-tuning entries against
+// the REAL config/allowlist.json: pi-lite in dev_tool_paths (quiets NET-002/003
+// for the operator's dev AI agent) and pe-triage-docker.ps1 in dev_scripts
+// (quiets EXEC-001 for the operator's own PS-bypass dev workflow). These are
+// the two known false positives surfaced during on-host use. If the entries are
+// accidentally removed/renamed, this test surfaces the regression immediately.
+//
+// Importantly it also asserts the tuning is SCOPED: pi-lite's entry does not
+// trust unrelated dev tools, and dev_scripts does not suppress EXEC-001 for a
+// hostile ProgramData script (EXEC-001 must stay armed).
+func TestProductionAllowlistDevTuning(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	dir := filepath.Dir(file)
+	var prodPath string
+	for i := 0; i < 6; i++ {
+		cand := filepath.Join(dir, "config", "allowlist.json")
+		if _, err := os.Stat(cand); err == nil {
+			prodPath = cand
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	if prodPath == "" {
+		t.Skip("config/allowlist.json not found (running outside repo root)")
+	}
+	a, err := Load(prodPath)
+	if err != nil {
+		t.Fatalf("load production allowlist: %v", err)
+	}
+
+	// pi-lite (NET-002/003 FP): the built binary must be a trusted dev tool,
+	// and the scoping must not over-match a sibling dev tool.
+	if !a.ImageInDevTools(`C:\Users\user01\Documents\Github\pi-lite\dist\pi-lite.exe`) {
+		t.Error("pi-lite built binary should be in dev_tool_paths (NET-002/003 FP tuning)")
+	}
+	if a.ImageInDevTools(`C:\Users\user01\Documents\Github\other-tool\dist\tool.exe`) {
+		t.Error("pi-lite dev_tool_paths entry over-matches an unrelated tool")
+	}
+
+	// pe-triage-docker.ps1 (EXEC-001 FP): both invocation forms match dev_scripts,
+	// but a hostile ProgramData script must NOT (EXEC-001 stays armed).
+	abs := `powershell -ExecutionPolicy Bypass -File C:\Users\user01\Documents\Github\pe_triage\scripts\pe-triage-docker.ps1`
+	rel := `powershell -ExecutionPolicy Bypass -File ./scripts/pe-triage-docker.ps1`
+	if !a.CmdLineInDevScripts(abs) || !a.CmdLineInDevScripts(rel) {
+		t.Error("pe-triage-docker.ps1 (both abs + rel -File forms) should be in dev_scripts (EXEC-001 FP tuning)")
+	}
+	if a.CmdLineInDevScripts(`powershell -ep bypass -File C:\ProgramData\evil.ps1`) {
+		t.Error("dev_scripts must NOT match a hostile ProgramData script (EXEC-001 would be blinded)")
 	}
 }
