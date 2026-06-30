@@ -15,12 +15,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"os/user"
 	"path/filepath"
@@ -30,6 +32,7 @@ import (
 	"sentinel/internal/alert"
 	"sentinel/internal/allowlist"
 	"sentinel/internal/app"
+	"sentinel/internal/baseline"
 	"sentinel/internal/event"
 	"sentinel/internal/ingest"
 	"sentinel/internal/ingest/mock"
@@ -80,6 +83,10 @@ type flags struct {
 	sysmonQuery   string
 	sysmonNative  bool
 	selfTest      bool
+	baselineSnapshot bool
+	baselineNow      bool
+	baselineClean    string
+	autorunsc        string
 }
 
 func parseFlags(args []string) (*flags, *flag.FlagSet) {
@@ -100,6 +107,10 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.StringVar(&out.sysmonQuery, "sysmon-query", "", "override the Sysmon XPath filter (diagnostic; use \"*\" to subscribe to all events)")
 	f.BoolVar(&out.sysmonNative, "sysmon-native", false, "use the experimental native EvtSubscribe ingester (known broken: ERROR_INVALID_PARAMETER)")
 	f.BoolVar(&out.selfTest, "self-test", false, "run the incident-coverage regression against the catalog and exit")
+	f.BoolVar(&out.baselineSnapshot, "baseline-snapshot", false, "capture an autorunsc baseline to --baseline-clean and exit")
+	f.BoolVar(&out.baselineNow, "baseline-now", false, "diff current autorunsc state vs --baseline-clean; print new entries; exit")
+	f.StringVar(&out.baselineClean, "baseline-clean", "baseline_clean.csv", "baseline CSV file (clean reference for the daily diff)")
+	f.StringVar(&out.autorunsc, "autorunsc", "", "path to autorunsc64.exe (default: search exe dir, C:\\Tools\\Autoruns, PATH)")
 	return out, f
 }
 
@@ -122,6 +133,17 @@ func run(args []string) error {
 	// exit. No mutex, no ingestion, no alerters — pure engine check. Portable.
 	if fl.selfTest {
 		return runSelfTest(fl)
+	}
+
+	// --baseline-snapshot / --baseline-now: Phase 3 CLI (06-BASELINE.md §3).
+	// One-shot autorunsc capture / diff; exit. No mutex, no daemon. Output goes
+	// to stdout (use a console build: `go build ./cmd/sentinel`) and to the
+	// baseline-clean file; under the windowsgui build stdout is a dead handle.
+	if fl.baselineSnapshot {
+		return runBaselineSnapshot(fl)
+	}
+	if fl.baselineNow {
+		return runBaselineNow(fl)
 	}
 
 	// Single-instance enforcement. If mutexName is unset (the default), derive
@@ -293,6 +315,118 @@ func runSelfTest(fl *flags) error {
 	return nil
 }
 
+// runBaselineSnapshot captures an autorunsc baseline and writes it verbatim to
+// fl.baselineClean. The operator runs this once on a verified-clean machine,
+// reviews + commits the CSV as the diff reference (06-BASELINE.md §3). One-shot:
+// no daemon, no mutex.
+func runBaselineSnapshot(fl *flags) error {
+	autorunscPath, err := findAutorunsc(fl.autorunsc)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	raw, err := baseline.Capture(ctx, autorunscPath, slog.Default())
+	if err != nil {
+		return err
+	}
+	// Validate the capture parses before staking the clean baseline on it.
+	snap, err := baseline.Parse(bytes.NewReader(raw), time.Now())
+	if err != nil {
+		return fmt.Errorf("captured output failed to parse: %w", err)
+	}
+	if err := os.WriteFile(fl.baselineClean, raw, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", fl.baselineClean, err)
+	}
+	fmt.Printf("wrote %s (%d entries, %d bytes)\n", fl.baselineClean, len(snap.Entries), len(raw))
+	fmt.Println("Review the file, then commit it as the clean baseline.")
+	return nil
+}
+
+// runBaselineNow captures the current state and diffs it against the clean
+// baseline, printing every NEW persistence entry. This is the Phase 3 proof:
+// run it after installing something (or simulating persistence) to see the diff
+// surface it. In Phase 3d the daemon wires the diff through the engine so
+// BASE-001 toasts/logs these automatically (daily ticker + at-startup).
+func runBaselineNow(fl *flags) error {
+	autorunscPath, err := findAutorunsc(fl.autorunsc)
+	if err != nil {
+		return err
+	}
+	cleanRaw, err := os.ReadFile(fl.baselineClean)
+	if err != nil {
+		return fmt.Errorf("read clean baseline %s: %w (run --baseline-snapshot first)", fl.baselineClean, err)
+	}
+	clean, err := baseline.Parse(bytes.NewReader(cleanRaw), time.Now())
+	if err != nil {
+		return fmt.Errorf("parse clean baseline: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	dailyRaw, err := baseline.Capture(ctx, autorunscPath, slog.Default())
+	if err != nil {
+		return err
+	}
+	daily, err := baseline.Parse(bytes.NewReader(dailyRaw), time.Now())
+	if err != nil {
+		return fmt.Errorf("parse daily capture: %w", err)
+	}
+	events := baseline.Diff(clean, daily)
+	if len(events) == 0 {
+		fmt.Printf("no new persistence entries (clean=%d entries, daily=%d)\n", len(clean.Entries), len(daily.Entries))
+		return nil
+	}
+	fmt.Printf("%d NEW persistence entr%s (clean=%d, daily=%d):\n", len(events), pluralIES(len(events)), len(clean.Entries), len(daily.Entries))
+	for _, e := range events {
+		where := e.TargetRegKey
+		if where == "" {
+			where = e.TargetFile
+		}
+		fmt.Printf("  NEW  %s\n", where)
+		if e.User != "" {
+			fmt.Printf("        signer: %s\n", e.User)
+		}
+		if e.CmdLine != "" {
+			fmt.Printf("        launch: %s\n", e.CmdLine)
+		}
+	}
+	fmt.Println("\n(Phase 3d will route these through BASE-001 -> toast/log/eventlog automatically.)")
+	return nil
+}
+
+// findAutorunsc resolves the autorunsc64.exe path: explicit -autorunsc flag,
+// then next to sentinel.exe, then common install dirs, then PATH. Returns an
+// actionable error (with the flag hint) if none found.
+func findAutorunsc(flagPath string) (string, error) {
+	if flagPath != "" {
+		return flagPath, nil
+	}
+	var candidates []string
+	if dir := exeDir(); dir != "" {
+		candidates = append(candidates, filepath.Join(dir, "autorunsc64.exe"))
+	}
+	candidates = append(candidates,
+		`C:\Tools\Autoruns\autorunsc64.exe`,
+		`C:\Program Files\Sysinternals\Autoruns\autorunsc64.exe`,
+	)
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	if p, err := exec.LookPath("autorunsc64.exe"); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("autorunsc64.exe not found; pass -autorunsc <path> (e.g. C:\\Tools\\Autoruns\\autorunsc64.exe)")
+}
+
+func pluralIES(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
 func buildEngine(fl *flags, st *state.State, logger *slog.Logger) (*rules.Engine, error) {
 	rulesYAML, err := loadRulesDir(fl.rulesDir)
 	if err != nil {
@@ -430,6 +564,7 @@ func resolveExeRelative(fl *flags) {
 	resolve(&fl.logPath)
 	resolve(&fl.heartbeatPath)
 	resolve(&fl.alertsPath)
+	resolve(&fl.baselineClean)
 }
 
 func defaultMutexName() string {

@@ -4,3 +4,6 @@ sentinel.log
 sentinel.exe
 state.db
 ALERTS.log
+data/*
+sentinel-cli.exe
+baseline_clean.csv
