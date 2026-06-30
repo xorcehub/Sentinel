@@ -211,6 +211,38 @@ func TestDiffNewEntry(t *testing.T) {
 	}
 }
 
+// TestDiffEntriesReturnsEntries: DiffEntries (the daemon's alert-once gate
+// depends on it) returns the raw NEW entries — not events — sorted, so the
+// caller can dedup on Entry.Key() before converting. EntriesToEvents then
+// produces one event per survivor with the same shape as Diff().
+func TestDiffEntriesReturnsEntries(t *testing.T) {
+	clean := mustParse(t, sampleCSV)
+	daily := mustParse(t, sampleCSV +
+		"20260629-120000,HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run,BrandNew,enabled,Logon,System-wide,Brand New App,(Verified) Corp,(Verified) Corp,C:\\Program Files\\bn\\bn.exe,1.0,\"C:\\Program Files\\bn\\bn.exe\"\n")
+
+	entries := DiffEntries(clean, daily)
+	if len(entries) != 1 {
+		t.Fatalf("DiffEntries: want 1, got %d", len(entries))
+	}
+	if entries[0].Entry != "BrandNew" {
+		t.Errorf("Entry = %q, want BrandNew", entries[0].Entry)
+	}
+	// The key is what the daemon's alert-once gate hashes on.
+	wantKey := `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run` + "\x00" + "BrandNew"
+	if entries[0].Key() != wantKey {
+		t.Errorf("Key = %q, want %q", entries[0].Key(), wantKey)
+	}
+	// EntriesToEvents produces the same event shape as Diff for the same input.
+	evs := EntriesToEvents(entries)
+	if len(evs) != 1 || evs[0].Source != event.SrcBaseline {
+		t.Errorf("EntriesToEvents: got %+v", evs)
+	}
+	// Equivalence with the convenience wrapper Diff().
+	if got := len(Diff(clean, daily)); got != 1 {
+		t.Errorf("Diff wrapper: want 1, got %d", got)
+	}
+}
+
 // TestDiffUpdateIsNotNew: a Discord-style update (new Time/Signer/Version but
 // same Location+Entry) MUST NOT fire - the identity Key is Location+Entry, so a
 // re-sign on update is suppressed. Without this, the diff would toast-flood on

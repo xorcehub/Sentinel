@@ -86,6 +86,7 @@ type flags struct {
 	baselineSnapshot bool
 	baselineNow      bool
 	baselineClean    string
+	baselineHour     int
 	autorunsc        string
 }
 
@@ -110,6 +111,7 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.BoolVar(&out.baselineSnapshot, "baseline-snapshot", false, "capture an autorunsc baseline to --baseline-clean and exit")
 	f.BoolVar(&out.baselineNow, "baseline-now", false, "diff current autorunsc state vs --baseline-clean; print new entries; exit")
 	f.StringVar(&out.baselineClean, "baseline-clean", "baseline_clean.csv", "baseline CSV file (clean reference for the daily diff)")
+	f.IntVar(&out.baselineHour, "baseline-hour", 4, "hour (0-23, local) for the daemon's daily baseline scan")
 	f.StringVar(&out.autorunsc, "autorunsc", "", "path to autorunsc64.exe (default: search exe dir, C:\\Tools\\Autoruns, PATH)")
 	return out, f
 }
@@ -218,6 +220,7 @@ func run(args []string) error {
 		Engine:        eng,
 		HeartbeatPath: fl.heartbeatPath,
 		Dispatcher:    disp,
+		Baseline:      buildBaseline(fl, st, logger),
 	})
 	if err != nil {
 		return err
@@ -227,6 +230,27 @@ func run(args []string) error {
 	}
 	logger.Info("sentinel exited cleanly")
 	return nil
+}
+
+// buildBaseline configures the Phase 3d baseline diff loop. Enabled only when
+// autorunsc64.exe is findable, so a host without Autoruns degrades silently
+// (one warning at startup, no daily failures). The loop itself additionally
+// handles a missing clean baseline per-scan (warn + skip), so first-run before
+// --baseline-snapshot is not a flood.
+func buildBaseline(fl *flags, st *state.State, logger *slog.Logger) app.BaselineConfig {
+	path, err := findAutorunsc(fl.autorunsc)
+	if err != nil {
+		logger.Warn("baseline diff disabled: autorunsc64.exe not found; Phase 3 catch-by-result unavailable",
+			"hint", "install Sysinternals Autoruns or pass -autorunsc <path>")
+		return app.BaselineConfig{}
+	}
+	return app.BaselineConfig{
+		Enabled:       true,
+		AutorunscPath: path,
+		CleanPath:     fl.baselineClean,
+		Hour:          fl.baselineHour,
+		State:         st,
+	}
 }
 
 // buildDispatcher assembles the alert delivery chain. ALERTS.log is always
@@ -337,6 +361,17 @@ func runBaselineSnapshot(fl *flags) error {
 	}
 	if err := os.WriteFile(fl.baselineClean, raw, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", fl.baselineClean, err)
+	}
+	// Re-establishing the clean baseline changes the frame of reference: any
+	// previously-NEW entry the operator has now accepted into clean must not be
+	// suppressed by a stale "already alerted" record if it ever reappears. Reset
+	// the Phase 3d alert-once set. Best-effort (state may be locked by a running
+	// daemon; bbolt's 2s write-lock timeout normally suffices).
+	if st, serr := state.Open(fl.statePath); serr == nil {
+		if rerr := st.ResetBaselineAlerted(); rerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: reset baseline alert set: %v\n", rerr)
+		}
+		st.Close()
 	}
 	fmt.Printf("wrote %s (%d entries, %d bytes)\n", fl.baselineClean, len(snap.Entries), len(raw))
 	fmt.Println("Review the file, then commit it as the clean baseline.")

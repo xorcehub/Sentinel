@@ -92,3 +92,78 @@ func TestReAlertDefaultWindow(t *testing.T) {
 		t.Error("second within default window should be suppressed")
 	}
 }
+
+// TestBaselineAlertOnce: the Phase 3d Option-A "alert once" store. A key that
+// has not been seen reports not-alerted; after MarkBaselineAlerted it reports
+// alerted forever (no time window) until ResetBaselineAlerted clears the set.
+// This is the gate that keeps an unaddressed NEW persistence entry from
+// re-alerting on every daily scan.
+func TestBaselineAlertOnce(t *testing.T) {
+	s := openTemp(t)
+	key := `HKLM\Software\...\Run\Evil`
+	if s.BaselineAlerted(key) {
+		t.Error("fresh state: key should not be alerted")
+	}
+	s.MarkBaselineAlerted(key)
+	if !s.BaselineAlerted(key) {
+		t.Error("after Mark, key should be alerted")
+	}
+	// Idempotent + persistent (no window expiry like ReAlert).
+	s.MarkBaselineAlerted(key)
+	if !s.BaselineAlerted(key) {
+		t.Error("second Mark must not clear the alert flag")
+	}
+	// A different key is independent.
+	if s.BaselineAlerted(`HKLM\Other\Key`) {
+		t.Error("unrelated key should not be alerted")
+	}
+}
+
+// TestBaselineAlertReset: re-snapshotting the clean baseline (operator accepted
+// the entries) clears the alerted set, so a genuine reappearance of the same
+// (location,entry) later fires again instead of being suppressed as stale.
+func TestBaselineAlertReset(t *testing.T) {
+	s := openTemp(t)
+	key := `HKLM\...\Evil`
+	s.MarkBaselineAlerted(key)
+	if !s.BaselineAlerted(key) {
+		t.Fatal("precondition: marked")
+	}
+	if err := s.ResetBaselineAlerted(); err != nil {
+		t.Fatalf("ResetBaselineAlerted: %v", err)
+	}
+	if s.BaselineAlerted(key) {
+		t.Error("after reset, key should no longer be alerted")
+	}
+	// Reset on an empty set is a no-op (not an error).
+	if err := s.ResetBaselineAlerted(); err != nil {
+		t.Errorf("reset on empty set should be a no-op, got %v", err)
+	}
+	// And marking works again after reset (the scan-after-resnapshot path).
+	s.MarkBaselineAlerted(key)
+	if !s.BaselineAlerted(key) {
+		t.Error("re-mark after reset should take effect")
+	}
+}
+
+// TestBaselineAlertPersistsAcrossOpen: the alerted set must survive a Sentinel
+// restart, otherwise a daemon restart would re-alert every unaddressed entry.
+// (state.db is the persistence layer; verify by reopening the same file.)
+func TestBaselineAlertPersistsAcrossOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s1.MarkBaselineAlerted(`persisted\key`)
+	s1.Close()
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	if !s2.BaselineAlerted(`persisted\key`) {
+		t.Error("alerted flag must survive reopen (state.db persistence)")
+	}
+}

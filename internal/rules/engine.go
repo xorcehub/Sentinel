@@ -122,7 +122,17 @@ func (eng *Engine) Evaluate(e *event.Event) *Evaluation {
 			continue
 		}
 		tk := eng.targetKey(id, r, e)
-		if !eng.dedup.ReAlert(id, tk, dedupWindow(r)) {
+		// Baseline events bypass the per-rule time-window dedup. The baseline loop
+		// applies its OWN authoritative dedup (state.BaselineAlerted — the
+		// "alert once until reset" Option-A gate) before routing, so ReAlert here
+		// is redundant for them. Worse, ReAlert would suppress a baseline event
+		// whose Option-A mark was just cleared by a re-snapshot, racing the mark
+		// (applied before handleEvent) and silently swallowing the re-alert.
+		// Baseline scans run 24h apart, so the 15-min ReAlert never fires in
+		// steady state anyway — bypassing it is a no-op in production and fixes
+		// the reset edge case. Surfaced by the on-host log: scan after a reset
+		// showed alerted=64 but every entry suppressed=dedup-window.
+		if e.Source != event.SrcBaseline && !eng.dedup.ReAlert(id, tk, dedupWindow(r)) {
 			res.Suppressed = append(res.Suppressed, Suppression{id, r.Title, "dedup-window", *e})
 			continue
 		}

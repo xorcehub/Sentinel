@@ -384,6 +384,55 @@ func TestEID8_10ActorImagePopulated(t *testing.T) {
 	}
 }
 
+// TestBaselineEventsBypassReAlert pins the dedup-layer separation: baseline
+// pseudo-events are deduped by the app-layer Option-A gate (state.BaselineAlerted,
+// "alert once until reset"), NOT by the engine's 15-min time-window. Two
+// identical baseline events back-to-back must BOTH fire; the engine's ReAlert
+// must not suppress the second. (Sysmon events ARE time-window-deduped — that
+// path is covered by TestDedupWindow.) Surfaced by the on-host log, where a
+// scan after a baseline reset showed alerted=64 but every entry suppressed as
+// dedup-window because a prior scan was still in-window.
+func TestBaselineEventsBypassReAlert(t *testing.T) {
+	rules, err := sigmaeval.Load([]byte(`
+title: baseline catch-all
+id: 900bd68a-3e18-5491-a608-dd6858f7c7f9
+logsource: { product: sentinel-baseline }
+detection:
+  selection:
+    Source: baseline
+  condition: selection
+level: medium
+x-sentinel: { id: BASE-001, severity: suspicious }
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	eng, err := New(rules, nil, newMemDedup())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mk := func() *event.Event {
+		return &event.Event{Source: event.SrcBaseline, EID: 0,
+			Image: `C:\ProgramData\evil.exe`, TargetRegKey: `HKCU\...\Run\Evil`}
+	}
+	r1 := eng.Evaluate(mk())
+	if !contains(hitIDs(r1), "BASE-001") {
+		t.Fatalf("first baseline event should fire: %+v", r1)
+	}
+	// Second identical baseline event, milliseconds later. A Sysmon event would
+	// be suppressed here (dedup-window). Baseline MUST still fire — Option-A is
+	// the sole authoritative dedup and it's applied by the app, not the engine.
+	r2 := eng.Evaluate(mk())
+	if !contains(hitIDs(r2), "BASE-001") {
+		t.Fatalf("baseline events bypass ReAlert; second should also fire: %+v", r2)
+	}
+	for _, s := range r2.Suppressed {
+		if s.RuleID == "BASE-001" && s.Reason == "dedup-window" {
+			t.Fatalf("baseline event must not be dedup-window-suppressed: %+v", s)
+		}
+	}
+}
+
 // TestMatchedActorFallback asserts the display string is never empty even when
 // no actor field is populated (the "INJECT-001 on " bug).
 func TestMatchedActorFallback(t *testing.T) {

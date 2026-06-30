@@ -12,10 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"sentinel/internal/baseline"
 	"sentinel/internal/event"
 	"sentinel/internal/ingest/mock"
 	"sentinel/internal/rules"
 	"sentinel/internal/sigmaeval"
+	"sentinel/internal/state"
 )
 
 // A minimal in-memory Deduper satisfying rules.Deduper (avoids bbolt here so the
@@ -210,6 +212,101 @@ func TestNewRequiresLoggerAndIngester(t *testing.T) {
 	}
 	if _, err := New(Options{Logger: discardLogger()}); err == nil {
 		t.Error("expected error for missing Ingester")
+	}
+}
+
+// --- Phase 3d: baseline diff routing (Option A: alert once) ---
+
+// BASE-001 in Sigma form (matches rules.d/baseline.yml) — fires on any baseline
+// pseudo-event. Used by the routing test below.
+const baselineRuleYAML = `
+title: New persistence surface entry not in clean baseline
+id: 900bd68a-3e18-5491-a608-dd6858f7c7f9
+logsource: { product: sentinel-baseline }
+detection:
+  selection:
+    Source: baseline
+  condition: selection
+level: medium
+x-sentinel: { id: BASE-001, severity: suspicious }
+`
+
+// TestBaselineAlertOnceRoutesAndDedups is the headline Phase 3d test: a NEW
+// persistence entry routes through the engine and fires BASE-001 exactly once;
+// a second scan of the same entry stays quiet (Option A); after the alerted set
+// is reset (operator re-snapshotted the clean baseline), it fires again.
+func TestBaselineAlertOnceRoutesAndDedups(t *testing.T) {
+	rs, err := sigmaeval.Load([]byte(baselineRuleYAML))
+	if err != nil {
+		t.Fatalf("sigmaeval Load: %v", err)
+	}
+	// Realistic engine dedup (newFakeDedup: real 15-min ReAlert). This test runs
+	// all three scans within milliseconds, so WITHOUT the engine's baseline-
+	// bypass, scan 3 (post-reset) would be suppressed as dedup-window and hits
+	// would stay 1. Passing with the real dedup PINS the bypass: baseline events
+	// are deduped solely by the Option-A gate, never by the engine time-window.
+	eng, err := rules.New(rs, nil, newFakeDedup())
+	if err != nil {
+		t.Fatalf("rules.New: %v", err)
+	}
+
+	// Real state (bbolt, temp) for the alert-once set.
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer st.Close()
+
+	var hits atomic.Uint64
+	a, err := New(Options{
+		Logger:   discardLogger(),
+		Ingester: mock.New(), // empty; we drive baseline routing directly
+		Engine:   eng,
+		OnHit:    func(event.Hit) { hits.Add(1) },
+		Baseline: BaselineConfig{Enabled: true, State: st},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const runKey = `HKLM\Software\Microsoft\Windows\CurrentVersion\Run`
+	clean := baseline.Snapshot{Entries: []baseline.Entry{
+		{Location: runKey, Entry: "A"},
+	}}
+	dailyWithEvil := baseline.Snapshot{Entries: []baseline.Entry{
+		{Location: runKey, Entry: "A"},
+		{Location: runKey, Entry: "Evil", Launch: `C:\ProgramData\evil.exe`},
+	}}
+
+	// Scan 1: Evil is NEW and un-alerted → routed, BASE-001 fires once.
+	newN, fired := a.routeBaselineDiff(clean, dailyWithEvil)
+	if newN != 1 || fired != 1 {
+		t.Fatalf("scan 1: new=%d fired=%d, want 1/1", newN, fired)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("scan 1: hits=%d want 1", got)
+	}
+
+	// Scan 2: Evil still NEW vs clean, but already alerted → Option A: quiet.
+	newN2, fired2 := a.routeBaselineDiff(clean, dailyWithEvil)
+	if newN2 != 1 || fired2 != 0 {
+		t.Fatalf("scan 2: new=%d fired=%d, want 1/0 (Option A suppresses repeat)", newN2, fired2)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("scan 2: hits=%d want 1 (no new alert)", got)
+	}
+
+	// Operator re-snapshots the clean baseline → reset clears the alerted set,
+	// so the same Evil (still absent from clean) fires again on the next scan.
+	if err := st.ResetBaselineAlerted(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	newN3, fired3 := a.routeBaselineDiff(clean, dailyWithEvil)
+	if newN3 != 1 || fired3 != 1 {
+		t.Fatalf("scan 3 post-reset: new=%d fired=%d, want 1/1 (reset re-enables)", newN3, fired3)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Errorf("scan 3: hits=%d want 2 (Evil re-alerted after reset)", got)
 	}
 }
 

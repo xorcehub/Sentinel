@@ -19,7 +19,19 @@ import (
 // catch-all) and the alert is actionable. Note: existing behavior rules
 // (PERSIST-003 etc.) gate on a Sysmon EventID and will NOT fire on these EID=0
 // events by design - BASE-001 is the detector. See 06-BASELINE.md §4.
+//
+// Diff is a thin wrapper over DiffEntries + EntriesToEvents; callers that need
+// to dedup at the ENTRY level (e.g. the daemon's alert-once gate) use those.
 func Diff(clean, daily Snapshot) []event.Event {
+	return EntriesToEvents(DiffEntries(clean, daily))
+}
+
+// DiffEntries returns the NEW entries (present in daily, absent in clean),
+// sorted deterministically by Location then Entry. Same NEW-only / removed-
+// ignored semantics as Diff, but operates on entries so callers can apply their
+// own per-entry gating (e.g. the daemon's Option-A "alert once" dedup on
+// Entry.Key()) before converting to events.
+func DiffEntries(clean, daily Snapshot) []Entry {
 	seen := make(map[string]bool, len(clean.Entries))
 	for _, e := range clean.Entries {
 		seen[e.Key()] = true
@@ -41,10 +53,16 @@ func Diff(clean, daily Snapshot) []event.Event {
 		}
 		return newEntries[i].Entry < newEntries[j].Entry
 	})
+	return newEntries
+}
 
-	out := make([]event.Event, 0, len(newEntries))
+// EntriesToEvents converts NEW entries into baseline pseudo-events (one per
+// entry), timestamped now. Exposed so the daemon can filter entries (alert-once
+// dedup) and then convert only the survivors to events for routing.
+func EntriesToEvents(es []Entry) []event.Event {
+	out := make([]event.Event, 0, len(es))
 	now := time.Now()
-	for _, e := range newEntries {
+	for _, e := range es {
 		out = append(out, baselineEvent(e, now))
 	}
 	return out

@@ -9,7 +9,9 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,9 +20,11 @@ import (
 	"time"
 
 	"sentinel/internal/alert"
+	"sentinel/internal/baseline"
 	"sentinel/internal/event"
 	"sentinel/internal/ingest"
 	"sentinel/internal/rules"
+	"sentinel/internal/state"
 )
 
 // Options configures an App. Logger, Ingester are required; Engine, heartbeat
@@ -38,6 +42,14 @@ type Options struct {
 	// eventlog/toast) on its own goroutine(s). If nil, hits are only logged +
 	// passed to OnHit (Phase 1 behavior / tests).
 	Dispatcher *alert.Dispatcher
+
+	// Baseline configures the Phase 3 baseline diff loop (daily autorunsc
+	// capture diffed against a signed-off clean baseline; NEW entries fire
+	// BASE-001). Zero-value (Enabled=false) leaves the loop disabled. main.go
+	// enables it only when autorunsc64.exe is found, so hosts without Autoruns
+	// degrade silently. The loop runs in its own goroutine and never blocks
+	// ingestion or daemon launch.
+	Baseline BaselineConfig
 
 	// OnHit / OnEvent are optional callbacks (mainly for tests / self-test).
 	OnHit   func(event.Hit)
@@ -98,6 +110,17 @@ func (a *App) Run(ctx context.Context) error {
 		close(hbDone)
 	}
 	defer func() { <-hbDone }()
+
+	// Baseline diff loop (Phase 3d): async at-startup scan + daily ticker. Runs
+	// in its own goroutine so the ~7-10s autorunsc capture never blocks event
+	// ingestion or daemon launch. Drained at shutdown (below).
+	baselineDone := make(chan struct{})
+	if a.opts.Baseline.Enabled {
+		go a.baselineLoop(ctx, baselineDone)
+	} else {
+		close(baselineDone)
+	}
+	defer func() { <-baselineDone }()
 
 	for {
 		select {
@@ -221,4 +244,157 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// --- Phase 3d: baseline diff loop -------------------------------------------
+
+// BaselineConfig configures the baseline diff loop. See Options.Baseline.
+type BaselineConfig struct {
+	Enabled       bool
+	AutorunscPath string       // resolved path to autorunsc64.exe
+	CleanPath     string       // baseline_clean.csv — the signed-off reference
+	Hour          int          // daily scan hour 0-23 (0 → default 4)
+	State         *state.State // the alert-once store (nil-safe: checked at call site)
+}
+
+// baselineLoop runs a scan at startup (immediate) and then once daily at Hour.
+// A failed scan retries once after 15 minutes, then waits for the next
+// scheduled slot. Returns when ctx is cancelled. Runs in its own goroutine so
+// the autorunsc capture never blocks Run's event loop.
+func (a *App) baselineLoop(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	cfg := a.opts.Baseline
+	hour := cfg.Hour
+	if !(hour >= 0 && hour <= 23) {
+		hour = 4 // defensive: out-of-range → sensible default
+	}
+	a.log.Info("baseline loop starting", "hour", hour, "clean", cfg.CleanPath)
+
+	// At-startup scan: immediate, one retry 15m later on failure. Covers
+	// "persistence landed while Sentinel was down" without delaying launch.
+	a.baselineScanWithRetry(ctx, 1, 15*time.Minute, "startup")
+
+	// Daily at Hour (local wall clock). If the machine was asleep/off at Hour,
+	// the timer fires on wake (Go timers don't account for suspend), so a
+	// missed slot is caught up rather than skipped.
+	for {
+		next := nextDailyHour(hour)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Until(next)):
+			a.baselineScanWithRetry(ctx, 1, 15*time.Minute, "daily")
+		}
+	}
+}
+
+// baselineScanWithRetry runs runBaselineScan up to 1+retries times, sleeping
+// interval between attempts. Logs each failure; gives up (until the next
+// scheduled call) after retries are exhausted.
+func (a *App) baselineScanWithRetry(ctx context.Context, retries int, interval time.Duration, tag string) {
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			a.log.Warn("baseline scan retrying after failure", "tag", tag, "in", interval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+			}
+		}
+		if err := a.runBaselineScan(ctx); err != nil {
+			a.log.Warn("baseline scan failed", "tag", tag, "attempt", attempt+1, "err", err)
+			continue
+		}
+		return
+	}
+	a.log.Error("baseline scan retries exhausted; next attempt at scheduled time", "tag", tag)
+}
+
+// runBaselineScan captures the current state, diffs against the clean baseline,
+// and routes NEW-and-not-yet-alerted entries through handleEvent so BASE-001
+// fires (toast/log/eventlog). Option A: each (location,entry) alerts ONCE, then
+// stays quiet until the clean baseline is re-snapshotted (which resets the
+// alerted set via state.ResetBaselineAlerted).
+func (a *App) runBaselineScan(ctx context.Context) error {
+	cfg := a.opts.Baseline
+
+	// Baseline is meaningless without the engine (BASE-001 wouldn't evaluate).
+	// Skip rather than mark-without-fire (would burn an entry's one alert).
+	if a.opts.Engine == nil {
+		a.log.Debug("baseline scan skipped (no engine / raw mode)")
+		return nil
+	}
+	// State holds the alert-once set; without it we cannot prevent re-alerting
+	// every scan, so skip rather than spam. (main.go always sets State when
+	// Enabled; this guard is purely defensive against misconfiguration.)
+	if cfg.State == nil {
+		a.log.Warn("baseline scan skipped (no dedup state configured)")
+		return nil
+	}
+
+	// Clean baseline missing → actionable but not retryable. Warn and skip;
+	// retrying won't create the file. The operator must run --baseline-snapshot.
+	cleanRaw, err := os.ReadFile(cfg.CleanPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			a.log.Warn("no clean baseline; skipping scan. Create one: sentinel --baseline-snapshot", "path", cfg.CleanPath)
+			return nil
+		}
+		return fmt.Errorf("read clean baseline: %w", err)
+	}
+	clean, err := baseline.Parse(bytes.NewReader(cleanRaw), time.Now())
+	if err != nil {
+		return fmt.Errorf("parse clean baseline: %w", err)
+	}
+
+	dailyRaw, err := baseline.Capture(ctx, cfg.AutorunscPath, a.log)
+	if err != nil {
+		return fmt.Errorf("capture: %w", err)
+	}
+	daily, err := baseline.Parse(bytes.NewReader(dailyRaw), time.Now())
+	if err != nil {
+		return fmt.Errorf("parse daily capture: %w", err)
+	}
+
+	newN, fired := a.routeBaselineDiff(clean, daily)
+	a.log.Info("baseline scan complete",
+		"new", newN, "alerted", fired, "already_alerted", newN-fired,
+		"clean", len(clean.Entries), "daily", len(daily.Entries))
+	return nil
+}
+
+// routeBaselineDiff diffs daily against the clean baseline and routes every
+// NEW-and-not-yet-alerted entry through handleEvent (-> engine -> BASE-001 ->
+// dispatcher: toast/log/eventlog). Returns (newEntryCount, firedCount).
+//
+// Pure logic, separated from the autorunsc capture so the Option-A alert-once
+// behavior is testable without shelling out. Option A: each Entry.Key() alerts
+// ONCE; subsequent scans of the same unaddressed entry stay quiet until
+// state.ResetBaselineAlerted() (triggered by re-snapshotting the clean baseline).
+func (a *App) routeBaselineDiff(clean, daily baseline.Snapshot) (newN, fired int) {
+	newEntries := baseline.DiffEntries(clean, daily)
+	newN = len(newEntries)
+	for _, e := range newEntries {
+		if a.opts.Baseline.State.BaselineAlerted(e.Key()) {
+			continue // already alerted on a prior scan → Option A: stay quiet
+		}
+		a.opts.Baseline.State.MarkBaselineAlerted(e.Key())
+		for _, ev := range baseline.EntriesToEvents([]baseline.Entry{e}) {
+			a.handleEvent(ev) // -> engine -> BASE-001 -> dispatcher (toast/log/eventlog)
+			fired++
+		}
+	}
+	return newN, fired
+}
+
+// nextDailyHour returns the next wall-clock time at h:00 local that is strictly
+// after now. Used to schedule the daily baseline scan. If the machine was
+// asleep past h:00, time.After fires on wake and the scan catches up.
+func nextDailyHour(h int) time.Time {
+	now := time.Now()
+	next := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
+	for !next.After(now) {
+		next = next.Add(24 * time.Hour)
+	}
+	return next
 }
