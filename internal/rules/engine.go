@@ -42,6 +42,7 @@ type Allowlist interface {
 	CmdLineInDevScripts(cmdline string) bool
 	DstInCIDR(ip string) bool
 	DstIsKnownLoopback(ip string, port int) bool
+	IsLogNoise(e *event.Event) bool // log-only filter; never consulted by Evaluate
 }
 
 // Deduper is the dedup state subset internal/state.State satisfies.
@@ -147,6 +148,20 @@ func (eng *Engine) Evaluate(e *event.Event) *Evaluation {
 		res.Hits = append(res.Hits, h)
 	}
 	return res
+}
+
+// IsLogNoise exposes the allowlist's event_log_filter so the app layer can drop
+// the per-event DEBUG dump line for configured noise. It is deliberately NOT
+// consulted by Evaluate — rule evaluation never depends on this, so filtering
+// the dump can never cause a false negative (real hits are logged on the "HIT"
+// line produced above). Nil-safe: a nil Engine (raw passthrough) or nil
+// allowlist returns false, so the dump stays on in those modes (safe and useful
+// for tuning).
+func (eng *Engine) IsLogNoise(e *event.Event) bool {
+	if eng == nil || eng.al == nil {
+		return false
+	}
+	return eng.al.IsLogNoise(e)
 }
 
 // ---- except (allowlist subtraction) ----

@@ -13,3 +13,4 @@ baseline_clean.csv
 self-test.txt
 baseline-now.txt
 baseline-snapshot.txt
+*.7z

@@ -17,6 +17,13 @@
 // the script in the commandline suppresses ONLY the named dev workflow while
 // keeping EXEC-001 armed for everything else.
 //
+// Optional sixth section, event_log_filter, is NOT an `except` operator and is
+// not consumed by the rule engine — it is a log-only noise filter read by the
+// app layer. Each entry is an AND of its predicates (eid / image / cmdline); an
+// event matching ANY entry suppresses ONLY the per-event DEBUG dump line. Rule
+// evaluation is unaffected: real hits are logged on a separate "HIT" line and
+// never depend on that dump. See IsLogNoise and the app layer's handleEvent.
+//
 // The allowlist file is JSONC (allows // comments), matching the docs' format.
 // We strip comments before json.Unmarshal so the operator can annotate freely.
 package allowlist
@@ -43,6 +50,19 @@ type Allowlist struct {
 	devScript []*regexp.Regexp      // commandline anchors (dev scripts run via a LOLBin)
 	cidrs     []*net.IPNet
 	loopback  map[string]bool       // "host:port" lowercased
+	logFilter []*logFilterEntry     // event_log_filter: suppresses the per-event DEBUG dump only
+}
+
+// logFilterEntry is one AND-conjunction rule from the optional event_log_filter
+// allowlist section. A zero/nil field means "match anything" (predicate
+// omitted). IsLogNoise reports a match when every SET predicate agrees, so an
+// entry like {eid:11, image:powershell, cmdline:"^$"} matches ONLY PowerShell
+// FileCreate with an empty command line — a same-image event carrying a command
+// fails the cmdline clause and is still logged.
+type logFilterEntry struct {
+	eid     int            // 0 = any EID
+	image   *regexp.Regexp // nil = any image; matched on the normalized lower path
+	cmdline *regexp.Regexp // nil = any cmdline; matched on the raw (un-normalized) cmdline
 }
 
 // Load reads and compiles a JSONC allowlist file.
@@ -104,7 +124,41 @@ func Compile(jsonBytes []byte) (*Allowlist, error) {
 	for _, e := range doc.KnownLoopbackListeners {
 		a.loopback[strings.ToLower(strings.TrimSpace(e))] = true
 	}
+	for _, f := range doc.EventLogFilter {
+		ent, err := compileFilter(f)
+		if err != nil {
+			return nil, err
+		}
+		a.logFilter = append(a.logFilter, ent)
+	}
 	return a, nil
+}
+
+// compileFilter compiles one event_log_filter entry. eid 0 and empty image/cmd
+// are wildcards (left nil/0). An entry with NO predicate set is rejected: it
+// would match every event and silently blank the per-event DEBUG dump. Regexes
+// get the same case-insensitive prefix and normalized-path matching contract as
+// trusted_binaries / dev_tool_paths.
+func compileFilter(f filterRaw) (*logFilterEntry, error) {
+	ent := &logFilterEntry{eid: f.EID}
+	if img := strings.TrimSpace(f.Image); img != "" {
+		re, err := regexp.Compile("(?i)" + img)
+		if err != nil {
+			return nil, fmt.Errorf("bad event_log_filter image regex %q: %w", img, err)
+		}
+		ent.image = re
+	}
+	if cmd := strings.TrimSpace(f.Cmdline); cmd != "" {
+		re, err := regexp.Compile("(?i)" + cmd)
+		if err != nil {
+			return nil, fmt.Errorf("bad event_log_filter cmdline regex %q: %w", cmd, err)
+		}
+		ent.cmdline = re
+	}
+	if ent.eid == 0 && ent.image == nil && ent.cmdline == nil {
+		return nil, fmt.Errorf("event_log_filter entry must set at least one of eid/image/cmdline (an all-wildcard entry would suppress every event's debug dump line)")
+	}
+	return ent, nil
 }
 
 // ImageTrusted reports whether the event's acting process is trusted:
@@ -197,6 +251,36 @@ func (a *Allowlist) DstIsKnownLoopback(ip string, port int) bool {
 	return a.loopback[key]
 }
 
+// IsLogNoise reports whether ev matches any event_log_filter entry. It is used
+// ONLY to suppress the per-event DEBUG dump line in the app layer; it NEVER
+// affects rule evaluation. An entry matches when ALL of its set predicates agree
+// (AND within an entry; OR across entries). An omitted field is a wildcard.
+//
+// The per-entry AND is the 1:1 safety contract: {eid:11, image:powershell,
+// cmdline:"^$"} suppresses ONLY PowerShell FileCreate with an empty command
+// line; the same event carrying a command fails the cmdline clause and still
+// logs. image is matched on the normalized lower path (same contract as
+// ImageTrusted); cmdline on the raw value. A nil Allowlist or nil event is safe.
+func (a *Allowlist) IsLogNoise(e *event.Event) bool {
+	if a == nil || e == nil || len(a.logFilter) == 0 {
+		return false
+	}
+	np := pathnorm.NormalizePath(e.Image)
+	for _, ent := range a.logFilter {
+		if ent.eid != 0 && ent.eid != e.EID {
+			continue
+		}
+		if ent.image != nil && !ent.image.MatchString(np) {
+			continue
+		}
+		if ent.cmdline != nil && !ent.cmdline.MatchString(e.CmdLine) {
+			continue
+		}
+		return true // every set predicate matched
+	}
+	return false
+}
+
 // --- raw document schema (matches docs/04-TELEMETRY.md §2) ---
 
 type rawDoc struct {
@@ -214,6 +298,20 @@ type rawDoc struct {
 	// dev_scripts: commandline anchors (regex), NOT image paths. Flat array —
 	// see CmdLineInDevScripts / the package doc for why this set is CmdLine-based.
 	DevScripts []string `json:"dev_scripts"`
+
+	// event_log_filter: optional log-only noise filter (NOT an except operator).
+	// AND within an entry, OR across entries; suppresses only the per-event
+	// DEBUG dump line. See IsLogNoise.
+	EventLogFilter []filterRaw `json:"event_log_filter"`
+}
+
+// filterRaw is the JSON shape of one event_log_filter entry. eid 0 and empty
+// image/cmdline are wildcards; at least one field must be set (enforced in
+// compileFilter) so an entry can never suppress every event's debug line.
+type filterRaw struct {
+	EID     int    `json:"eid"`
+	Image   string `json:"image"`
+	Cmdline string `json:"cmdline"`
 }
 
 // stripJSONC removes // line comments that are outside double-quoted strings,

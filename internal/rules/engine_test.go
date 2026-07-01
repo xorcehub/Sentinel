@@ -122,6 +122,11 @@ func (a *fakeAL) DstIsKnownLoopback(ip string, port int) bool {
 	return a.loopback[strings.ToLower(ip)+":"+strconv.Itoa(port)]
 }
 
+// IsLogNoise stub: the engine unit tests exercise detection, not the app-layer
+// log filter, so they never want dump suppression. Returning false keeps every
+// event's dump visible and satisfies the extended Allowlist interface.
+func (a *fakeAL) IsLogNoise(e *event.Event) bool { return false }
+
 type memDedup struct {
 	mu   sync.Mutex
 	max  uint64

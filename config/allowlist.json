@@ -71,5 +71,32 @@
   // and relative (-File ./scripts/pe-triage-docker.ps1) invocations.
   "dev_scripts": [
     "pe-triage-docker\\.ps1"
+  ],
+
+  // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the
+  // per-event DEBUG dump line (the raw "every event" telemetry) — it does NOT
+  // affect rule evaluation, so a real HIT still alerts and logs on its own
+  // "HIT" line regardless of this section.
+  //
+  // Semantics: AND of set fields WITHIN an entry, OR ACROSS entries. A field
+  // is "set" only when you provide it; an omitted field is a wildcard. The
+  // per-entry AND is what keeps this 1:1 safe: e.g. the powershell entry below
+  // matches ONLY eid=11 (FileCreate) by powershell.exe with an EMPTY command
+  // line — a powershell eid=11 that carries a command fails the "cmdline":"^$"
+  // clause and is still logged.
+  //
+  // Escaping: same as trusted_binaries — 4 backslashes per literal path
+  // separator (regex \\), 2 before a literal dot (regex \.). image regexes
+  // are matched on the normalized lower path (e.g. c:\windows\...). cmdline
+  // regexes on the raw command line, case-insensitive.
+  "event_log_filter": [
+    // #1: PowerShell FileCreate (eid 11) with no command line. This was ~24k
+    // lines/day of pure noise — eid 11 carries no cmdline, and the real
+    // persistence/config rules key on TargetFilename, not this dump line.
+    { "eid": 11, "image": "\\\\windowspowershell\\\\v1\\.0\\\\powershell\\.exe$", "cmdline": "^$" },
+    // #2: the editor's (Cursor) git poller firing check-ignore / rev-parse /
+    // log --max-count / ls-files every couple seconds. ~20k lines/day. Read-
+    // only inspection; no detection rule keys on these git subcommands.
+    { "image": "\\\\git\\\\.*\\\\git\\.exe$", "cmdline": "(check-ignore|rev-parse|--max-count|ls-files)" }
   ]
 }

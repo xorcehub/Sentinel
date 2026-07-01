@@ -146,13 +146,20 @@ func (a *App) handleEvent(ev event.Event) {
 	if a.opts.OnEvent != nil {
 		a.opts.OnEvent(ev)
 	}
-	a.log.Debug("event",
-		"eid", ev.EID,
-		"source", ev.Source,
-		"recordid", ev.RecordID,
-		"image", ev.Image,
-		"cmd", truncate(ev.CmdLine, 160),
-		"dst", ev.DstIP)
+	// Per-event DEBUG dump. Suppressed when the allowlist's event_log_filter
+	// matches (config-driven, AND-within-entry). This is log-only — Evaluate
+	// runs regardless below, so filtering the dump can never drop a detection.
+	// Engine.IsLogNoise is nil-safe, so raw-passthrough mode (nil Engine) keeps
+	// the full dump (useful for tuning).
+	if !a.opts.Engine.IsLogNoise(&ev) {
+		a.log.Debug("event",
+			"eid", ev.EID,
+			"source", ev.Source,
+			"recordid", ev.RecordID,
+			"image", ev.Image,
+			"cmd", truncate(ev.CmdLine, 160),
+			"dst", ev.DstIP)
+	}
 
 	if a.opts.Engine == nil {
 		return // raw passthrough — Phase 1
@@ -174,7 +181,15 @@ func (a *App) handleEvent(ev event.Event) {
 		}
 	}
 	for _, s := range res.Suppressed {
-		a.stats.suppressed.Add(1)
+		a.stats.suppressed.Add(1) // counter always increments — no audit loss
+		// allowlist = known-good by definition; logging that decision per-event
+		// floods the log (e.g. cursor.exe NET-002/003/004). Route it to DEBUG
+		// (visible when tuning, silent at the default INFO level) while keeping
+		// dedup-window (real rate-limiting of a live hit) at INFO.
+		if s.Reason == "allowlist" {
+			a.log.Debug("suppressed (allowlist)", "rule", s.RuleID, "image", s.Event.Image)
+			continue
+		}
 		a.log.Info("suppressed",
 			"rule", s.RuleID,
 			"reason", s.Reason,
