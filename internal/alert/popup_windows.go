@@ -74,13 +74,11 @@ func formatPopup(h event.Hit) (text, caption string) {
 		"Rule:   %s  (%s)\n"+
 			"Time:   %s\n"+
 			"Proc:   %s\n"+
-			"  cmd:  %s\n"+
-			"Parent: %s",
+			"  cmd:  %s",
 		h.RuleID, h.RuleName,
 		h.Event.Time.Format("2006-01-02 15:04:05"),
 		h.Event.Image,
 		trunc(h.Event.CmdLine, 300),
-		h.Event.ParentImage,
 	)
 	// Rule-relevant context (dst IP, victim process, loaded DLL, target file…)
 	// so a critical popup is actionable without opening the log.

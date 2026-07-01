@@ -65,6 +65,39 @@ func TestLogAlerterFormat(t *testing.T) {
 // a NET-002 hit must surface the dst IP:port/proto, not just image+cmd. The
 // original formatHit hardcoded only those two fields and dropped DstIP/DstPort
 // even though they were parsed and carried in Hit.Event.
+// TestLogAlerterShowsParent is the regression for the PERSIST-001/EXEC-001
+// gap: a hit spawned by a dev tool (cursor.exe -> powershell.exe -> Temp\ps.ps1)
+// looked like malware in ALERTS.log/EventLog because only the popup surfaced the
+// parent. Now contextLines emits parent/pcmd, so all channels agree and the
+// lineage is visible without opening the popup.
+func TestLogAlerterShowsParent(t *testing.T) {
+	var buf bytes.Buffer
+	la := NewLogAlerterTo(&buf)
+	h := event.Hit{
+		RuleID: "PERSIST-001", RuleName: "Scheduled task with bypass/headless from user-writable path",
+		Severity: event.SevCritical,
+		Event: event.Event{
+			EID:           1,
+			Image:         `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			CmdLine:       `powershell.exe -ExecutionPolicy Bypass -File C:\Users\j\AppData\Local\Temp\ps-script-xyz.ps1`,
+			ParentImage:   `C:\Users\j\AppData\Local\Programs\cursor\Cursor.exe`,
+			ParentCmdLine: `C:\Users\j\AppData\Local\Programs\cursor\Cursor.exe`,
+		},
+		Matched: "PERSIST-001 on powershell.exe",
+		AlertTo: []string{"popup", "toast", "log", "eventlog"},
+		Time:    time.Date(2026, 7, 1, 17, 36, 31, 0, time.UTC),
+	}
+	if err := la.Alert(h); err != nil {
+		t.Fatalf("Alert: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"rule=PERSIST-001", "parent:", "\\cursor\\Cursor.exe", "pcmd  :"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in output:\n%s", want, out)
+		}
+	}
+}
+
 func TestLogAlerterShowsNetworkContext(t *testing.T) {
 	var buf bytes.Buffer
 	la := NewLogAlerterTo(&buf)
@@ -104,6 +137,8 @@ func TestContextLines(t *testing.T) {
 		want []string
 	}{
 		{name: "process create (no context)", ev: event.Event{Image: "a.exe"}, want: nil},
+		{name: "process create + parent lineage", ev: event.Event{Image: `C:\Windows\System32\powershell.exe`, ParentImage: `C:\cursor.exe`, ParentCmdLine: `cursor.exe --run-extension`},
+			want: []string{"parent: C:\\cursor.exe", "pcmd  : cursor.exe --run-extension"}},
 		{name: "network", ev: event.Event{DstIP: "1.2.3.4", DstPort: 80, DstProto: "tcp"},
 			want: []string{"dst   : 1.2.3.4:80/tcp"}},
 		{name: "network no port", ev: event.Event{DstIP: "1.2.3.4"},

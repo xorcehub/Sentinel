@@ -122,14 +122,27 @@ func formatHit(h event.Hit) string {
 }
 
 // contextLines returns human-readable "label : value" lines for whichever Event
-// fields are non-empty AND relevant to the hit's EID. Process-create alerts
-// (EID 1) have none of these set, so they stay compact (just image+cmd).
-// Network / injection / file / registry / DNS alerts gain the context that
-// makes them actionable — the dst IP:port, the victim process, the loaded DLL,
-// the target file, etc. Shared by LogAlerter, PopupAlerter, EventLogAlerter so
-// every channel surfaces the same context (05-ALERTING.md observability).
+// fields are non-empty AND relevant to the hit. The parent process (parent/pcmd)
+// is universal — present on every real Sysmon event — so it leads the block:
+// process lineage is the most useful triage field when the acting image is
+// generic (powershell.exe) and the parent (e.g. cursor.exe) disambiguates a dev
+// tool from malware. The rest is EID-specific — network / injection / file /
+// registry / DNS alerts gain the dst IP:port, victim process, loaded DLL, target
+// file, etc. An event with no parent and no EID-specific context stays compact
+// (just image+cmd). Shared by LogAlerter, PopupAlerter, EventLogAlerter so every
+// channel surfaces the same context (05-ALERTING.md observability) — including
+// the parent, which previously only the popup surfaced (hardcoded in formatPopup).
 func contextLines(e event.Event) []string {
 	var lines []string
+	// Parent process — universal (every Sysmon event carries it). Emitted first
+	// so lineage reads Proc → cmd → parent → [specific context]. See the comment
+	// above for why this matters for generic-image alerts (powershell/cursor).
+	if e.ParentImage != "" {
+		lines = append(lines, fmt.Sprintf("%-6s: %s", "parent", e.ParentImage))
+		if e.ParentCmdLine != "" {
+			lines = append(lines, fmt.Sprintf("%-6s: %s", "pcmd", trunc(e.ParentCmdLine, 160)))
+		}
+	}
 	// EID 3 (NetworkConnect)
 	if e.DstIP != "" {
 		dst := e.DstIP
