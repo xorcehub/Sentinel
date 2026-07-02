@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"sentinel/internal/alert"
 	"sentinel/internal/baseline"
 	"sentinel/internal/event"
 	"sentinel/internal/ingest/mock"
@@ -323,3 +325,73 @@ func hugeEventStream() []event.Event {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// TestHitIDCorrelatesLogsAndAlerts is the end-to-end correlation guarantee: the
+// hid stamped on a Hit must appear BOTH in the structured-log msg=HIT line AND
+// in the ALERTS.log block, so the two logs join on an exact token match instead
+// of a colliding timestamp. Uses OnHit (which receives the fully-stamped Hit,
+// including h.ID set by buildHit) to drive the same Hit through a LogAlerter,
+// mirroring how the real dispatcher writes ALERTS.log.
+func TestHitIDCorrelatesLogsAndAlerts(t *testing.T) {
+	eng := newTestEngine(t) // nil allowlist -> nothing suppressed; hits pass through
+
+	var slogBuf bytes.Buffer
+	var alertsBuf bytes.Buffer
+	la := alert.NewLogAlerterTo(&alertsBuf)
+
+	app, err := New(Options{
+		Logger:   slog.New(slog.NewTextHandler(&slogBuf, nil)),
+		Ingester: mock.New(event.Event{EID: 1, Image: `C:\Windows\System32\conhost.exe`, CmdLine: `conhost.exe --headless powershell -ep bypass -file "C:\ProgramData\x.ps1"`}),
+		Engine:   eng,
+		OnHit:    func(h event.Hit) { _ = la.Alert(h) },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := app.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if app.Hits() == 0 {
+		t.Fatal("expected at least one hit")
+	}
+
+	slogOut := slogBuf.String()
+	alertsOut := alertsBuf.String()
+
+	// Extract the hid token from the msg=HIT line.
+	hidLine := ""
+	for _, line := range strings.Split(slogOut, "\n") {
+		if strings.Contains(line, "msg=HIT") {
+			hidLine = line
+			break
+		}
+	}
+	if hidLine == "" {
+		t.Fatalf("no msg=HIT line in structured log:\n%s", slogOut)
+	}
+	hid := extractKV(hidLine, "hid=")
+	if hid == "" {
+		t.Fatalf("msg=HIT line has no hid= token:\n%s", hidLine)
+	}
+	if !strings.HasPrefix(hid, "R-") {
+		t.Errorf("hid %q should start with R-", hid)
+	}
+	// The SAME hid must appear in the ALERTS.log block.
+	if !strings.Contains(alertsOut, "hid="+hid) {
+		t.Errorf("hid %q from msg=HIT not found in ALERTS.log block:\n%s", hid, alertsOut)
+	}
+}
+
+// extractKV pulls the value of key (e.g. "hid=") from a slog text line up to
+// the next space. Returns "" if absent.
+func extractKV(line, key string) string {
+	i := strings.Index(line, key)
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+len(key):]
+	if j := strings.IndexByte(rest, ' '); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest
+}

@@ -168,10 +168,12 @@ func (a *App) handleEvent(ev event.Event) {
 	for _, h := range res.Hits {
 		a.stats.hits.Add(1)
 		a.log.Info("HIT",
+			"hid", h.ID,
 			"rule", h.RuleID,
 			"severity", h.Severity,
 			"alert", h.AlertTo,
 			"image", h.Event.Image,
+			"rec", h.Event.RecordID,
 			"matched", truncate(h.Matched, 120))
 		if a.opts.Dispatcher != nil {
 			a.opts.Dispatcher.Submit(h) // non-blocking; drops+counts on overflow
@@ -187,10 +189,11 @@ func (a *App) handleEvent(ev event.Event) {
 		// (visible when tuning, silent at the default INFO level) while keeping
 		// dedup-window (real rate-limiting of a live hit) at INFO.
 		if s.Reason == "allowlist" {
-			a.log.Debug("suppressed (allowlist)", "rule", s.RuleID, "image", s.Event.Image)
+			a.log.Debug("suppressed (allowlist)", "hid", s.ID, "rule", s.RuleID, "image", s.Event.Image)
 			continue
 		}
 		a.log.Info("suppressed",
+			"hid", s.ID,
 			"rule", s.RuleID,
 			"reason", s.Reason,
 			"image", s.Event.Image)

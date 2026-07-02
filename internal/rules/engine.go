@@ -63,12 +63,16 @@ type Engine struct {
 
 	// per-rule flood rollers
 	floods sync.Map // ruleID -> *roller
+
+	// per-run alert-correlation ID generator (see id.go). One per engine; IDs are
+	// stamped on every Hit and Suppression so logs/alerts join on a stable key.
+	idGen *hitIDGen
 }
 
 // New builds an engine. rules and al may be nil (engine becomes a no-op / always
 // non-suppressed); dedup must be non-nil for correct sweep behavior.
 func New(rules []*sigmaeval.Rule, al Allowlist, dedup Deduper) (*Engine, error) {
-	eng := &Engine{rules: rules, al: al, dedup: dedup, tmpls: map[string]*template.Template{}}
+	eng := &Engine{rules: rules, al: al, dedup: dedup, tmpls: map[string]*template.Template{}, idGen: newHitIDGen()}
 	for _, r := range rules {
 		id := ruleID(r)
 		if r.XTargetKey == "" {
@@ -96,6 +100,7 @@ type Suppression struct {
 	RuleID   string
 	RuleName string
 	Reason   string // "allowlist" | "dedup-window"
+	ID       string // per-suppression correlation key; same scheme/format as Hit.ID. Stamped so a dedup-window suppression in sentinel.log cross-refs its event.
 	Event    event.Event
 }
 
@@ -120,7 +125,7 @@ func (eng *Engine) Evaluate(e *event.Event) *Evaluation {
 		}
 		id := ruleID(r)
 		if eng.exceptSuppresses(r, e) {
-			res.Suppressed = append(res.Suppressed, Suppression{id, r.Title, "allowlist", *e})
+			res.Suppressed = append(res.Suppressed, Suppression{RuleID: id, RuleName: r.Title, Reason: "allowlist", ID: eng.idGen.Next(), Event: *e})
 			continue
 		}
 		tk := eng.targetKey(id, r, e)
@@ -135,7 +140,7 @@ func (eng *Engine) Evaluate(e *event.Event) *Evaluation {
 		// the reset edge case. Surfaced by the on-host log: scan after a reset
 		// showed alerted=64 but every entry suppressed=dedup-window.
 		if e.Source != event.SrcBaseline && !eng.dedup.ReAlert(id, tk, dedupWindow(r)) {
-			res.Suppressed = append(res.Suppressed, Suppression{id, r.Title, "dedup-window", *e})
+			res.Suppressed = append(res.Suppressed, Suppression{RuleID: id, RuleName: r.Title, Reason: "dedup-window", ID: eng.idGen.Next(), Event: *e})
 			continue
 		}
 		h := eng.buildHit(r, e, tk)
@@ -276,9 +281,10 @@ func dedupWindow(r *sigmaeval.Rule) time.Duration {
 	return 15 * time.Minute
 }
 
-func (eng *Engine) buildHit(r *sigmaeval.Rule, e *event.Event, targetKey string) event.Hit {
+	func (eng *Engine) buildHit(r *sigmaeval.Rule, e *event.Event, targetKey string) event.Hit {
 	sev := severity(r)
 	return event.Hit{
+		ID:       eng.idGen.Next(),
 		RuleID:   ruleID(r),
 		RuleUUID: r.ID,
 		RuleName: r.Title,

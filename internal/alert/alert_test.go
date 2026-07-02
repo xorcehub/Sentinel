@@ -126,10 +126,53 @@ func TestLogAlerterShowsNetworkContext(t *testing.T) {
 	}
 }
 
-// TestContextLines covers every EID family: process-create (empty), network,
-// image-load (+signed), process-access (target+access), file, registry, DNS.
-// Ensures each non-empty field yields a labeled line and empty fields stay
-// absent (so EID 1 alerts remain compact).
+// TestLogAlerterShowsHidAndRec is the correlation guarantee: the ALERTS.log
+// block must carry the hit's hid so it joins 1:1 with the msg=HIT line in
+// sentinel.log, plus rec (source Sysmon EventRecordID) for pivoting to Event
+// Viewer. rec is OMITTED for baseline pseudo-events (RecordID=0).
+func TestLogAlerterShowsHidAndRec(t *testing.T) {
+	var buf bytes.Buffer
+	la := NewLogAlerterTo(&buf)
+	const hid = "R-20260701-K7Q3F-000042"
+	h := event.Hit{
+		ID:       hid,
+		RuleID:   "PERSIST-001",
+		RuleName: "Scheduled task with bypass",
+		Severity: event.SevCritical,
+		Event: event.Event{
+			RecordID: 280954,
+			Image:    `C:\Windows\System32\powershell.exe`,
+			CmdLine:  `powershell.exe -ExecutionPolicy Bypass -File C:\Users\j\Temp\x.ps1`,
+		},
+		Matched: "PERSIST-001 on powershell.exe",
+		AlertTo: []string{"popup", "log", "eventlog"},
+		Time:    time.Date(2026, 7, 1, 17, 36, 31, 0, time.UTC),
+	}
+	if err := la.Alert(h); err != nil {
+		t.Fatalf("Alert: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"hid=" + hid, "rec=280954", "rule=PERSIST-001"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in output:\n%s", want, out)
+		}
+	}
+
+	// Baseline pseudo-event (RecordID=0): rec must NOT appear (0 is meaningless).
+	var buf2 bytes.Buffer
+	la2 := NewLogAlerterTo(&buf2)
+	if err := la2.Alert(event.Hit{
+		ID: hid, RuleID: "BASE-001", Severity: event.SevSuspicious,
+		Event:   event.Event{Image: `C:\x.exe`}, // RecordID zero-value
+		Matched: "BASE-001", Time: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Alert baseline: %v", err)
+	}
+	if out2 := buf2.String(); strings.Contains(out2, "rec=") {
+		t.Errorf("baseline hit (RecordID=0) must omit rec, got:\n%s", out2)
+	}
+}
+
 func TestContextLines(t *testing.T) {
 	cases := []struct {
 		name string

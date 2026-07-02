@@ -35,6 +35,7 @@ const (
 
 // Hit is what a rule produces when an Event matches.
 type Hit struct {
+	ID        string   // per-alert correlation key; R-YYYYMMDD-<nonce>-<NNNNNN> (05-ALERTING.md §5). Stamped once in rules.buildHit; emitted by every channel so sentinel.log and ALERTS.log join on this key, not a colliding timestamp.
 	RuleID    string   // x-sentinel.id mnemonic (stable); falls back to Sigma title
 	RuleUUID  string   // canonical Sigma id
 	RuleName  string   // Sigma title

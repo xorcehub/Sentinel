@@ -43,8 +43,8 @@ func (e *EventLogAlerter) Alert(h event.Hit) error {
 	// Build the event body. Image/Cmd first (always relevant), then rule-specific
 	// context (dst IP, victim process, loaded DLL, target file…), then the match.
 	var body strings.Builder
-	fmt.Fprintf(&body, "[%s] %s\nRule: %s\nProc: %s\nCmd: %s",
-		upper(string(h.Severity)), h.RuleName, h.RuleID,
+	fmt.Fprintf(&body, "[%s] %s\nHID: %s\nRule: %s\nProc: %s\nCmd: %s",
+		upper(string(h.Severity)), h.RuleName, h.ID, h.RuleID,
 		h.Event.Image, trunc(h.Event.CmdLine, 300))
 	for _, line := range contextLines(h.Event) {
 		fmt.Fprintf(&body, "\n%s", line)

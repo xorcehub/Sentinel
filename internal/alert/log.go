@@ -103,9 +103,17 @@ func formatHit(h event.Hit) string {
 		ts = time.Now()
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[%s] %-8s rule=%-12s title=%s\n    image : %s\n    cmd   : %s",
-		ts.Format(time.RFC3339),
-		upper(string(h.Severity)),
+	// Header carries the correlation key (hid) so this block joins 1:1 with the
+	// msg=HIT line in sentinel.log, plus rec (source Sysmon EventRecordID) so an
+	// analyst can pivot to the raw event in Event Viewer. rec is omitted for
+	// baseline pseudo-events (RecordID == 0) since 0 carries no Sysmon event.
+	hdr := fmt.Sprintf("[%s] %-8s hid=%s ",
+		ts.Format(time.RFC3339), upper(string(h.Severity)), h.ID)
+	if h.Event.RecordID > 0 {
+		hdr += fmt.Sprintf("rec=%d ", h.Event.RecordID)
+	}
+	fmt.Fprintf(&b, "%srule=%-12s title=%s\n    image : %s\n    cmd   : %s",
+		hdr,
 		h.RuleID,
 		h.RuleName,
 		h.Event.Image,
