@@ -12,6 +12,7 @@ heartbeat_path  = "heartbeat.log"           # periodic alive+counts (05-ALERTING
 
 # --- logging ---
 debug           = true                      # debug-level during Phase 1; drop to info after tuning
+trace_events    = false                     # log every raw Sysmon event at DEBUG (firehose; duplicates the Windows event log). Off by default — enable only when tuning a rule miss. Distinct from debug so the structured log stays useful without the per-event dump.
 
 # --- ingestion ---
 sysmon_channel  = "Microsoft-Windows-Sysmon/Operational"

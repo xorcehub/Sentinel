@@ -75,6 +75,7 @@ type flags struct {
 	heartbeatPath string
 	alertsPath    string
 	debug         bool
+	traceEvents   bool
 	mock          bool
 	mockEvents    int
 	raw           bool
@@ -100,6 +101,7 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.StringVar(&out.heartbeatPath, "heartbeat", "heartbeat.log", "heartbeat file")
 	f.StringVar(&out.alertsPath, "alerts", "ALERTS.log", "ALERTS.log file (append)")
 	f.BoolVar(&out.debug, "debug", true, "debug-level logging")
+	f.BoolVar(&out.traceEvents, "trace-events", false, "log every raw Sysmon event at DEBUG (very verbose; duplicates the Windows event log — for rule tuning only)")
 	f.BoolVar(&out.mock, "mock", false, "use the mock ingester (testing / smoke)")
 	f.IntVar(&out.mockEvents, "mock-events", 5, "number of mock events to emit (with -mock)")
 	f.BoolVar(&out.raw, "raw", false, "raw passthrough: log events, do not run the engine")
@@ -218,6 +220,7 @@ func run(args []string) error {
 		Logger:        logger,
 		Ingester:      ing,
 		Engine:        eng,
+		TraceEvents:   fl.traceEvents,
 		HeartbeatPath: fl.heartbeatPath,
 		Dispatcher:    disp,
 		Baseline:      buildBaseline(fl, st, logger),

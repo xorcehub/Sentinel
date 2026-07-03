@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,6 +34,14 @@ type Options struct {
 	Logger  *slog.Logger
 	Ingester ingest.Ingester
 	Engine  *rules.Engine // nil = raw passthrough (Phase 1 default)
+
+	// TraceEvents enables the per-event DEBUG dump of every Sysmon event
+	// (image/cmd/eid/recordid) before rule evaluation. Off by default: the dump
+	// is pure passthrough (it duplicates the Windows event log and carries no
+	// detection decision) and at one line per Sysmon record it dominated the
+	// log. Turn on only when tuning a rule miss. Distinct from --debug so the
+	// structured log stays useful without the firehose.
+	TraceEvents bool
 
 	HeartbeatPath     string        // empty = no heartbeat file
 	HeartbeatInterval time.Duration // 0 (with path) = default 5m; set <0 to disable
@@ -65,9 +74,16 @@ type Stats struct {
 
 // App is the orchestrator. Construct with New; drive with Run.
 type App struct {
-	opts   Options
-	log    *slog.Logger
-	stats  *Stats
+	opts  Options
+	log   *slog.Logger
+	stats *Stats
+
+	// supp accumulates allowlist suppressions per (rule, image) between summary
+	// flushes, so an already-allowed app tripping a rule N times logs ONE
+	// periodic summary line instead of N identical per-event lines. See
+	// noteSuppressed / flushSuppSummary.
+	suppMu sync.Mutex
+	supp   map[string]*suppTally
 }
 
 // New constructs an App. Returns an error only if required fields are missing.
@@ -78,7 +94,7 @@ func New(opts Options) (*App, error) {
 	if opts.Ingester == nil {
 		return nil, fmt.Errorf("app: Ingester is required")
 	}
-	return &App{opts: opts, log: opts.Logger, stats: &Stats{}}, nil
+	return &App{opts: opts, log: opts.Logger, stats: &Stats{}, supp: map[string]*suppTally{}}, nil
 }
 
 // EventsSeen, Hits, Suppressed — atomic snapshot getters.
@@ -126,11 +142,14 @@ func (a *App) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			a.log.Info("shutdown", "reason", ctx.Err())
+			a.flushSuppSummary()
 			return ctx.Err()
 		case ev, ok := <-ch:
 			if !ok {
-				// Feed closed normally — flush a final heartbeat line and exit.
+				// Feed closed normally — flush the allowlist-suppression summary
+				// and a final heartbeat line, then exit.
 				a.log.Info("ingester channel closed; exiting drain loop")
+				a.flushSuppSummary()
 				if a.opts.HeartbeatPath != "" {
 					a.writeHeartbeat(time.Now())
 				}
@@ -146,12 +165,14 @@ func (a *App) handleEvent(ev event.Event) {
 	if a.opts.OnEvent != nil {
 		a.opts.OnEvent(ev)
 	}
-	// Per-event DEBUG dump. Suppressed when the allowlist's event_log_filter
-	// matches (config-driven, AND-within-entry). This is log-only — Evaluate
-	// runs regardless below, so filtering the dump can never drop a detection.
-	// Engine.IsLogNoise is nil-safe, so raw-passthrough mode (nil Engine) keeps
-	// the full dump (useful for tuning).
-	if !a.opts.Engine.IsLogNoise(&ev) {
+	// Per-event DEBUG dump — GATED behind TraceEvents. The dump is pure
+	// passthrough (no detection decision; duplicates the Windows event log) and
+	// at one line per Sysmon record it was ~40% of the log, so it is off by
+	// default. Enable with --trace-events when tuning a rule miss. When on, the
+	// allowlist's event_log_filter still drops the configured boring patterns.
+	// This is log-only — Evaluate runs regardless below, so gating can never
+	// drop a detection. Engine.IsLogNoise is nil-safe (raw mode returns false).
+	if a.opts.TraceEvents && !a.opts.Engine.IsLogNoise(&ev) {
 		a.log.Debug("event",
 			"eid", ev.EID,
 			"source", ev.Source,
@@ -189,7 +210,11 @@ func (a *App) handleEvent(ev event.Event) {
 		// (visible when tuning, silent at the default INFO level) while keeping
 		// dedup-window (real rate-limiting of a live hit) at INFO.
 		if s.Reason == "allowlist" {
-			a.log.Debug("suppressed (allowlist)", "hid", s.ID, "rule", s.RuleID, "image", s.Event.Image)
+			// Known-good app tripped a rule -> ignored. Per-event logging flooded
+			// the log (one allowed app x N rules x N connections), so accumulate
+			// into the periodic summary instead; the running total is also in the
+			// heartbeat's suppressed_total.
+			a.noteSuppressed(s)
 			continue
 		}
 		a.log.Info("suppressed",
@@ -209,6 +234,7 @@ func (a *App) heartbeat(ctx context.Context, interval time.Duration, done chan<-
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			a.flushSuppSummary()
 			a.writeHeartbeat(time.Now())
 		}
 	}
@@ -222,6 +248,69 @@ func (a *App) writeHeartbeat(t time.Time) {
 		return
 	}
 	a.log.Debug("heartbeat written", "path", a.opts.HeartbeatPath)
+}
+
+// suppTally accumulates allowlist suppressions for one (rule, image) pair
+// between summary flushes.
+type suppTally struct {
+	ruleID   string
+	image    string
+	count    uint64
+	firstHid string // hid of the first suppression in this window
+	lastHid  string
+	lastSeen time.Time
+}
+
+// noteSuppressed records an allowlist suppression for periodic summary logging
+// instead of emitting it per-event. The (rule, image) pair is the key: an
+// already-allowed app tripping the same rule thousands of times collapses to a
+// single summary line per flush window. Thread-safe (handleEvent runs in the
+// drain loop; flushSuppSummary runs in the heartbeat / shutdown path).
+func (a *App) noteSuppressed(s rules.Suppression) {
+	key := s.RuleID + "\x00" + s.Event.Image
+	a.suppMu.Lock()
+	defer a.suppMu.Unlock()
+	t, ok := a.supp[key]
+	if !ok {
+		t = &suppTally{ruleID: s.RuleID, image: s.Event.Image}
+		a.supp[key] = t
+	}
+	if t.count == 0 {
+		t.firstHid = s.ID
+	}
+	t.count++
+	t.lastHid = s.ID
+	t.lastSeen = time.Now()
+}
+
+// flushSuppSummary emits one DEBUG line per (rule, image) that accumulated
+// allowlist suppressions since the last flush, then resets the window. Called
+// on each heartbeat tick and at shutdown (drain completion + context cancel).
+// At the default cadence this turns thousands of identical per-event lines
+// into a compact periodic summary; the aggregate total is also reported in
+// heartbeat.log's suppressed_total. A no-op (no lock churn beyond the check)
+// when nothing was suppressed.
+func (a *App) flushSuppSummary() {
+	a.suppMu.Lock()
+	if len(a.supp) == 0 {
+		a.suppMu.Unlock()
+		return
+	}
+	snap := a.supp
+	a.supp = make(map[string]*suppTally)
+	a.suppMu.Unlock()
+	for _, t := range snap {
+		if t.count == 0 {
+			continue
+		}
+		a.log.Debug("suppressed (allowlist) summary",
+			"rule", t.ruleID,
+			"image", t.image,
+			"count", t.count,
+			"first_hid", t.firstHid,
+			"last_hid", t.lastHid,
+			"last_seen", t.lastSeen.Format(time.RFC3339))
+	}
 }
 
 // NewLogger returns a slog logger writing to both a file (append) and stderr.
