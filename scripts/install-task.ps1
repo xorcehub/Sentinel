@@ -38,14 +38,34 @@ param(
     # the exe needs rules.d/ as a sibling (true at repo root, false in cmd/sentinel).
     [string]$ExePath = (Join-Path $PSScriptRoot "..\sentinel.exe"),
     [string]$TaskName = "Sentinel",
-    [string]$User     = $env:USERNAME
+    [string]$User     = $env:USERNAME,
+    # -AsSystem: run the task as NT AUTHORITY\SYSTEM instead of the current
+    # user. REQUIRED to read Sysmon's FileDelete archive (C:\SentinelArchive),
+    # which Sysmon locks to SYSTEM-only so hard that even admins get access-
+    # denied. Tradeoff: a SYSTEM task runs in Session 0 and CANNOT show desktop
+    # popups/toast — only log + eventlog alerts reach the user. Use -AsSystem
+    # when the snapshot vault (file capture) matters more than popups.
+    [switch]$AsSystem,
+    # Vault + archive dirs. Only used with -AsSystem (the archive is
+    # SYSTEM-locked). The snapshot vault is where captured files are written.
+    [string]$SnapshotDir = "",
+    [string]$ArchiveDir  = "C:\SentinelArchive"
 )
 
 # Resolve to an absolute path (scheduled tasks need it).
 $ExePath = (Resolve-Path $ExePath -ErrorAction Stop).Path
 
-$action    = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory (Split-Path $ExePath -Parent)
-$trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERDOMAIN\$User
+# Build the action. With -AsSystem, append the snapshot-vault + archive flags
+# so the SYSTEM daemon can read the FileDelete archive and write the vault.
+$actionArg = ""
+if ($AsSystem) {
+    if (-not $SnapshotDir) {
+        $SnapshotDir = Join-Path (Split-Path $ExePath -Parent) "forensics\sentinel-vault"
+    }
+    $actionArg = "-snapshot-dir `"$SnapshotDir`" -sysmon-archive-dir `"$ArchiveDir`""
+}
+$action    = New-ScheduledTaskAction -Execute $ExePath -Argument $actionArg -WorkingDirectory (Split-Path $ExePath -Parent)
+$trigger   = New-ScheduledTaskTrigger -AtLogOn
 
 # Restart on failure (RestartCount 999 — the 3-try cliff was a security hole),
 # plus a repeating supervised trigger every 5 min that no-ops if the mutex is held.
@@ -60,7 +80,13 @@ $settings  = New-ScheduledTaskSettingsSet `
 # Sysmon channel. Equivalent to <RunLevel>HighestAvailable</RunLevel> in task
 # XML. -LogonType Interactive keeps the process in the user's desktop session
 # (NOT Session 0) so MessageBox works.
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERDOMAIN\$User -LogonType Interactive -RunLevel Highest
+if ($AsSystem) {
+    # SYSTEM can read C:\SentinelArchive natively. Runs in Session 0, so no
+    # desktop popups/toast — log + eventlog alerts only.
+    $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType Service -RunLevel Highest
+} else {
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERDOMAIN\$User -LogonType Interactive -RunLevel Highest
+}
 
 # Cleanup if it already exists (idempotent).
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -76,5 +102,11 @@ Register-ScheduledTask `
     -Description "Sentinel endpoint guard (session-scoped). Replaces BeaconHunt."
 
 Write-Host "Registered task '$TaskName' -> $ExePath (at-logon, RunLevel=Highest, RestartCount=999)." -ForegroundColor Green
+if ($AsSystem) {
+    Write-Host "  Mode: SYSTEM (can read C:\SentinelArchive; no desktop popups)." -ForegroundColor Yellow
+    Write-Host "  Args: $actionArg"
+} else {
+    Write-Host "  Mode: $User interactive (desktop popups work; CANNOT read archive)."
+}
 Write-Host "Verify: Start-ScheduledTask $TaskName ; Get-ScheduledTaskInfo $TaskName"
 Write-Host "Confirm elevation: (Get-ScheduledTask -TaskName $TaskName).Principal.RunLevel  # should be 'Highest'"

@@ -29,5 +29,16 @@ mutex_name      = ""
 event_log_source = "Sentinel"               # registered via scripts/register-eventsource.ps1
 # webhook_url     = ""                      # optional Discord/Slack/Teams
 
+# --- file capture (forensics; see config/allowlist.json file_capture) ---
+# Copies EID-11 FileCreate events whose path matches a file_capture pattern into
+# a vault before they can be deleted — the Cursor Temp\ps-script-<guid>.ps1
+# create-and-delete pattern. Best-effort (wins the race when the daemon processes
+# the EID 11 within the file's lifetime); Sysmon FileDelete archiving is the
+# guaranteed backstop. Patterns live in allowlist.json; these knobs are vault I/O.
+# Empty snapshot_dir disables the feature (detection is unaffected either way).
+snapshot_dir        = ""                     # e.g. "C:\\forensics\\sentinel-vault"; empty = off
+snapshot_per_file_kb = 2048                  # cap per copy (oversize -> truncated); 0 = unlimited
+snapshot_total_mb    = 500                   # vault cap; oldest evicted when exceeded; 0 = unlimited
+
 # --- RE / maintenance mode (04-TELEMETRY.md §4) ---
 # Set via CLI: `sentinel --suspend 90m --reason "pe_triage session"`. Max 4h.

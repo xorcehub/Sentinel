@@ -10,20 +10,27 @@
 //
 // Flow:
 //  1. Every `interval` (default 1s), run:
-//       Get-WinEvent -FilterHashtable @{LogName=<ch>; ID=<eids>} -MaxEvents N
+//       Get-WinEvent -FilterHashtable @{LogName=<ch>; ID=<eids>} -MaxEvents 2000
 //         -ErrorAction SilentlyContinue
 //       | Where-Object { $_.RecordId -gt <highWater> }
 //       | ForEach-Object { base64(UTF16LE($_.ToXml())) }
 //  2. For each base64 line: decode -> UTF-16LE bytes -> decodeUTF16LE -> sysmonxml.Parse.
 //  3. Advance highWater to the max RecordId seen so the next poll is incremental.
 //
+// maxPerPoll (default 2000) must exceed the worst-case per-interval event count.
+// Cursor peaks at ~100 events/sec, so 2000 covers ~20s of burst — well beyond
+// the 1s poll interval. If a burst ever exceeds maxPerPoll, older events in the
+// gap are skipped (rare, acceptable for a behavior engine).
+//
+// NOTE: -Oldest + StartTime was attempted to eliminate stranding entirely, but
+// caused Get-WinEvent to exit with code 1 on sysmon 15.21/PS 5.1 (every poll
+// after the first). Reverted to newest-first + large maxPerPoll.
+//
 // Trade-offs vs native EvtSubscribe (02-ARCHITECTURE.md §4.1 latency target):
 //   - latency ~1-3s (powershell.exe spawn + parse) vs <1s native. Acceptable
 //     for a behavior engine whose rules are not sub-second time-critical.
 //   - one powershell.exe process per poll (cheap but not free). At 1s interval
 //     that's ~60 proc-min/hour; negligible on this machine.
-//   - under extreme burst (>maxPerPoll events between polls) the oldest
-//     un-fetched events are skipped. Raised by increasing maxPerPoll.
 //
 // The native binding stays available via `sentinel -sysmon-native` for when the
 // EvtSubscribe bug is fixed.
@@ -50,7 +57,12 @@ import (
 
 const (
 	defaultPollInterval = 1 * time.Second
-	defaultMaxPerPoll   = 200
+	// defaultMaxPerPoll caps the events fetched per Get-WinEvent call. Must be
+	// large enough to absorb bursts (Cursor can generate hundreds of events per
+	// second). At 1s poll interval, 2000 covers ~20s of peak burst — well beyond
+	// the interval. If a burst ever exceeds this, older events in the gap are
+	// skipped (rare, acceptable for a behavior engine).
+	defaultMaxPerPoll = 2000
 )
 
 // defaultEIDs is the Sysmon EID set our rules use (03-RULES.md / 04-TELEMETRY §1).
@@ -105,7 +117,8 @@ func (s *sysmonRT) Start(ctx context.Context) (<-chan event.Event, error) {
 		return nil, fmt.Errorf("powershell.exe not on PATH: %w", err)
 	}
 	s.log.Info("sysmon RT (powershell poller) starting",
-		"channel", s.channel, "eids", len(s.eids), "interval", s.interval)
+		"channel", s.channel, "eids", len(s.eids), "interval", s.interval,
+		"maxPerPoll", s.maxPerPoll)
 	out := make(chan event.Event, 4096)
 	go s.pollLoop(ctx, out)
 	return out, nil
@@ -138,6 +151,14 @@ func (s *sysmonRT) pollAndEmit(ctx context.Context, highWater *int64, out chan<-
 		s.log.Warn("poll failed", "err", err)
 		return
 	}
+	// Saturation detection: if we got exactly maxPerPoll events, a burst exceeded
+	// our fetch cap and some older events may have been skipped. This shouldn't
+	// happen in steady state (2000 cap vs ~100 events/sec peak), but if it does,
+	// the operator needs to know to investigate.
+	if len(events) == s.maxPerPoll {
+		s.log.Warn("sysmon poll saturated at maxPerPoll cap; events may be delayed",
+			"fetched", len(events), "maxPerPoll", s.maxPerPoll)
+	}
 	if newMax > *highWater {
 		*highWater = newMax
 	}
@@ -166,12 +187,21 @@ func (s *sysmonRT) isSelfChild(ev event.Event) bool {
 
 // poll runs one Get-WinEvent query and returns the parsed new events (RecordId
 // > afterID) plus the max RecordId observed (for the next call's afterID).
+//
+// NOTE: we intentionally do NOT use -Oldest or StartTime here. Testing on
+// sysmon 15.21 / PowerShell 5.1 showed Get-WinEvent -FilterHashtable with
+// StartTime + -Oldest exits with code 1 (empty stderr, suppressed by
+// SilentlyContinue) on every poll after the first, breaking ingestion entirely.
+// The newest-first default + a large maxPerPoll (2000) handles bursts safely:
+// Cursor peaks at ~100 events/sec, so 2000 covers ~20s of burst — well beyond
+// the 1s poll interval. Rare stranding under extreme load is acceptable for a
+// behavior engine; total ingestion failure is not.
 func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 	script := fmt.Sprintf(
 		`$ErrorActionPreference='SilentlyContinue'; `+
 			`Get-WinEvent -FilterHashtable @{LogName='%s'; ID=%s} -MaxEvents %d | `+
 			`Where-Object { $_.RecordId -gt %d } | `+
-			`ForEach-Object { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_.ToXml())) }`,
+			`ForEach-Object { try { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_.ToXml())) } catch {} }`,
 		s.channel, eidList(s.eids), s.maxPerPoll, afterID,
 	)
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
@@ -184,9 +214,7 @@ func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 	// an OPSEC tell). This allocates NO console instead of a hidden one, which is
 	// the correct semantic for a headless child with captured stdout/stderr.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
-	if err := cmd.Run(); err != nil {
-		return nil, 0, fmt.Errorf("powershell: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
-	}
+	runErr := cmd.Run()
 
 	var events []event.Event
 	var maxID int64
@@ -214,6 +242,33 @@ func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 			maxID = int64(ev.RecordID)
 		}
 		events = append(events, ev)
+	}
+	// PowerShell exit codes are unreliable for our purposes. Two things can set
+	// a nonzero exit: (1) Get-WinEvent's non-terminating "No events found"
+	// error, which SilentlyContinue suppresses (and which doesn't actually set a
+	// nonzero exit on its own in PS 5.1), and (2) a TERMINATING error from a .NET
+	// method call inside the pipeline — specifically $_.ToXml() throwing on a
+	// malformed event record. SilentlyContinue does NOT stop terminating errors,
+	// so one bad event aborts the entire ForEach-Object and powershell.exe exits
+	// code 1. The try/catch in the script (above) catches that, but we keep this
+	// Go-side guard as a belt-and-suspenders: if stdout nonetheless has valid
+	// base64 lines we already parsed them — discarding data over an exit code
+	// would blind ingestion. Only treat the nonzero exit as real when we got
+	// nothing usable out of it.
+	if runErr != nil && len(events) == 0 {
+		// Genuinely broken: nonzero exit AND no usable output. Include raw
+		// stdout byte/line count so we can distinguish "powershell produced
+		// nothing" (pipe/cmdlet failure) from "produced lines we couldn't
+		// parse" (XML/base64 failure on specific events).
+		rawLines := len(strings.Split(strings.TrimSpace(stdout.String()), "\n"))
+		return nil, 0, fmt.Errorf("powershell: %w (stderr: %s; stdout %d bytes/%d lines)",
+			runErr, strings.TrimSpace(stderr.String()), stdout.Len(), rawLines)
+	}
+	if runErr != nil {
+		// nonzero exit but we still got events: a suppressed non-fatal error
+		// (the common PowerShell gotcha). Log at debug, keep the data.
+		s.log.Debug("powershell exited nonzero but produced output; ignoring exit code",
+			"exit_err", runErr, "events", len(events))
 	}
 	return events, maxID, nil
 }

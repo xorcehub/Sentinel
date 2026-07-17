@@ -98,5 +98,29 @@
     // log --max-count / ls-files every couple seconds. ~20k lines/day. Read-
     // only inspection; no detection rule keys on these git subcommands.
     { "image": "\\\\git\\\\.*\\\\git\\.exe$", "cmdline": "(check-ignore|rev-parse|--max-count|ls-files)" }
-  ]
+  ],
+
+  // file_capture: path patterns whose created files (EID 11) the daemon
+  // snapshots to the forensic vault before they can be deleted. NOT an except
+  // operator and NOT consulted by rule evaluation - purely additive forensics.
+  // The motivating case: Cursor spawns `powershell -ep bypass -File
+  // <TEMP>\ps-script-<guid>.ps1` and deletes the script the instant it exits,
+  // so its contents are otherwise never inspectable. Snapshotting lets you read
+  // what was actually run, and a later alert whose cmdline names a captured
+  // path back-links its hid into that capture's manifest (see 05-ALERTING.md).
+  //
+  // This is best-effort: the daemon wins the race when it processes the EID 11
+  // within the file's lifetime. Sysmon FileDelete archiving (Layer B, see
+  // docs/05-ALERTING.md) is the guaranteed backstop for the misses.
+  //
+  // Escaping: same as trusted_binaries - 4 backslashes per literal path
+  // separator (regex \\), matched on the normalized lower path. Vault I/O
+  // (dir, size caps) is configured in sentinel.conf, not here.
+  "file_capture": {
+    "patterns": [
+      // Cursor's create-and-delete bootstrap scripts. GUID-named so the
+      // pattern anchors on the stable \Temp\ps-script- prefix, not the GUID.
+      "\\\\temp\\\\ps-script-"
+    ]
+  }
 }

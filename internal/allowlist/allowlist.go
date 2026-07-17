@@ -24,6 +24,13 @@
 // evaluation is unaffected: real hits are logged on a separate "HIT" line and
 // never depend on that dump. See IsLogNoise and the app layer's handleEvent.
 //
+// Optional seventh section, file_capture, is also not an `except` operator and
+// is not consumed by the rule engine. It names path patterns whose created
+// files (EID 11) the app layer snapshots to a forensic vault before they can
+// be deleted — the create-and-delete dropper pattern (e.g. Cursor's
+// Temp\ps-script-<guid>.ps1). Like event_log_filter it carries no detection
+// decision: it can neither suppress nor produce a hit. See ShouldCapture.
+//
 // The allowlist file is JSONC (allows // comments), matching the docs' format.
 // We strip comments before json.Unmarshal so the operator can annotate freely.
 package allowlist
@@ -51,6 +58,7 @@ type Allowlist struct {
 	cidrs     []*net.IPNet
 	loopback  map[string]bool       // "host:port" lowercased
 	logFilter []*logFilterEntry     // event_log_filter: suppresses the per-event DEBUG dump only
+	capPatterns []*regexp.Regexp    // file_capture: path patterns matched on EID 11/23 TargetFile
 }
 
 // logFilterEntry is one AND-conjunction rule from the optional event_log_filter
@@ -130,6 +138,17 @@ func Compile(jsonBytes []byte) (*Allowlist, error) {
 			return nil, err
 		}
 		a.logFilter = append(a.logFilter, ent)
+	}
+	for _, p := range doc.FileCapture.Patterns {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		re, err := regexp.Compile("(?i)" + p)
+		if err != nil {
+			return nil, fmt.Errorf("bad file_capture pattern %q: %w", p, err)
+		}
+		a.capPatterns = append(a.capPatterns, re)
 	}
 	return a, nil
 }
@@ -281,6 +300,36 @@ func (a *Allowlist) IsLogNoise(e *event.Event) bool {
 	return false
 }
 
+// ShouldCapture reports whether the created file in ev should be snapshotted to
+// the forensic vault before it can be deleted. It is consulted ONLY by the app
+// layer's snapshot path, NEVER by Evaluate — like IsLogNoise it carries no
+// detection decision and can neither suppress nor produce a hit.
+//
+// A capture is requested when ev is an EID 11 (FileCreate) whose TargetFile
+// matches any file_capture pattern. Patterns are matched on the normalized
+// lower path (same contract as trusted_binaries / event_log_filter.image).
+// Returns the TargetFile to copy (== ev.TargetFile) when matched, "" otherwise
+// — so the caller has both the decision and the path to act on in one call.
+//
+// Use case: the create-and-delete dropper pattern. Cursor spawns
+// powershell -ep bypass -File <TEMP>\ps-script-<guid>.ps1 and deletes the
+// script immediately after; without a snapshot the contents are never
+// inspectable. ShouldCapture lets the app layer copy such files the instant
+// Sysmon reports creation. Nil Allowlist / nil event / non-FileCreate events
+// are safe (return "").
+func (a *Allowlist) ShouldCapture(e *event.Event) string {
+	if a == nil || e == nil || (e.EID != 11 && e.EID != 23) || e.TargetFile == "" || len(a.capPatterns) == 0 {
+		return ""
+	}
+	np := pathnorm.NormalizePath(e.TargetFile)
+	for _, re := range a.capPatterns {
+		if re.MatchString(np) {
+			return e.TargetFile
+		}
+	}
+	return ""
+}
+
 // --- raw document schema (matches docs/04-TELEMETRY.md §2) ---
 
 type rawDoc struct {
@@ -303,6 +352,13 @@ type rawDoc struct {
 	// AND within an entry, OR across entries; suppresses only the per-event
 	// DEBUG dump line. See IsLogNoise.
 	EventLogFilter []filterRaw `json:"event_log_filter"`
+
+	// file_capture: optional path patterns whose created files (EID 11) the app
+	// layer snapshots to a forensic vault before they can be deleted. NOT an
+	// except operator; not consulted by Evaluate. See ShouldCapture.
+	FileCapture struct {
+		Patterns []string `json:"patterns"`
+	} `json:"file_capture"`
 }
 
 // filterRaw is the JSON shape of one event_log_filter entry. eid 0 and empty

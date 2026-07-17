@@ -1,0 +1,22 @@
+
+      <!-- Sentinel-FileDelete-Telemetry entries (merged into a FileDelete
+           include RuleGroup by enable-filecreate-telemetry.ps1).
+           These match the SAME patterns as sysmon-filecreate.xml so every
+           file we capture on create is ALSO archived by Sysmon on delete.
+
+           When a matching file is deleted, Sysmon copies it to the
+           ArchiveDirectory BEFORE the delete syscall returns. The archived
+           copy persists on disk, so even though sentinel's poller delivers
+           EID 23 1-3s late, the file content is guaranteed to be there.
+           This is the backstop for create-and-delete files (Cursor's
+           Temp\ps-script-<guid>.ps1) that are gone before EID 11 delivery.
+
+           'contains' only — universally supported on all sysmon schema
+           versions. Do NOT add groupRelation or endswith/beginswith. -->
+      <TargetFilename condition="contains">\Temp\ps-script-</TargetFilename>
+      <TargetFilename condition="contains">\Start Menu\Programs\Startup</TargetFilename>
+      <TargetFilename condition="contains">\rules.d\</TargetFilename>
+      <TargetFilename condition="contains">allowlist.json</TargetFilename>
+      <TargetFilename condition="contains">sentinel.conf</TargetFilename>
+      <TargetFilename condition="contains">state.db</TargetFilename>
+      <TargetFilename condition="contains">baseline_clean.json</TargetFilename>

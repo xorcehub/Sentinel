@@ -6,11 +6,43 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
 	"sentinel/internal/event"
 )
+
+// Session-0 crossing. When sentinel runs as a SYSTEM Scheduled Task it lives in
+// Session 0, where MessageBox renders on an invisible desktop (Session 0
+// isolation) and toast gets "Access is denied". WTSSendMessageW is the Win32
+// API built for exactly this: it sends a MessageBox to the ACTIVE console
+// session's desktop from a service. We branch at runtime — interactive runs
+// keep plain MessageBox; Session-0 runs cross over.
+var (
+	modKernel32              = windows.NewLazySystemDLL("kernel32.dll")
+	modWtsapi32              = windows.NewLazySystemDLL("wtsapi32.dll")
+	procProcessIdToSessionId = modKernel32.NewProc("ProcessIdToSessionId")
+	procWTSSendMessageW      = modWtsapi32.NewProc("WTSSendMessageW")
+)
+
+func currentSessionId() uint32 {
+	var sid uint32
+	r, _, _ := procProcessIdToSessionId.Call(
+		uintptr(windows.GetCurrentProcessId()),
+		uintptr(unsafe.Pointer(&sid)))
+	if r == 0 {
+		return 0
+	}
+	return sid
+}
+
+// InSession0 reports whether this process is NOT in the active console session
+// (i.e. a SYSTEM service). When true, popup must cross sessions via WTS and
+// toast is pointless (no user notification infrastructure).
+func InSession0() bool {
+	return currentSessionId() != windows.WTSGetActiveConsoleSessionId()
+}
 
 // PopupAlerter shows a blocking MessageBox for critical hits (05-ALERTING.md §3).
 //
@@ -43,9 +75,14 @@ func NewPopupAlerter(log *slog.Logger) *PopupAlerter {
 // Name implements Alerter.
 func (p *PopupAlerter) Name() string { return "popup" }
 
-// Alert shows the MessageBox. Blocks until dismissed.
+// Alert shows the MessageBox. In an interactive session it blocks until
+// dismissed; in Session 0 it crosses to the active console via WTSSendMessageW
+// (non-blocking, so a SYSTEM daemon is never stalled by an unseen box).
 func (p *PopupAlerter) Alert(h event.Hit) error {
 	text, caption := formatPopup(h)
+	if InSession0() {
+		return p.wtsPopup(text, caption)
+	}
 	textW, err := windows.UTF16PtrFromString(text)
 	if err != nil {
 		return fmt.Errorf("utf16 text: %w", err)
@@ -87,4 +124,40 @@ func formatPopup(h event.Hit) (text, caption string) {
 	}
 	fmt.Fprintf(&b, "\n\nMatch: %s", trunc(h.Matched, 200))
 	return b.String(), caption
+}
+
+// wtsPopup shows the box on the active console session's desktop via
+// WTSSendMessageW. bWait=FALSE: fire-and-forget (returns once posted); the box
+// stays on screen until the user dismisses it, but the daemon isn't blocked.
+func (p *PopupAlerter) wtsPopup(text, caption string) error {
+	console := windows.WTSGetActiveConsoleSessionId()
+	if console == 0xFFFFFFFF { // no active console (nobody logged in)
+		return fmt.Errorf("no active console session for popup")
+	}
+	titleUTF, err := windows.UTF16FromString(caption)
+	if err != nil {
+		return fmt.Errorf("utf16 title: %w", err)
+	}
+	msgUTF, err := windows.UTF16FromString(text)
+	if err != nil {
+		return fmt.Errorf("utf16 body: %w", err)
+	}
+	flags := uint32(mbIconWarning | mbOK)
+	var resp uint32
+	ret, _, callErr := procWTSSendMessageW.Call(
+		0, // WTS_CURRENT_SERVER_HANDLE
+		uintptr(console),
+		uintptr(unsafe.Pointer(&titleUTF[0])),
+		uintptr(len(titleUTF)-1),
+		uintptr(unsafe.Pointer(&msgUTF[0])),
+		uintptr(len(msgUTF)-1),
+		uintptr(flags),
+		0, // timeout (ignored when bWait=FALSE)
+		uintptr(unsafe.Pointer(&resp)),
+		0, // bWait=FALSE
+	)
+	if ret == 0 {
+		return fmt.Errorf("WTSSendMessageW: %w", callErr)
+	}
+	return nil
 }

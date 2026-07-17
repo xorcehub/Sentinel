@@ -76,6 +76,7 @@ func Parse(raw []byte, src event.Source) (event.Event, error) {
 		DstIP:    m["DestinationIp"],
 		DstProto: m["Protocol"],
 		TargetFile:   m["TargetFilename"],
+		Archived:     m["Archived"],
 		TargetRegKey: m["TargetObject"],
 		Details:      m["Details"],
 

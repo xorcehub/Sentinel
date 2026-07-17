@@ -14,3 +14,8 @@ self-test.txt
 baseline-now.txt
 baseline-snapshot.txt
 *.7z
+forensics/sentinel-vault/*
+
+# superseded diagnostic scripts (kept locally for reference, not shipped)
+scripts/archive/
+

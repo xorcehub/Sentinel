@@ -127,6 +127,11 @@ func (a *fakeAL) DstIsKnownLoopback(ip string, port int) bool {
 // event's dump visible and satisfies the extended Allowlist interface.
 func (a *fakeAL) IsLogNoise(e *event.Event) bool { return false }
 
+// ShouldCapture stub: the engine unit tests don't exercise the app-layer
+// snapshot path. Returning "" satisfies the extended Allowlist interface and
+// means no capture is ever requested from these tests.
+func (a *fakeAL) ShouldCapture(e *event.Event) string { return "" }
+
 type memDedup struct {
 	mu   sync.Mutex
 	max  uint64

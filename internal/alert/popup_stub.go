@@ -26,3 +26,7 @@ func (p *PopupAlerter) Name() string { return "popup" }
 func (p *PopupAlerter) Alert(h event.Hit) error {
 	return errors.New("popup alerter requires Windows")
 }
+
+// InSession0 mirrors the Windows build's Session-0 detector. On non-Windows
+// there is no Session 0 concept, so always false (interactive).
+func InSession0() bool { return false }

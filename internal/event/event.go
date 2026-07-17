@@ -76,6 +76,7 @@ type Event struct {
 
 	// EID 11/23 (FileCreate/Delete)
 	TargetFile string // created/deleted file path (files ONLY — never a process victim)
+	Archived   string // EID 23 only: "true"/"false" — whether Sysmon archived the deleted file
 
 	// EID 12/13 (Registry)
 	TargetRegKey string // TargetObject

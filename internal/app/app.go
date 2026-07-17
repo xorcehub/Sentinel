@@ -25,6 +25,7 @@ import (
 	"sentinel/internal/event"
 	"sentinel/internal/ingest"
 	"sentinel/internal/rules"
+	"sentinel/internal/snapshot"
 	"sentinel/internal/state"
 )
 
@@ -51,6 +52,23 @@ type Options struct {
 	// eventlog/toast) on its own goroutine(s). If nil, hits are only logged +
 	// passed to OnHit (Phase 1 behavior / tests).
 	Dispatcher *alert.Dispatcher
+
+	// Snapshot optionally snapshots files matching the allowlist's file_capture
+	// patterns (EID 11) to a forensic vault before they can be deleted — the
+	// create-and-delete dropper pattern (e.g. Cursor's Temp\ps-script-<guid>.ps1).
+	// nil = feature disabled. Submit is non-blocking and runs on its own
+	// goroutine (main.go starts Run + defers Close), so it can neither block
+	// nor alter Evaluate. Purely additive forensics: ShouldCapture reads no
+	// rule input and consults no except operator, exactly as IsLogNoise is
+	// purely log-only.
+	Snapshot *snapshot.Snapshotter
+
+	// SysmonArchiveDir is the directory where Sysmon stores FileDelete (EID 23)
+	// archived copies. When set, the capture hook resolves archived files from
+	// EID 23 events (guaranteed-capture for create-and-delete files that are gone
+	// before EID 11's poller delivery). Empty = EID 23 archive captures disabled
+	// (EID 11 captures still work for files that persist).
+	SysmonArchiveDir string
 
 	// Baseline configures the Phase 3 baseline diff loop (daily autorunsc
 	// capture diffed against a signed-off clean baseline; NEW entries fire
@@ -182,6 +200,83 @@ func (a *App) handleEvent(ev event.Event) {
 			"dst", ev.DstIP)
 	}
 
+	// Snapshot capture (forensics, NOT detection): if this event's file
+	// matches a file_capture pattern, snapshot it to the vault. Handles both:
+	//   - EID 11 (FileCreate): capture the file at its original path (may fail
+	//     with a "lost-race" if already deleted — fine, EID 23 is the backstop).
+	//   - EID 23 (FileDelete): the original file is gone, but if Sysmon archived
+	//     it (Archived="true"), the copy persists in SysmonArchiveDir — find it
+	//     and capture that. This is the GUARANTEED path for create-and-delete
+	//     files (e.g. Cursor's Temp\ps-script-<guid>.ps1) that are deleted
+	//     before EID 11's poller delivery arrives.
+	// Purely additive — ShouldCapture reads no rule input and Submit is
+	// non-blocking (default-drop on a full buffer), so this can neither block
+	// nor alter Evaluate below. Engine.ShouldCapture is nil-safe (nil Engine /
+	// raw mode: no capture); nil Snapshotter = feature disabled.
+	//
+	// All branches log at DEBUG so an empty vault is diagnosable from
+	// sentinel.log without code reading.
+	if ev.EID == 11 || ev.EID == 23 {
+		switch {
+		case a.opts.Snapshot == nil:
+			a.log.Debug("file event received but snapshot vault disabled (pass -snapshot-dir)",
+				"eid", ev.EID, "image", ev.Image, "target", ev.TargetFile, "rec", ev.RecordID)
+		default:
+			if p := a.opts.Engine.ShouldCapture(&ev); p != "" {
+				capturePath := p
+				isArchive := false
+				// EID 23: the original file is deleted; resolve the Sysmon archive copy.
+				if ev.EID == 23 {
+					if ev.Archived != "true" {
+						a.log.Debug("eid 23 capture target but not archived by sysmon (ArchiveDirectory/ FileDelete rule missing?)",
+							"target", ev.TargetFile, "rec", ev.RecordID, "archived", ev.Archived)
+						break
+					}
+					if a.opts.SysmonArchiveDir == "" {
+						a.log.Debug("eid 23 archived but no -sysmon-archive-dir set; cannot resolve archive copy",
+							"target", ev.TargetFile, "rec", ev.RecordID)
+						break
+					}
+					archived := snapshot.NewestArchiveFile(a.opts.SysmonArchiveDir)
+					if archived == "" {
+						// Distinguish access-denied (common: Sysmon locks the archive dir to
+						// SYSTEM-only; the daemon runs as the user) from a genuinely empty
+						// archive. This turns a silent "copy not found" into an actionable
+						// "ACCESS DENIED — run scripts/check-sysmon-archive.ps1 as admin".
+						access := ""
+						if _, err := os.ReadDir(a.opts.SysmonArchiveDir); err != nil {
+							access = err.Error()
+						}
+						if access != "" {
+							a.log.Warn("eid 23 archived but CANNOT READ archive dir (run sentinel as SYSTEM)",
+								"archive_dir", a.opts.SysmonArchiveDir, "target", ev.TargetFile, "rec", ev.RecordID, "err", access)
+						} else {
+							a.log.Debug("eid 23 archived but archive dir is empty",
+								"archive_dir", a.opts.SysmonArchiveDir, "target", ev.TargetFile, "rec", ev.RecordID)
+						}
+						break
+					}
+					capturePath = archived
+					isArchive = true
+				}
+				a.opts.Snapshot.Submit(snapshot.Request{
+					Path:        capturePath,
+					RecordID:    ev.RecordID,
+					Image:       ev.Image,
+					ParentImage: ev.ParentImage,
+					CmdLine:     ev.CmdLine,
+					User:        ev.User,
+					Time:        ev.Time,
+					IsArchive:   isArchive,
+				})
+				a.log.Debug("snapshot capture submitted", "path", capturePath, "eid", ev.EID, "rec", ev.RecordID, "image", ev.Image, "is_archive", isArchive)
+			} else {
+				a.log.Debug("file event not a capture target (no file_capture match)",
+					"eid", ev.EID, "image", ev.Image, "target", ev.TargetFile, "rec", ev.RecordID)
+			}
+		}
+	}
+
 	if a.opts.Engine == nil {
 		return // raw passthrough — Phase 1
 	}
@@ -196,6 +291,13 @@ func (a *App) handleEvent(ev event.Event) {
 			"image", h.Event.Image,
 			"rec", h.Event.RecordID,
 			"matched", truncate(h.Matched, 120))
+		// Back-link (A.4): if this hit's cmdline or target file references a
+		// captured file, stamp the hid into that capture's manifest — so the
+		// operator can pivot from any alert straight to the captured content.
+		// Best-effort, non-blocking (manifest write is sub-ms; hits are rare).
+		if a.opts.Snapshot != nil {
+			a.opts.Snapshot.LinkHit(h.ID, h.Event.CmdLine, h.Event.TargetFile)
+		}
 		if a.opts.Dispatcher != nil {
 			a.opts.Dispatcher.Submit(h) // non-blocking; drops+counts on overflow
 		}

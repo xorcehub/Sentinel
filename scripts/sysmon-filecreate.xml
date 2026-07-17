@@ -1,0 +1,12 @@
+
+      <!-- Sentinel-FileCreate-Telemetry entries (merged into existing FileCreate
+           group by enable-filecreate-telemetry.ps1). 'contains' only — universally
+           supported. Do NOT add a second FileCreate RuleGroup — sysmon 15.21
+           crashes (0xC0000409) on duplicate event-type groups. -->
+      <TargetFilename condition="contains">\Temp\ps-script-</TargetFilename>
+      <TargetFilename condition="contains">\Start Menu\Programs\Startup</TargetFilename>
+      <TargetFilename condition="contains">\rules.d\</TargetFilename>
+      <TargetFilename condition="contains">allowlist.json</TargetFilename>
+      <TargetFilename condition="contains">sentinel.conf</TargetFilename>
+      <TargetFilename condition="contains">state.db</TargetFilename>
+      <TargetFilename condition="contains">baseline_clean.json</TargetFilename>

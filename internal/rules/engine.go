@@ -42,7 +42,8 @@ type Allowlist interface {
 	CmdLineInDevScripts(cmdline string) bool
 	DstInCIDR(ip string) bool
 	DstIsKnownLoopback(ip string, port int) bool
-	IsLogNoise(e *event.Event) bool // log-only filter; never consulted by Evaluate
+	IsLogNoise(e *event.Event) bool     // log-only filter; never consulted by Evaluate
+	ShouldCapture(e *event.Event) string // file_capture; never consulted by Evaluate
 }
 
 // Deduper is the dedup state subset internal/state.State satisfies.
@@ -167,6 +168,19 @@ func (eng *Engine) IsLogNoise(e *event.Event) bool {
 		return false
 	}
 	return eng.al.IsLogNoise(e)
+}
+
+// ShouldCapture exposes the allowlist's file_capture patterns so the app layer
+// can snapshot created files that match, before they're deleted. Like
+// IsLogNoise it is deliberately NOT consulted by Evaluate — capturing a file is
+// purely additive forensics and can neither suppress nor produce a hit.
+// Nil-safe: a nil Engine (raw passthrough) or nil allowlist returns "" (no
+// capture), so raw mode and tests with no Engine never attempt a snapshot.
+func (eng *Engine) ShouldCapture(e *event.Event) string {
+	if eng == nil || eng.al == nil {
+		return ""
+	}
+	return eng.al.ShouldCapture(e)
 }
 
 // ---- except (allowlist subtraction) ----

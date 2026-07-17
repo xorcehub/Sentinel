@@ -40,6 +40,7 @@ import (
 	"sentinel/internal/rules"
 	"sentinel/internal/selftest"
 	"sentinel/internal/sigmaeval"
+	"sentinel/internal/snapshot"
 	"sentinel/internal/state"
 )
 
@@ -89,6 +90,10 @@ type flags struct {
 	baselineClean    string
 	baselineHour     int
 	autorunsc        string
+	snapshotDir      string
+	snapshotPerFileKB int
+	snapshotTotalMB   int
+	sysmonArchiveDir  string
 }
 
 func parseFlags(args []string) (*flags, *flag.FlagSet) {
@@ -115,6 +120,10 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.StringVar(&out.baselineClean, "baseline-clean", "baseline_clean.csv", "baseline CSV file (clean reference for the daily diff)")
 	f.IntVar(&out.baselineHour, "baseline-hour", 4, "hour (0-23, local) for the daemon's daily baseline scan")
 	f.StringVar(&out.autorunsc, "autorunsc", "", "path to autorunsc64.exe (default: search exe dir, C:\\Tools\\Autoruns, PATH)")
+	f.StringVar(&out.snapshotDir, "snapshot-dir", "", "directory to snapshot file_capture-matched files into before they're deleted (empty = disabled; see config/allowlist.json file_capture)")
+	f.IntVar(&out.snapshotPerFileKB, "snapshot-per-file-kb", 2048, "max KB copied per captured file (0 = unlimited; oversize files are truncated with status=truncated)")
+	f.IntVar(&out.snapshotTotalMB, "snapshot-total-mb", 500, "max total MB of the snapshot vault; oldest captures evicted when exceeded (0 = unlimited)")
+	f.StringVar(&out.sysmonArchiveDir, "sysmon-archive-dir", "", "Sysmon FileDelete archive directory (where <ArchiveDirectory> stores EID 23 archived copies). Enables guaranteed capture of create-and-delete files that are gone before EID 11 delivery. Empty = EID 23 archive captures disabled.")
 	return out, f
 }
 
@@ -216,6 +225,17 @@ func run(args []string) error {
 		defer disp.Close()
 	}
 
+	// Snapshot vault: copies file_capture-matched files (EID 11) to disk before
+	// they can be deleted (the Cursor Temp\ps-script-<guid>.ps1 create-and-delete
+	// pattern). Disabled unless --snapshot-dir is set. Runs on its own goroutine;
+	// Submit is non-blocking so a capture flood never stalls ingestion or
+	// detection (see internal/snapshot).
+	snap := buildSnapshot(fl, logger)
+	if snap != nil {
+		go snap.Run(ctx)
+		defer snap.Close()
+	}
+
 	a, err := app.New(app.Options{
 		Logger:        logger,
 		Ingester:      ing,
@@ -223,7 +243,9 @@ func run(args []string) error {
 		TraceEvents:   fl.traceEvents,
 		HeartbeatPath: fl.heartbeatPath,
 		Dispatcher:    disp,
-		Baseline:      buildBaseline(fl, st, logger),
+		Snapshot:         snap,
+		SysmonArchiveDir: fl.sysmonArchiveDir,
+		Baseline:         buildBaseline(fl, st, logger),
 	})
 	if err != nil {
 		return err
@@ -256,6 +278,27 @@ func buildBaseline(fl *flags, st *state.State, logger *slog.Logger) app.Baseline
 	}
 }
 
+// buildSnapshot assembles the file-capture vault. Returns nil (feature off)
+// when --snapshot-dir is empty or the vault can't be initialized — in both
+// cases the daemon continues without snapshotting (detection is unaffected).
+// Mirrors buildDispatcher's degrade-silently contract.
+func buildSnapshot(fl *flags, logger *slog.Logger) *snapshot.Snapshotter {
+	if fl.snapshotDir == "" {
+		logger.Info("snapshot vault disabled (no --snapshot-dir)")
+		return nil
+	}
+	s, err := snapshot.New(fl.snapshotDir, fl.snapshotPerFileKB, fl.snapshotTotalMB, logger)
+	if err != nil {
+		logger.Warn("snapshot vault init failed; file capture disabled", "dir", fl.snapshotDir, "err", err)
+		return nil
+	}
+	logger.Info("snapshot vault active", "dir", fl.snapshotDir, "perFileKB", fl.snapshotPerFileKB, "totalMB", fl.snapshotTotalMB)
+	if fl.sysmonArchiveDir != "" {
+		logger.Info("sysmon FileDelete archive capture enabled", "archive_dir", fl.sysmonArchiveDir)
+	}
+	return s
+}
+
 // buildDispatcher assembles the alert delivery chain. ALERTS.log is always
 // present (the audit trail); popup/eventlog/toast are Windows-only. Returns
 // nil if the mandatory ALERTS.log can't be opened (so the app degrades to
@@ -270,7 +313,20 @@ func buildDispatcher(fl *flags, logger *slog.Logger) *alert.Dispatcher {
 		logger.Warn("ALERTS.log open failed; alerts will be slog-only", "path", logPath, "err", err)
 		return nil
 	}
-	alerters := []alert.Alerter{logAlerter, alert.NewPopupAlerter(logger), alert.NewEventLogAlerter("Sentinel", logger), alert.NewToastAlerter(logger)}
+	// Toast needs a user profile + notification infrastructure that Session 0
+	// (SYSTEM service) lacks — it only spams "Access is denied" in the log.
+	// Pop up via WTS works there, so only toast is gated. log+eventlog+popup run
+	// in all modes.
+	alerters := []alert.Alerter{
+		logAlerter,
+		alert.NewPopupAlerter(logger),
+		alert.NewEventLogAlerter("Sentinel", logger),
+	}
+	if alert.InSession0() {
+		logger.Info("running in Session 0; toast disabled, popup via WTS")
+	} else {
+		alerters = append(alerters, alert.NewToastAlerter(logger))
+	}
 	return alert.New(alerters, 256, logger)
 }
 
