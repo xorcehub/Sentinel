@@ -29,15 +29,19 @@ $scripts = Join-Path $root "scripts"
 Write-Host "Sentinel one-shot install (repo: $root)" -ForegroundColor White
 
 # --- 1. build ---
-Step 1 "Building sentinel.exe (-H windowsgui: no console window under Task Scheduler)"
+Step 1 "Building sentinel.exe + sentinel-tray.exe (-H windowsgui)"
 $go = Get-Command go.exe -ErrorAction SilentlyContinue
-if (-not $go) { throw "Go toolchain not on PATH. Install Go, or build sentinel.exe manually first." }
+if (-not $go) { throw "Go toolchain not on PATH. Install Go, or build the binaries manually first." }
+$trayExe = Join-Path $root "sentinel-tray.exe"
 Push-Location $root
 & go build -ldflags "-H windowsgui" -o $exe ./cmd/sentinel
 $code = $LASTEXITCODE
+if ($code -ne 0) { Pop-Location; throw "go build sentinel failed (exit $code)." }
+& go build -ldflags "-H windowsgui" -o $trayExe ./cmd/sentinel-tray
+$code = $LASTEXITCODE
 Pop-Location
-if ($code -ne 0) { throw "go build failed (exit $code)." }
-Ok "sentinel.exe built"
+if ($code -ne 0) { throw "go build sentinel-tray failed (exit $code)." }
+Ok "sentinel.exe + sentinel-tray.exe built"
 
 # --- 2. sysmon + base config ---
 Step 2 "Installing Sysmon + SwiftOnSecurity base config"
@@ -79,3 +83,21 @@ Write-Host ""
 Write-Host "Verify (elevated):"
 Write-Host "  Get-Content $root\sentinel.log -Tail 8 | Select-String 'archive capture enabled'"
 Write-Host "  Get-ScheduledTaskInfo Sentinel | Select-Object LastRunTime, LastTaskResult, NumberOfMissedRuns"
+
+# --- 7. toast relay (user-session, autostart at logon) ---
+Step 7 "Toast relay (user-session autostart)"
+# HKLM\...\Run runs sentinel-tray at every interactive logon, in that user's
+# session + token. Single-user box assumption; on a multi-user box a per-user
+# scheduled task would be the proper fix. The relay lets the SYSTEM daemon
+# surface toasts that persist in Action Center (Session-0 direct toasts fail).
+$runKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+Set-ItemProperty -Path $runKey -Name "SentinelTray" -Value $trayExe
+# Start it now (no reboot required) - one per session is enough; duplicates
+# would contend on the pipe name and the losers exit on bind failure.
+$running = Get-Process sentinel-tray -ErrorAction SilentlyContinue
+if (-not $running) {
+    Start-Process -FilePath $trayExe -WindowStyle Hidden
+    Ok "sentinel-tray started (autostarts at future logons via HKLM Run)"
+} else {
+    Ok "sentinel-tray already running"
+}

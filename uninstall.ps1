@@ -47,7 +47,8 @@ if ($t) {
     Skip "task not registered"
 }
 # Kill any stray sentinel processes (interactive or orphaned SYSTEM ones).
-$procs = Get-Process sentinel,sentinel-cli -ErrorAction SilentlyContinue
+# sentinel-tray is the user-session toast relay; kill it too.
+$procs = Get-Process sentinel,sentinel-cli,sentinel-tray -ErrorAction SilentlyContinue
 if ($procs) {
     $procs | Stop-Process -Force -ErrorAction SilentlyContinue
     Ok "Killed $($procs.Count) process(es)"
@@ -88,13 +89,19 @@ if (Test-Path $vault) {
     Skip "vault not found"
 }
 
-# --- 5. binary ---
-Step 5 "Binary"
-if (Test-Path $exe) {
-    Remove-Item $exe -Force
-    Ok "sentinel.exe removed"
+# --- 5. binary + toast relay ---
+Step 5 "Binary + toast relay"
+foreach ($b in @($exe, (Join-Path $root "sentinel-tray.exe"))) {
+    if (Test-Path $b) { Remove-Item $b -Force; Ok "$([System.IO.Path]::GetFileName($b)) removed" }
+    else { Skip "$([System.IO.Path]::GetFileName($b)) not found" }
+}
+# Remove the HKLM Run autostart entry for the toast relay.
+$runKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+if (Get-ItemProperty -Path $runKey -Name "SentinelTray" -ErrorAction SilentlyContinue) {
+    Remove-ItemProperty -Path $runKey -Name "SentinelTray" -ErrorAction SilentlyContinue
+    Ok "SentinelTray Run entry removed"
 } else {
-    Skip "sentinel.exe not found"
+    Skip "SentinelTray Run entry not present"
 }
 
 # --- 6. logs (optional) ---

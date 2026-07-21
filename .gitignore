@@ -6,6 +6,8 @@ state.db
 ALERTS.log
 data/*
 sentinel-cli.exe
+sentinel-tray.exe
+sentinel-tray.log
 baseline_clean.csv
 
 # generated one-shot command reports (self-test/baseline-* write these next

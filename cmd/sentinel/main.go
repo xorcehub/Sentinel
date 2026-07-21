@@ -323,7 +323,10 @@ func buildDispatcher(fl *flags, logger *slog.Logger) *alert.Dispatcher {
 		alert.NewEventLogAlerter("Sentinel", logger),
 	}
 	if alert.InSession0() {
-		logger.Info("running in Session 0; toast disabled, popup via WTS")
+		// Session 0 (SYSTEM) can't fire WinRT toasts directly ("Access is
+		// denied"). Hand them to the user-session relay over a named pipe.
+		alerters = append(alerters, alert.NewPipeToastAlerter(`\\.\pipe\sentinel-toast`, logger))
+		logger.Info("running in Session 0; toast via relay pipe")
 	} else {
 		alerters = append(alerters, alert.NewToastAlerter(logger))
 	}

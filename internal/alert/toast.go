@@ -38,10 +38,17 @@ func NewToastAlerter(log *slog.Logger) *ToastAlerter {
 // Name implements Alerter.
 func (t *ToastAlerter) Name() string { return "toast" }
 
+// toastText formats the title/body for a toast. Shared by ToastAlerter (fires
+// locally) and PipeToastAlerter (sends to the user-session relay).
+func toastText(h event.Hit) (title, body string) {
+	title = fmt.Sprintf("Sentinel: %s", trunc(h.RuleName, 60))
+	body = fmt.Sprintf("%s — %s", upper(string(h.Severity)), trunc(h.Event.Image, 80))
+	return
+}
+
 // Alert fires a toast. Errors are swallowed (best-effort).
 func (t *ToastAlerter) Alert(h event.Hit) error {
-	title := fmt.Sprintf("Sentinel: %s", trunc(h.RuleName, 60))
-	body := fmt.Sprintf("%s — %s", upper(string(h.Severity)), trunc(h.Event.Image, 80))
+	title, body := toastText(h)
 	if err := beeep.Notify(title, body, ""); err != nil {
 		// best-effort: log and move on. Never propagate — the dispatcher must
 		// not fail an alert because the toast channel broke.
