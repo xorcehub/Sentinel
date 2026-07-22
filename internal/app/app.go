@@ -88,6 +88,7 @@ type Stats struct {
 	eventsSeen   atomic.Uint64
 	hits         atomic.Uint64
 	suppressed   atomic.Uint64
+	panicsContained atomic.Uint64
 }
 
 // App is the orchestrator. Construct with New; drive with Run.
@@ -115,10 +116,11 @@ func New(opts Options) (*App, error) {
 	return &App{opts: opts, log: opts.Logger, stats: &Stats{}, supp: map[string]*suppTally{}}, nil
 }
 
-// EventsSeen, Hits, Suppressed — atomic snapshot getters.
-func (a *App) EventsSeen() uint64 { return a.stats.eventsSeen.Load() }
-func (a *App) Hits() uint64        { return a.stats.hits.Load() }
-func (a *App) Suppressed() uint64  { return a.stats.suppressed.Load() }
+// EventsSeen, Hits, Suppressed, PanicsContained — atomic snapshot getters.
+func (a *App) EventsSeen() uint64      { return a.stats.eventsSeen.Load() }
+func (a *App) Hits() uint64            { return a.stats.hits.Load() }
+func (a *App) Suppressed() uint64      { return a.stats.suppressed.Load() }
+func (a *App) PanicsContained() uint64 { return a.stats.panicsContained.Load() }
 
 // Run drives ingestion until the context is cancelled or the feed closes.
 // It returns nil on clean completion (channel closed) or ctx.Err() on cancel.
@@ -173,7 +175,20 @@ func (a *App) Run(ctx context.Context) error {
 				}
 				return nil
 			}
-			a.handleEvent(ev)
+			// Per-event recover: a panic in handleEvent (rule eval, allowlist,
+			// snapshot capture, alert dispatch) on an attacker-shaped event must
+			// skip ONE event, not kill the drain loop (and with it the SYSTEM
+			// daemon = detection blinded). Mirrors dispatcher.go's callAlerter.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.stats.panicsContained.Add(1)
+						a.log.Warn("event panic contained; event skipped",
+							"eid", ev.EID, "record_id", ev.RecordID, "image", ev.Image, "panic", r)
+					}
+				}()
+				a.handleEvent(ev)
+			}()
 		}
 	}
 }
@@ -343,8 +358,8 @@ func (a *App) heartbeat(ctx context.Context, interval time.Duration, done chan<-
 }
 
 func (a *App) writeHeartbeat(t time.Time) {
-	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d\n",
-		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed())
+	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d\n",
+		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained())
 	if err := os.WriteFile(a.opts.HeartbeatPath, []byte(line), 0o644); err != nil {
 		a.log.Warn("heartbeat write failed", "err", err)
 		return

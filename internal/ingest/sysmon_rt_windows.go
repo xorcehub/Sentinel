@@ -219,23 +219,41 @@ func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 	var events []event.Event
 	var maxID int64
 	for _, line := range strings.Split(stdout.String(), "\n") {
-		line = strings.TrimSpace(line)
+		line := strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		xmlUTF16, err := base64.StdEncoding.DecodeString(line)
+		// Per-line recover: a panic in base64 decode, UTF-16 decode, or
+		// sysmonxml.Parse on an attacker-shaped event value must skip ONE
+		// event, not kill the poller goroutine (and with it the SYSTEM daemon
+		// = detection blinded). Mirrors dispatcher.go's callAlerter recover.
+		var (
+			xmlUTF16 []byte
+			xmlStr   string
+			ev      event.Event
+			err      error
+		)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.log.Warn("parse panic contained; event skipped",
+						"record_id", ev.RecordID, "panic", r)
+					err = fmt.Errorf("panic: %v", r)
+				}
+			}()
+			xmlUTF16, err = base64.StdEncoding.DecodeString(line)
+			if err != nil {
+				s.log.Debug("base64 decode skipped", "err", err)
+				return
+			}
+			xmlStr, err = decodeUTF16LE(xmlUTF16)
+			if err != nil {
+				s.log.Debug("utf16 decode skipped", "err", err)
+				return
+			}
+			ev, err = sysmonxml.Parse([]byte(xmlStr), event.SrcSysmonRT)
+		}()
 		if err != nil {
-			s.log.Debug("base64 decode skipped", "err", err)
-			continue
-		}
-		xmlStr, err := decodeUTF16LE(xmlUTF16)
-		if err != nil {
-			s.log.Debug("utf16 decode skipped", "err", err)
-			continue
-		}
-		ev, err := sysmonxml.Parse([]byte(xmlStr), event.SrcSysmonRT)
-		if err != nil {
-			s.log.Debug("xml parse skipped", "err", err)
 			continue
 		}
 		if int64(ev.RecordID) > maxID {
