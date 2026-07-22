@@ -89,7 +89,8 @@ Step 7 "Toast relay (user-session autostart)"
 # HKLM\...\Run runs sentinel-tray at every interactive logon, in that user's
 # session + token. Single-user box assumption; on a multi-user box a per-user
 # scheduled task would be the proper fix. The relay lets the SYSTEM daemon
-# surface toasts that persist in Action Center (Session-0 direct toasts fail).
+# surface toasts in the user session (Session-0 direct toasts fail). Best-effort:
+# no AUMID is registered, so toasts may not persist in Action Center.
 $runKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 Set-ItemProperty -Path $runKey -Name "SentinelTray" -Value $trayExe
 # Start it now (no reboot required) - one per session is enough; duplicates
