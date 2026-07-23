@@ -61,7 +61,12 @@
       // built binary path, NOT the whole tree. Its API endpoints (128.14.69.x)
       // rotate, so trust the image rather than chasing each IP. NET-004
       // (Temp/AppData/ProgramData outbound) + NET-005 (loopback) still apply.
-      "\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pi-lite\\\\dist\\\\pi-lite\\.exe$"
+      "\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pi-lite\\\\dist\\\\pi-lite\\.exe$",
+      // bun runtime - operator JS toolchain. Trust image so NET-002/003
+      // quiet down; NET-005 (loopback) still applies.
+      "\\\\users\\\\[^\\\\]+\\\\.bun\\\\bin\\\\.*\\.exe$",
+      // uv-installed CPython (appdata/roaming/uv/python/<ver>/python.exe).
+      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\uv\\\\python\\\\.*\\\\python\\.exe$"
     ]
   },
   // dev_scripts: CmdLine-anchored exceptions for EXEC-001 (see allowlist doc).
@@ -70,7 +75,20 @@
   // Filename anchor covers BOTH absolute (-File C:\\...\\pe-triage-docker.ps1)
   // and relative (-File ./scripts/pe-triage-docker.ps1) invocations.
   "dev_scripts": [
-    "pe-triage-docker\\.ps1"
+    "pe-triage-docker\\.ps1",
+    // operator install/uninstall scripts. Path-anchored on the repo dir so a
+    // same-named dropper (install.ps1 is a top-tier dropper name) can't evade
+    // EXEC-001. Requires absolute-path invocation
+    // (-File C:\\...\\leave-my-shit-alone\\install.ps1); a relative run
+    // (-File .\\install.ps1) won't match here and will (safely) alert, which is
+    // the correct failure for a one-shot, supervised install.
+    "leave-my-shit-alone\\\\install\\.ps1",
+    "leave-my-shit-alone\\\\uninstall\\.ps1",
+    // Docker Desktop registry-list helper (cscript ...\regedit\vbs\regList.wsf).
+    // Path-anchored on Docker's stable install subdir so a same-named payload
+    // elsewhere (e.g. C:\ProgramData\reglist.wsf via cscript+http) can't evade
+    // EXEC-003. Docker's real path is the only legit occurrence of that subtree.
+    "regedit\\\\vbs\\\\reglist\\.wsf"
   ],
 
   // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the

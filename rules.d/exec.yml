@@ -81,7 +81,8 @@ x-sentinel:
   id: EXEC-003
   severity: suspicious
   alert: [toast, log, eventlog]
-  note: "Paired with http/script to reduce noise."
+  except: { cmdline_in_dev_scripts: dev_scripts }
+  note: "Paired with http/script to reduce noise. dev_scripts quiets known LOLBin-driven dev helpers (e.g. Docker Desktop's cscript regList.wsf) without trusting the LOLBin image."
 ---
 title: Executable with random/hex/GUID name from Temp/AppData/ProgramData
 id: 59932e07-ceb1-5d19-a589-22e58ee51443

@@ -12,7 +12,13 @@ detection:
     TargetFilename|contains: ['rules.d\', 'allowlist.json', 'baseline_clean.json', 'baseline_2', 'state.db', 'sentinel.conf']
   filter_sentinel:
     Image|endswith: '\sentinel.exe'
-  condition: selection and not filter_sentinel
+  filter_temp:
+    # Writes under Temp are test fixtures / staging copies, never the live
+    # config dir. Real tamper targets rules.d/allowlist.json/state.db at the
+    # install path (never Temp), so excluding Temp can't mask a real tamper.
+    # Quiets go test exes (Temp/go-build*/.../state.db) and git cp into Temp.
+    TargetFilename|contains: '\Temp\'
+  condition: selection and not filter_sentinel and not filter_temp
 level: high
 tags: [attack.defense_evasion, attack.t1562.001]
 x-sentinel:

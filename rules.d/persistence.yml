@@ -20,6 +20,12 @@ x-sentinel:
   id: PERSIST-001
   severity: critical
   alert: [popup, toast, log, eventlog]
+  # dev_scripts is deliberately NOT used here: PERSIST-001 catches scheduled-
+  # task persistence launched from user-writable paths, and install.ps1 /
+  # uninstall.ps1 are generic, high-prevalence dropper names. Anchoring
+  # dev_scripts here would suppress the exact alert this rule exists to raise
+  # (see the incident in the note below). EXEC-001 alone carries the dev-script
+  # exception, where the operator's own repo launch is the only realistic hit.
   except: { image_in_allowlist: trusted_binaries }
   note: "XblGameCachesTask used 'conhost.exe --headless powershell -ep bypass -file C:\\ProgramData\\onedrive-sync.ps1'."
 ---
@@ -50,7 +56,13 @@ detection:
   selection:
     EventID: 13
     TargetObject|contains: ['\CurrentVersion\Run', '\RunOnce', '\Winlogon', '\AppInit_DLLs', '\Userinit']
-  condition: selection
+  filter_trustedinstaller_notify:
+    # TrustedInstaller registering its Winlogon session notification during
+    # Windows servicing (CreateSession event). Pure OS churn; fires on every
+    # servicing pass. Scoped to the TrustedInstaller component path so a real
+    # Winlogon\Notifications persistence entry by any other writer still fires.
+    TargetObject|contains: '\Winlogon\Notifications\Components\TrustedInstaller'
+  condition: selection and not filter_trustedinstaller_notify
 level: high
 tags: [attack.persistence, attack.t1060, attack.t1547.001]
 x-sentinel:
@@ -84,7 +96,22 @@ detection:
   selection:
     EventID: 13
     TargetObject|contains: '\System\CurrentControlSet\Services'
-  condition: selection
+  # These Services-subtree writes are device-state / perf-counter / start-type
+  # churn, NOT a service ImagePath landing in a user-writable dir (the rule's
+  # actual intent — the ImagePath-resolver engine_helper below is not yet
+  # implemented). Dropping them keeps the rule focused on ImagePath persistence.
+  filter_benign_subkeys:
+    TargetObject|contains:
+      - '\bam\State\UserSettings'      # Background Activity Moderator per-user tracking
+      - '\vmsmp\parameters\NicList'    # Hyper-V virtual switch NIC list
+      - '\WmiApRpl\Performance'         # WMI perf-counter config
+      - '\BTHPORT\Parameters'           # bluetooth paired-device FriendlyName
+      - '\swenum\Devices'              # software device enumerator names
+  filter_start_type:
+    # A service's \Start DWORD (start-type) is never an ImagePath; the rule
+    # targets ImagePath-in-writable-dir. Safe to drop start-type churn.
+    TargetObject|endswith: '\Start'
+  condition: selection and not filter_benign_subkeys and not filter_start_type
 level: medium
 tags: [attack.persistence, attack.t1543.003]
 x-sentinel:
@@ -109,4 +136,5 @@ x-sentinel:
   id: PERSIST-006
   severity: suspicious
   alert: [toast, log, eventlog]
+  except: { image_in_allowlist: trusted_binaries }
   engine_helper: "Refine to HKCU hive only; Sysmon reports HKCU as \\REGISTRY\\USER\\<sid>\\... — adjust matcher during tuning."
