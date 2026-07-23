@@ -75,3 +75,69 @@ func TestPipeRoundTrip(t *testing.T) {
 		t.Fatal("relay did not deliver the toast (notifyFn never called)")
 	}
 }
+
+// TestPipeOverflowDropped pins the relay's DoS bound: a client that streams
+// past maxRead without closing must NOT OOM the tray. readUntilClose returns
+// nil, handleConnection drops without notifying, so notifyFn is never called.
+// Regression guard for the unbounded readUntilClose bug.
+func TestPipeOverflowDropped(t *testing.T) {
+	const testPipe = `\\.\pipe\sentinel-toast-overflow`
+	namePtr, err := windows.UTF16PtrFromString(testPipe)
+	if err != nil {
+		t.Fatalf("UTF16 pipe name: %v", err)
+	}
+
+	// notifyFn must NOT fire on an overflow connection.
+	fired := make(chan struct{}, 1)
+	orig := notifyFn
+	notifyFn = func(_, _ string, _ any) error {
+		fired <- struct{}{}
+		return nil
+	}
+	defer func() { notifyFn = orig }()
+
+	go handleConnection(0, namePtr)
+
+	var h windows.Handle
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var openErr error
+		h, openErr = windows.CreateFile(
+			namePtr, windows.GENERIC_WRITE, 0, nil,
+			windows.OPEN_EXISTING, 0, 0,
+		)
+		if openErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("client could not connect (pipe never ready): %v", openErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	defer windows.CloseHandle(h)
+
+	// Stream well past maxRead in 4 KiB chunks, then close. Before the fix this
+	// grew the buffer unbounded (or hung the relay on a huge payload); after it,
+	// readUntilClose hits the cap and returns nil at the first over-cap read.
+	sent := 0
+	chunk := make([]byte, 4096)
+	for sent <= maxRead+4096 {
+		var n uint32
+		if err := windows.WriteFile(h, chunk, &n, nil); err != nil {
+			// The relay closes its handle once readUntilClose returns nil, which
+			// can break the pipe mid-write; that's the expected drop signal.
+			break
+		}
+		sent += int(n)
+	}
+	windows.CloseHandle(h)
+
+	select {
+	case <-fired:
+		t.Fatal("overflow connection must be dropped without notifying; " +
+			"notifyFn fired (relay accepted an over-cap payload)")
+	case <-time.After(500 * time.Millisecond):
+		// Good: dropped, no notify. Half a second is ample for the relay to
+		// parse-or-drop a single buffered connection.
+	}
+}
