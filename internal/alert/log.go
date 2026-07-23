@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"sentinel/internal/event"
 )
@@ -221,9 +222,18 @@ func upper(s string) string {
 	return string(out)
 }
 
+// trunc returns the first n bytes of s (backed up to a rune boundary so the
+// result is always valid UTF-8) with "…" appended when truncated. The naive
+// s[:n] slice split multibyte runes in non-ASCII command lines (Cyrillic/CJK
+// usernames and paths are common on Windows), emitting invalid UTF-8 like a
+// lone 0xd0 lead byte — garbled as � in popups/ALERTS.log/EventLog and a
+// broken escape in the JSON toast payload. Rune-safe for ~the cost of a scan.
 func trunc(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n-- // back up to a rune-start byte; never slice through a multibyte seq
 	}
 	return s[:n] + "…"
 }
