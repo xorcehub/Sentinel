@@ -1,18 +1,21 @@
 name: CI
 
-# Gate: gofmt cleanliness + go vet + build + tests.
+# Gate: gofmt cleanliness + go mod tidy + go vet + staticcheck + govulncheck
+# + build + tests.
 # Addresses review finding #6 (no formatter/vet gate existed; 26 files were
 # unformatted, incl. a stray leading tab on rules.buildHit).
 #
 # Split across runners because the project is Windows-targeted with Linux stubs:
-#  - fmt job (ubuntu): gofmt is OS- and build-tag-independent, so it checks
-#    every .go file (incl. the //go:build windows ones) cheaply on the free
-#    runner. This is the primary value of the gate.
+#  - fmt job (ubuntu): gofmt + go mod tidy are OS- and build-tag-independent,
+#    so they run cheaply on the free runner. gofmt also parses every .go file
+#    (incl. the //go:build windows ones). This is the primary value of the gate.
 #  - build-test job (windows-latest): every package builds there with no
 #    build-constraint issues. cmd/sentinel-tray has no non-windows stub, so it
 #    is excluded from a Linux build — running build/vet/test on Windows avoids
 #    that and exercises the real syscall code paths (named-pipe tray, WTS
-#    popup, Sysmon poller).
+#    popup, Sysmon poller). staticcheck + govulncheck also run here (not on the
+#    ubuntu job) because they are build-tag-sensitive: on Linux they'd silently
+#    skip every //go:build windows package, which is most of the codebase.
 
 on:
   push:
@@ -24,7 +27,7 @@ permissions:
 
 jobs:
   fmt:
-    name: gofmt
+    name: gofmt + go mod tidy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,9 +45,13 @@ jobs:
             echo "::hint::run: gofmt -w ."
             exit 1
           fi
+      - name: go mod tidy (fail if go.mod/go.sum not tidy)
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
 
   build-test:
-    name: vet + build + test (windows)
+    name: vet + build + staticcheck + vuln + test (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,5 +63,9 @@ jobs:
         run: go vet ./...
       - name: go build
         run: go build ./...
+      - name: staticcheck (pinned; strict superset of vet)
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+      - name: govulncheck (pinned; fails only on reachable CVEs)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - name: go test -race
         run: go test -race ./...
