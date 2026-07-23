@@ -31,6 +31,15 @@ const (
 	// blocking ConnectNamedPipe in its own goroutine. Ceiling: bursts beyond
 	// this drop (best-effort, same as the toast contract). Phase 2 raises it.
 	instances = 4
+	// maxRead bounds how many bytes one connection may send before the relay
+	// drops it. The pipe is unauthenticated (documented in THREAT-MODEL.md), so
+	// without this a local process that connects and streams without closing
+	// grows readUntilClose's buffer forever -> tray OOM (a trivial local DoS).
+	// Legit toasts are tiny: title <= ~70 chars ("Sentinel: " + rule name
+	// truncated to 60) + body <= ~95 chars (severity + image truncated to 80) +
+	// JSON framing ~= 200 bytes total. 64 KiB is ~300x headroom and caps total
+	// relay RAM at 4 instances x 64 KiB = 256 KiB. Nothing legit is near it.
+	maxRead = 64 * 1024
 )
 
 type toastMsg struct {
@@ -98,6 +107,11 @@ func handleConnection(id int, namePtr *uint16) {
 	data := readUntilClose(h)
 	windows.DisconnectNamedPipe(h)
 	windows.CloseHandle(h)
+	if data == nil {
+		// readUntilClose hit the maxRead cap (unclosed/malicious client) and
+		// already logged the drop. Nothing to parse; never notify.
+		return
+	}
 
 	var msg toastMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -112,7 +126,11 @@ func handleConnection(id int, namePtr *uint16) {
 }
 
 // readUntilClose reads a byte-mode pipe until the client closes (ReadFile
-// returns ERROR_BROKEN_PIPE or 0 bytes).
+// returns ERROR_BROKEN_PIPE or 0 bytes). It returns nil if the client sent more
+// than maxRead bytes without closing — the overflow is logged and the caller
+// must drop without notifying (no legit toast is anywhere near maxRead). This
+// bounds relay memory so an unauthenticated local client cannot OOM the tray
+// by streaming forever.
 func readUntilClose(h windows.Handle) []byte {
 	var buf bytes.Buffer
 	chunk := make([]byte, 4096)
@@ -124,6 +142,10 @@ func readUntilClose(h windows.Handle) []byte {
 		}
 		if err != nil || n == 0 {
 			break // client closed (broken pipe) or EOF
+		}
+		if buf.Len() > maxRead {
+			log.Printf("instance: toast pipe read exceeded %d-byte cap; dropping (unclosed/malicious client)", maxRead)
+			return nil
 		}
 	}
 	return buf.Bytes()
