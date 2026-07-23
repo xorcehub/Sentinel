@@ -55,15 +55,17 @@ func TestPipeRoundTrip(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	defer windows.CloseHandle(h)
-
 	want := toastMsg{Title: "Sentinel: EXEC-001", Body: "CRITICAL - powershell.exe"}
 	payload := []byte(`{"title":"` + want.Title + `","body":"` + want.Body + `"}`)
 	var written uint32
 	if err := windows.WriteFile(h, payload, &written, nil); err != nil {
+		windows.CloseHandle(h)
 		t.Fatalf("WriteFile: %v", err)
 	}
-	windows.CloseHandle(h) // signal EOF so the relay stops reading
+	// Close once to signal EOF to the relay. Do NOT also defer CloseHandle(h):
+	// a double-close recycles the handle value, which can close an unrelated
+	// runtime semaphore and crash shutdown with errno 6 (ERROR_INVALID_HANDLE).
+	windows.CloseHandle(h)
 
 	select {
 	case c := <-got:
@@ -114,8 +116,6 @@ func TestPipeOverflowDropped(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	defer windows.CloseHandle(h)
-
 	// Stream well past maxRead in 4 KiB chunks, then close. Before the fix this
 	// grew the buffer unbounded (or hung the relay on a huge payload); after it,
 	// readUntilClose hits the cap and returns nil at the first over-cap read.
@@ -130,6 +130,8 @@ func TestPipeOverflowDropped(t *testing.T) {
 		}
 		sent += int(n)
 	}
+	// Single close (no defer) - see TestPipeRoundTrip: a double-close recycles
+	// the handle value and can close a runtime semaphore (errno 6 at shutdown).
 	windows.CloseHandle(h)
 
 	select {
