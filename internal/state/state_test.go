@@ -93,6 +93,44 @@ func TestReAlertDefaultWindow(t *testing.T) {
 	}
 }
 
+// TestReAlertFailsOpenOnStateError pins Sentinel's core invariant: "detection
+// is never blinded by suppression." ReAlert drives the engine's dedup branch
+// (engine.go: `!ReAlert(...) -> Suppressed{dedup-window}`), so a state-store
+// write error MUST NOT suppress a hit. We close the bbolt DB (Update then
+// returns ErrDatabaseNotOpen, the documented closed-handle behavior) and
+// assert ReAlert returns true (allow the alert) rather than false (suppress).
+// Regression guard for the silent-blindness bug where the Update error was
+// swallowed and the zero-value `allowed` was returned.
+func TestReAlertFailsOpenOnStateError(t *testing.T) {
+	s := openTemp(t)
+	// Establish a key already in its window: on a healthy store, the second
+	// call below would be suppressed (return false). We'll show the error path
+	// overrides that.
+	if !s.ReAlert("NET-005", "img|127.0.0.1:58172", time.Hour) {
+		t.Fatal("precondition: first ReAlert must be allowed")
+	}
+	s.Close() // force every subsequent Update to error (ErrDatabaseNotOpen)
+
+	// Same key, within window — healthy store returns false (suppressed).
+	// Broken store MUST return true: fail open, alert rather than blind.
+	if !s.ReAlert("NET-005", "img|127.0.0.1:58172", time.Hour) {
+		t.Fatal("ReAlert on a failed state write must fail OPEN (return true); " +
+			"returning false would silently suppress a real detection " +
+			"(blindness via the dedup path)")
+	}
+}
+
+// TestMarkSeenLogsOnError confirms a failed high-water write is non-fatal and
+// surfaces (no panic, no miss). The worst case for MarkSeen is a duplicate
+// alert on the next sweep, never a missed detection. We only assert it doesn't
+// panic on a closed store; the log line is a side effect we don't capture.
+func TestMarkSeenLogsOnError(t *testing.T) {
+	s := openTemp(t)
+	s.Close()
+	// Must not panic on a broken store; the error is logged and swallowed.
+	s.MarkSeen(42)
+}
+
 // TestBaselineAlertOnce: the Phase 3d Option-A "alert once" store. A key that
 // has not been seen reports not-alerted; after MarkBaselineAlerted it reports
 // alerted forever (no time window) until ResetBaselineAlerted clears the set.
