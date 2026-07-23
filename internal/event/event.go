@@ -35,15 +35,15 @@ const (
 
 // Hit is what a rule produces when an Event matches.
 type Hit struct {
-	ID        string   // per-alert correlation key; R-YYYYMMDD-<nonce>-<NNNNNN> (05-ALERTING.md §5). Stamped once in rules.buildHit; emitted by every channel so sentinel.log and ALERTS.log join on this key, not a colliding timestamp.
-	RuleID    string   // x-sentinel.id mnemonic (stable); falls back to Sigma title
-	RuleUUID  string   // canonical Sigma id
-	RuleName  string   // Sigma title
-	Severity  Severity
-	Event     Event
-	Matched   string   // human description of what matched
-	AlertTo   []string // ["popup","toast","log","eventlog","webhook"]
-	Time      time.Time
+	ID       string // per-alert correlation key; R-YYYYMMDD-<nonce>-<NNNNNN> (05-ALERTING.md §5). Stamped once in rules.buildHit; emitted by every channel so sentinel.log and ALERTS.log join on this key, not a colliding timestamp.
+	RuleID   string // x-sentinel.id mnemonic (stable); falls back to Sigma title
+	RuleUUID string // canonical Sigma id
+	RuleName string // Sigma title
+	Severity Severity
+	Event    Event
+	Matched  string   // human description of what matched
+	AlertTo  []string // ["popup","toast","log","eventlog","webhook"]
+	Time     time.Time
 }
 
 // Event is the unified, source-agnostic pipeline item. Real Sysmon events,
@@ -60,9 +60,9 @@ type Event struct {
 	User          string
 
 	// EID 7 (ImageLoad)
-	ImageLoaded string  // the DLL that loaded (NOT Image)
-	Signed      string  // "true"/"false" — signature status of the LOADED MODULE
-	Signature   string  // signer of the loaded module
+	ImageLoaded string // the DLL that loaded (NOT Image)
+	Signed      string // "true"/"false" — signature status of the LOADED MODULE
+	Signature   string // signer of the loaded module
 
 	// EID 8 (CreateRemoteThread) / 10 (ProcessAccess)
 	SourceImage   string // acting process (= Image; kept explicit so EID8/10 rules read naturally)

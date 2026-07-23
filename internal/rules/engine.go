@@ -42,7 +42,7 @@ type Allowlist interface {
 	CmdLineInDevScripts(cmdline string) bool
 	DstInCIDR(ip string) bool
 	DstIsKnownLoopback(ip string, port int) bool
-	IsLogNoise(e *event.Event) bool     // log-only filter; never consulted by Evaluate
+	IsLogNoise(e *event.Event) bool      // log-only filter; never consulted by Evaluate
 	ShouldCapture(e *event.Event) string // file_capture; never consulted by Evaluate
 }
 
@@ -295,7 +295,7 @@ func dedupWindow(r *sigmaeval.Rule) time.Duration {
 	return 15 * time.Minute
 }
 
-	func (eng *Engine) buildHit(r *sigmaeval.Rule, e *event.Event, targetKey string) event.Hit {
+func (eng *Engine) buildHit(r *sigmaeval.Rule, e *event.Event, targetKey string) event.Hit {
 	sev := severity(r)
 	return event.Hit{
 		ID:       eng.idGen.Next(),
@@ -331,7 +331,7 @@ func matchedActor(e *event.Event) string {
 // ---- flood collapse ----
 
 const (
-	floodWindow  = time.Minute
+	floodWindow    = time.Minute
 	floodThreshold = 50
 )
 

@@ -69,28 +69,28 @@ func failExit(err error) {
 }
 
 type flags struct {
-	rulesDir      string
-	allowlistPath string
-	statePath     string
-	logPath       string
-	heartbeatPath string
-	alertsPath    string
-	debug         bool
-	traceEvents   bool
-	mock          bool
-	mockEvents    int
-	raw           bool
-	mutexName     string
-	sysmonChannel string
-	sysmonQuery   string
-	sysmonNative  bool
-	selfTest      bool
-	baselineSnapshot bool
-	baselineNow      bool
-	baselineClean    string
-	baselineHour     int
-	autorunsc        string
-	snapshotDir      string
+	rulesDir          string
+	allowlistPath     string
+	statePath         string
+	logPath           string
+	heartbeatPath     string
+	alertsPath        string
+	debug             bool
+	traceEvents       bool
+	mock              bool
+	mockEvents        int
+	raw               bool
+	mutexName         string
+	sysmonChannel     string
+	sysmonQuery       string
+	sysmonNative      bool
+	selfTest          bool
+	baselineSnapshot  bool
+	baselineNow       bool
+	baselineClean     string
+	baselineHour      int
+	autorunsc         string
+	snapshotDir       string
 	snapshotPerFileKB int
 	snapshotTotalMB   int
 	sysmonArchiveDir  string
@@ -237,12 +237,12 @@ func run(args []string) error {
 	}
 
 	a, err := app.New(app.Options{
-		Logger:        logger,
-		Ingester:      ing,
-		Engine:        eng,
-		TraceEvents:   fl.traceEvents,
-		HeartbeatPath: fl.heartbeatPath,
-		Dispatcher:    disp,
+		Logger:           logger,
+		Ingester:         ing,
+		Engine:           eng,
+		TraceEvents:      fl.traceEvents,
+		HeartbeatPath:    fl.heartbeatPath,
+		Dispatcher:       disp,
 		Snapshot:         snap,
 		SysmonArchiveDir: fl.sysmonArchiveDir,
 		Baseline:         buildBaseline(fl, st, logger),

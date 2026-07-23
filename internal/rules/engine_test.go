@@ -306,7 +306,7 @@ func TestRTSweepRecordIDGate(t *testing.T) {
 	// RT observes event with RecordID 100
 	rt := eng.Evaluate(&event.Event{
 		Source: event.SrcSysmonRT, RecordID: 100, EID: 1,
-		Image: `C:\Windows\System32\conhost.exe`,
+		Image:   `C:\Windows\System32\conhost.exe`,
 		CmdLine: `conhost.exe --headless powershell`,
 	})
 	if !contains(hitIDs(rt), "EXEC-002") {
@@ -315,7 +315,7 @@ func TestRTSweepRecordIDGate(t *testing.T) {
 	// Sweep replays the same RecordID -> gated out entirely (no hits, no suppressions)
 	sw := eng.Evaluate(&event.Event{
 		Source: event.SrcSysmonSweep, RecordID: 100, EID: 1,
-		Image: `C:\Windows\System32\conhost.exe`,
+		Image:   `C:\Windows\System32\conhost.exe`,
 		CmdLine: `conhost.exe --headless powershell`,
 	})
 	if len(sw.Hits) != 0 || len(sw.Suppressed) != 0 {

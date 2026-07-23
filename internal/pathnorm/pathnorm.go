@@ -8,9 +8,10 @@
 // other. NormalizePath collapses both to a canonical lowercase backslash form.
 //
 // Canonical form: lowercase, backslash separators, drive letter colon form.
-//   /d/Analysis/foo  ->  d:\analysis\foo
-//   D:\Analysis\foo  ->  d:\analysis\foo
-//   C:\Users\User01\  ->  c:\users\user01\
+//
+//	/d/Analysis/foo  ->  d:\analysis\foo
+//	D:\Analysis\foo  ->  d:\analysis\foo
+//	C:\Users\User01\  ->  c:\users\user01\
 //
 // This is applied to path-valued Event fields by the engine before rule
 // evaluation, and by the allowlist before path-regex matching. It is NOT applied

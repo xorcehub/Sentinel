@@ -23,7 +23,7 @@ type Dispatcher struct {
 	alerters map[string]Alerter
 	log      *slog.Logger
 
-	in   chan event.Hit
+	in      chan event.Hit
 	popupCh chan event.Hit
 
 	dropped   atomic.Uint64 // popup queue overflow counter

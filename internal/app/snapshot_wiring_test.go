@@ -209,10 +209,10 @@ func TestSnapshotWiringCapturesAndDetects(t *testing.T) {
 func TestSnapshotDisabledByDefault(t *testing.T) {
 	eng := newSnapEngine(t)
 	detEv := event.Event{
-		EID:     1,
+		EID:      1,
 		RecordID: 1,
-		Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-		CmdLine: `powershell.exe -ExecutionPolicy Bypass -File C:\Temp\x.ps1`,
+		Image:    `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		CmdLine:  `powershell.exe -ExecutionPolicy Bypass -File C:\Temp\x.ps1`,
 	}
 	var hits atomic.Uint64
 	a, err := New(Options{

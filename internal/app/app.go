@@ -32,9 +32,9 @@ import (
 // Options configures an App. Logger, Ingester are required; Engine, heartbeat
 // and alert hooks are optional.
 type Options struct {
-	Logger  *slog.Logger
+	Logger   *slog.Logger
 	Ingester ingest.Ingester
-	Engine  *rules.Engine // nil = raw passthrough (Phase 1 default)
+	Engine   *rules.Engine // nil = raw passthrough (Phase 1 default)
 
 	// TraceEvents enables the per-event DEBUG dump of every Sysmon event
 	// (image/cmd/eid/recordid) before rule evaluation. Off by default: the dump
@@ -85,9 +85,9 @@ type Options struct {
 
 // Stats holds run-since counters, read via the getters (atomic).
 type Stats struct {
-	eventsSeen   atomic.Uint64
-	hits         atomic.Uint64
-	suppressed   atomic.Uint64
+	eventsSeen      atomic.Uint64
+	hits            atomic.Uint64
+	suppressed      atomic.Uint64
 	panicsContained atomic.Uint64
 }
 

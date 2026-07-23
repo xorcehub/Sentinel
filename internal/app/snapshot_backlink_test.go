@@ -130,8 +130,8 @@ x-sentinel: { id: EXEC-BACKLINK-001, severity: critical }
 	a2, err := New(Options{
 		Logger:   logger,
 		Ingester: mock.New(detEv),
-		Engine:   eng,   // shared — dedup state carries over (distinct RecordIDs)
-		Snapshot: snap,  // shared — the index from phase 1 is live
+		Engine:   eng,  // shared — dedup state carries over (distinct RecordIDs)
+		Snapshot: snap, // shared — the index from phase 1 is live
 		OnHit: func(h event.Hit) {
 			hits.Add(1)
 			hitHID = h.ID

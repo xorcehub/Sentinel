@@ -85,11 +85,11 @@ x-sentinel: { id: GIT-NOISE-001, severity: suspicious }
 	var buf bytes.Buffer
 	var hits atomic.Uint64
 	a, err := New(Options{
-		Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		Ingester: mock.New(gitEv, cmdEv),
-		Engine:   eng,
+		Logger:      slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Ingester:    mock.New(gitEv, cmdEv),
+		Engine:      eng,
 		TraceEvents: true, // dump is now gated; opt in so the selective-filter assertion holds
-		OnHit:    func(event.Hit) { hits.Add(1) },
+		OnHit:       func(event.Hit) { hits.Add(1) },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

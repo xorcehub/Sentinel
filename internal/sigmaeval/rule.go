@@ -40,7 +40,7 @@ type Rule struct {
 	XAlert     []string
 	XNote      string
 
-	condition matcher                         // compiled condition over selMatchers
+	condition matcher                            // compiled condition over selMatchers
 	selMatch  map[string]func(*event.Event) bool // compiled selections, by name
 }
 
@@ -97,7 +97,7 @@ func decodeDocs(data []byte) ([]map[string]interface{}, error) {
 }
 
 func compileRule(d map[string]interface{}) (*Rule, error) {
-	r := &Rule{selMatch: map[string]func(*event.Event)bool{}}
+	r := &Rule{selMatch: map[string]func(*event.Event) bool{}}
 	r.Title, _ = d["title"].(string)
 	r.ID, _ = d["id"].(string)
 	r.Status, _ = d["status"].(string)

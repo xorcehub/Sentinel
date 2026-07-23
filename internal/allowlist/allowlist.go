@@ -3,11 +3,12 @@
 // (docs/03-RULES.md §3, docs/04-TELEMETRY.md §2).
 //
 // Five sets, mapping 1:1 to the except operators:
-//   image_in_allowlist: trusted_binaries   -> ImageTrusted(hash or path)
-//   image_in_dev_tools: dev_tool_paths     -> ImageInDevTools(path)
-//   cmdline_in_dev_scripts: dev_scripts    -> CmdLineInDevScripts(cmdline)
-//   dst_in_allowlist: allowed_destinations -> DstInCIDR(ip)
-//   dst_in_allowlist: known_loopback_listeners -> DstIsKnownLoopback(ip, port)
+//
+//	image_in_allowlist: trusted_binaries   -> ImageTrusted(hash or path)
+//	image_in_dev_tools: dev_tool_paths     -> ImageInDevTools(path)
+//	cmdline_in_dev_scripts: dev_scripts    -> CmdLineInDevScripts(cmdline)
+//	dst_in_allowlist: allowed_destinations -> DstInCIDR(ip)
+//	dst_in_allowlist: known_loopback_listeners -> DstIsKnownLoopback(ip, port)
 //
 // dev_scripts is the ONLY set anchored on the CommandLine rather than the
 // Image. It exists for the dev-workflow EXEC-001 case: a developer running
@@ -51,14 +52,14 @@ import (
 // Allowlist is the compiled, read-optimized form. All methods are safe for
 // concurrent use (they read immutable compiled structures).
 type Allowlist struct {
-	tbSHA     map[string]bool       // lowercased sha256
-	tbPath    []*regexp.Regexp      // path patterns, matched on normalized lower path
-	devPath   []*regexp.Regexp
-	devScript []*regexp.Regexp      // commandline anchors (dev scripts run via a LOLBin)
-	cidrs     []*net.IPNet
-	loopback  map[string]bool       // "host:port" lowercased
-	logFilter []*logFilterEntry     // event_log_filter: suppresses the per-event DEBUG dump only
-	capPatterns []*regexp.Regexp    // file_capture: path patterns matched on EID 11/23 TargetFile
+	tbSHA       map[string]bool  // lowercased sha256
+	tbPath      []*regexp.Regexp // path patterns, matched on normalized lower path
+	devPath     []*regexp.Regexp
+	devScript   []*regexp.Regexp // commandline anchors (dev scripts run via a LOLBin)
+	cidrs       []*net.IPNet
+	loopback    map[string]bool   // "host:port" lowercased
+	logFilter   []*logFilterEntry // event_log_filter: suppresses the per-event DEBUG dump only
+	capPatterns []*regexp.Regexp  // file_capture: path patterns matched on EID 11/23 TargetFile
 }
 
 // logFilterEntry is one AND-conjunction rule from the optional event_log_filter
@@ -341,7 +342,7 @@ type rawDoc struct {
 		CIDR []string `json:"cidr"`
 	} `json:"allowed_destinations"`
 	KnownLoopbackListeners []string `json:"known_loopback_listeners"`
-	DevToolPaths struct {
+	DevToolPaths           struct {
 		Path []string `json:"path"`
 	} `json:"dev_tool_paths"`
 	// dev_scripts: commandline anchors (regex), NOT image paths. Flat array —

@@ -376,8 +376,12 @@ func TestFindArchived(t *testing.T) {
 	}
 
 	// Should return "" for empty inputs
-	if FindArchived("", "foo") != "" { t.Error("empty dir should return empty") }
-	if FindArchived(dir, "") != "" { t.Error("empty name should return empty") }
+	if FindArchived("", "foo") != "" {
+		t.Error("empty dir should return empty")
+	}
+	if FindArchived(dir, "") != "" {
+		t.Error("empty name should return empty")
+	}
 }
 
 func TestNewestArchiveFile(t *testing.T) {
