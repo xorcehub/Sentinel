@@ -113,7 +113,9 @@ func formatPopup(h event.Hit) (text, caption string) {
 			"Proc:   %s\n"+
 			"  cmd:  %s",
 		h.RuleID, h.RuleName,
-		h.Event.Time.Format("2006-01-02 15:04:05"),
+		// Local TZ so the popup wall-clock matches ALERTS.log (which uses h.Time =
+		// time.Now() local); h.Event.Time is the Sysmon instant in UTC.
+		h.Event.Time.Local().Format("2006-01-02 15:04:05"),
 		h.Event.Image,
 		trunc(h.Event.CmdLine, 300),
 	)
@@ -148,9 +150,9 @@ func (p *PopupAlerter) wtsPopup(text, caption string) error {
 		0, // WTS_CURRENT_SERVER_HANDLE
 		uintptr(console),
 		uintptr(unsafe.Pointer(&titleUTF[0])),
-		uintptr(len(titleUTF)-1),
+		uintptr((len(titleUTF)-1)*2), // WTSSendMessageW length is in BYTES, not wchars
 		uintptr(unsafe.Pointer(&msgUTF[0])),
-		uintptr(len(msgUTF)-1),
+		uintptr((len(msgUTF)-1)*2), // passing wchars truncated body at the half-byte mark
 		uintptr(flags),
 		0, // timeout (ignored when bWait=FALSE)
 		uintptr(unsafe.Pointer(&resp)),
