@@ -360,8 +360,14 @@ func (s *Snapshotter) indexCaptured(path, capDir string) {
 // "-File C:\...\Temp\ps-script-<GUID>.ps1" matches the indexed EID-11 path.
 // targetFile is matched exactly (normalized) for EID-11 hits like PERSIST-004
 // where the hit's TargetFile IS the captured path.
+//
+// Concurrency: must NOT read s.link outside linkMu. indexCaptured writes the
+// map from the snapshot worker goroutine, and len()/range on a map are unsafe
+// concurrent with writes. The empty-index case is handled by the locked range
+// (no-op) plus a post-lock len(dirs) check — a bare `len(s.link) == 0`
+// fast-path here raced the worker (caught by -race in the snapshot-wiring test).
 func (s *Snapshotter) LinkHit(hid, cmdline, targetFile string) int {
-	if hid == "" || (cmdline == "" && targetFile == "") || len(s.link) == 0 {
+	if hid == "" || (cmdline == "" && targetFile == "") {
 		return 0
 	}
 	nc := pathnorm.NormalizePath(cmdline)
@@ -375,6 +381,9 @@ func (s *Snapshotter) LinkHit(hid, cmdline, targetFile string) int {
 		}
 	}
 	s.linkMu.Unlock()
+	if len(dirs) == 0 {
+		return 0
+	}
 
 	count := 0
 	for _, dir := range dirs {
