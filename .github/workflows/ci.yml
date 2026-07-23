@@ -1,0 +1,60 @@
+name: CI
+
+# Gate: gofmt cleanliness + go vet + build + tests.
+# Addresses review finding #6 (no formatter/vet gate existed; 26 files were
+# unformatted, incl. a stray leading tab on rules.buildHit).
+#
+# Split across runners because the project is Windows-targeted with Linux stubs:
+#  - fmt job (ubuntu): gofmt is OS- and build-tag-independent, so it checks
+#    every .go file (incl. the //go:build windows ones) cheaply on the free
+#    runner. This is the primary value of the gate.
+#  - build-test job (windows-latest): every package builds there with no
+#    build-constraint issues. cmd/sentinel-tray has no non-windows stub, so it
+#    is excluded from a Linux build — running build/vet/test on Windows avoids
+#    that and exercises the real syscall code paths (named-pipe tray, WTS
+#    popup, Sysmon poller).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt -l (fail if any file is not formatted)
+        run: |
+          # gofmt parses regardless of //go:build tags, so this covers the
+          # windows-only files too. Empty output = clean.
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "::error::gofmt would reformat the following files:"
+            echo "$out"
+            echo "::hint::run: gofmt -w ."
+            exit 1
+          fi
+
+  build-test:
+    name: vet + build + test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test -race
+        run: go test -race ./...
