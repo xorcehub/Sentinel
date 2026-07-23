@@ -20,6 +20,7 @@ package state
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -81,18 +82,22 @@ func (s *State) SweepSeen(recordID uint64) bool {
 
 // MarkSeen raises the high-water-mark to recordID if it is greater than the
 // current value. Called for every processed event with a RecordID (RT and
-// sweep) so a later sweep of the same event is skipped.
+// sweep) so a later sweep of the same event is skipped. A write failure is
+// non-fatal (the worst case is a duplicate alert on the next sweep, not a
+// miss) but is logged so a stuck state store surfaces.
 func (s *State) MarkSeen(recordID uint64) {
 	if recordID == 0 {
 		return
 	}
-	_ = s.db.Update(func(tx *bbolt.Tx) error {
+	if err := s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketRecordID)
 		if recordID > readU64(b.Get(keyMax)) {
 			return b.Put(keyMax, u64(recordID))
 		}
 		return nil
-	})
+	}); err != nil {
+		log.Printf("state.MarkSeen: high-water write failed (sweep may re-feed); id=%d err=%v", recordID, err)
+	}
 }
 
 // MaxRecordID returns the current high-water-mark (0 if none). Diagnostic.
@@ -109,13 +114,19 @@ func (s *State) MaxRecordID() uint64 {
 // suppression window. If allowed, it records the current time atomically so a
 // concurrent evaluation of the same key cannot also pass. First-ever call for a
 // key always returns true.
+//
+// Fail-open on state-store error: a transient bbolt failure (write-lock
+// timeout, disk hiccup) must NOT silently suppress a real hit — that would
+// blind detection, violating Sentinel's core invariant ("detection is never
+// blinded by suppression"). So on Update error we return true (allow the alert,
+// fail noisily) and log. The cost is a possible duplicate alert, never a miss.
 func (s *State) ReAlert(ruleID, targetKey string, window time.Duration) bool {
 	if window <= 0 {
 		window = 15 * time.Minute
 	}
 	key := []byte(ruleID + "|" + targetKey)
 	var allowed bool
-	_ = s.db.Update(func(tx *bbolt.Tx) error {
+	err := s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketDedup)
 		now := time.Now().UnixNano()
 		if raw := b.Get(key); raw != nil {
@@ -130,6 +141,12 @@ func (s *State) ReAlert(ruleID, targetKey string, window time.Duration) bool {
 		allowed = true
 		return b.Put(key, u64(uint64(now)))
 	})
+	if err != nil {
+		// Fail open: cannot confirm this key is within its suppression window,
+		// so allow the alert rather than risk swallowing a real detection.
+		log.Printf("state.ReAlert: dedup write failed (fail-open, alerting); rule=%s key=%q err=%v", ruleID, targetKey, err)
+		return true
+	}
 	return allowed
 }
 
@@ -176,12 +193,16 @@ func (s *State) BaselineAlerted(key string) bool {
 }
 
 // MarkBaselineAlerted records key as having produced an alert. Idempotent.
-// The value is the alert timestamp (debug/diagnostic; not currently read).
+// The value is the alert timestamp (debug/diagnostic; not currently read). A
+// write failure is non-fatal (worst case: the entry re-alerts on the next scan,
+// not a miss) but is logged.
 func (s *State) MarkBaselineAlerted(key string) {
-	_ = s.db.Update(func(tx *bbolt.Tx) error {
+	if err := s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(bucketBaselineAlert)
 		return b.Put([]byte(key), u64(uint64(time.Now().UnixNano())))
-	})
+	}); err != nil {
+		log.Printf("state.MarkBaselineAlerted: write failed (entry may re-alert); key=%q err=%v", key, err)
+	}
 }
 
 // ResetBaselineAlerted empties the alerted set. Called when the clean baseline
