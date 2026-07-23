@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"sentinel/internal/alert"
 	"sentinel/internal/baseline"
@@ -463,9 +464,16 @@ func (s safeStderr) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// truncate returns the first n bytes of s backed up to a rune boundary, with
+// "…" appended when truncated. Rune-safe: the naive s[:n] split multibyte
+// sequences in non-ASCII command lines (common on Windows), emitting invalid
+// UTF-8 into the structured log. Mirrors alert.trunc.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }
