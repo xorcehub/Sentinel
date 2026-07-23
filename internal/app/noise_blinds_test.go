@@ -86,10 +86,10 @@ func TestEID11FilteredPowershellStillDetectsStartupWrite(t *testing.T) {
 	// Startup + .lnk) -> must HIT. TraceEvents=true so the ONLY reason the dump
 	// is absent is IsLogNoise, not the trace gate.
 	ev := event.Event{
-		EID:         11,
-		Image:       `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-		CmdLine:     "", // matches the filter's cmdline:"^$" clause
-		TargetFile:  `C:\Users\jurij\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\backdoor.lnk`,
+		EID:        11,
+		Image:      `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		CmdLine:    "", // matches the filter's cmdline:"^$" clause
+		TargetFile: `C:\Users\jurij\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\backdoor.lnk`,
 	}
 
 	// Sanity: confirm the real allowlist classifies this as dump-noise.

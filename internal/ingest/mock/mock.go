@@ -14,8 +14,8 @@ import (
 // Ingester replays Events in order, then closes the channel. If EmitDelay is
 // non-zero, it sleeps between emits (useful for testing cancellation/concurrency).
 type Ingester struct {
-	Events     []event.Event
-	EmitDelay  time.Duration
+	Events    []event.Event
+	EmitDelay time.Duration
 }
 
 // New returns an Ingester that replays the given events.

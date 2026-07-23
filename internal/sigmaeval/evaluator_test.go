@@ -126,9 +126,9 @@ func TestLoadAndMatch(t *testing.T) {
 		{
 			name: "loopback driver->broker connection",
 			ev: event.Event{
-				EID:    3,
-				Image:  `C:\Users\user01\Downloads\driver.exe`,
-				DstIP:  "127.0.0.1",
+				EID:     3,
+				Image:   `C:\Users\user01\Downloads\driver.exe`,
+				DstIP:   "127.0.0.1",
 				DstPort: 58172,
 			},
 			want: map[string]bool{"NET-005": true},
@@ -169,8 +169,8 @@ func TestLoadAndMatch(t *testing.T) {
 // TestConditionGrammar exercises the condition parser directly (and/or/not/quantifier).
 func TestConditionGrammar(t *testing.T) {
 	sel := map[string]func(*event.Event) bool{
-		"a": func(e *event.Event) bool { return e.EID == 1 },
-		"b": func(e *event.Event) bool { return e.Image == "x" },
+		"a":              func(e *event.Event) bool { return e.EID == 1 },
+		"b":              func(e *event.Event) bool { return e.Image == "x" },
 		"selection_dns":  func(e *event.Event) bool { return e.DstPort == 53 },
 		"selection_http": func(e *event.Event) bool { return e.DstPort == 80 },
 	}

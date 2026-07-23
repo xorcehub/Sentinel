@@ -7,7 +7,10 @@ import "testing"
 // Go int, and toStringSlice returned nil for it -> "field has no value" at load
 // time. Cover int, int64, float64, bool, list-of-int, and string.
 func TestScalarIntFieldValue(t *testing.T) {
-	cases := []struct{ name string; want []string }{
+	cases := []struct {
+		name string
+		want []string
+	}{
 		{"int", []string{"1"}},
 		{"int64", []string{"7"}},
 		{"float64", []string{"443"}},

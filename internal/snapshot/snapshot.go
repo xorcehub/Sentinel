@@ -67,8 +67,8 @@ type Snapshotter struct {
 	totalMax   int64  // max total vault bytes; 0 = unlimited (no eviction)
 	log        *slog.Logger
 
-	in       chan Request    // buffered request queue
-	wg       sync.WaitGroup  // tracks submitted-but-not-yet-processed requests
+	in       chan Request   // buffered request queue
+	wg       sync.WaitGroup // tracks submitted-but-not-yet-processed requests
 	closedMu sync.Mutex
 	closed   bool
 
@@ -498,9 +498,9 @@ type manifest struct {
 	TimeCaptured  string `json:"time_captured"`
 	SHA256        string `json:"sha256,omitempty"`
 	Size          int64  `json:"size"`
-	Status        string `json:"status"`              // ok | truncated | lost-race
+	Status        string `json:"status"`                // ok | truncated | lost-race
 	ViaArchive    bool   `json:"via_archive,omitempty"` // true = captured from Sysmon FileDelete archive (EID 23), not original path
-	LinkedHID     string `json:"linked_hid,omitempty"` // filled by A.4 when an alert names this path
+	LinkedHID     string `json:"linked_hid,omitempty"`  // filled by A.4 when an alert names this path
 }
 
 // FindArchived searches a Sysmon FileDelete archive directory for a file whose

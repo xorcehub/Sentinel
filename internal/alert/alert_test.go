@@ -13,10 +13,10 @@ import (
 
 // fakeAlerter records every Alert call. Safe for concurrent use.
 type fakeAlerter struct {
-	name    string
-	mu      sync.Mutex
-	calls   []event.Hit
-	delay   time.Duration // optional, to simulate a slow alerter (popup)
+	name  string
+	mu    sync.Mutex
+	calls []event.Hit
+	delay time.Duration // optional, to simulate a slow alerter (popup)
 }
 
 func (f *fakeAlerter) Name() string { return f.name }
@@ -105,10 +105,10 @@ func TestLogAlerterShowsNetworkContext(t *testing.T) {
 		RuleID: "NET-002", RuleName: "Outbound to public host",
 		Severity: event.SevSuspicious,
 		Event: event.Event{
-			EID:     3,
-			Image:   `C:\dev\pi-lite.exe`,
-			DstIP:   "142.93.4.11",
-			DstPort: 443,
+			EID:      3,
+			Image:    `C:\dev\pi-lite.exe`,
+			DstIP:    "142.93.4.11",
+			DstPort:  443,
 			DstProto: "tcp",
 		},
 		Matched: "NET-002 on ...pi-lite.exe",

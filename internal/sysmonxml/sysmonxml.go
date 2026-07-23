@@ -23,12 +23,12 @@ import (
 )
 
 type sysmonEvent struct {
-	XMLName    xml.Name     `xml:"Event"`
-	EventID    int          `xml:"System>EventID"`
-	RecordID   uint64       `xml:"System>EventRecordID"`
+	XMLName     xml.Name    `xml:"Event"`
+	EventID     int         `xml:"System>EventID"`
+	RecordID    uint64      `xml:"System>EventRecordID"`
 	TimeCreated timeCreated `xml:"System>TimeCreated"`
-	Computer   string       `xml:"System>Computer"`
-	Data       []dataItem   `xml:"EventData>Data"`
+	Computer    string      `xml:"System>Computer"`
+	Data        []dataItem  `xml:"EventData>Data"`
 }
 
 type timeCreated struct {
@@ -55,15 +55,15 @@ func Parse(raw []byte, src event.Source) (event.Event, error) {
 	}
 
 	ev := event.Event{
-		Source:   src,
-		RecordID: se.RecordID,
-		EID:      se.EventID,
-		Time:     parseTime(se.TimeCreated.SystemTime, m["UtcTime"]),
-		Image:    m["Image"],
-		CmdLine:  m["CommandLine"],
+		Source:        src,
+		RecordID:      se.RecordID,
+		EID:           se.EventID,
+		Time:          parseTime(se.TimeCreated.SystemTime, m["UtcTime"]),
+		Image:         m["Image"],
+		CmdLine:       m["CommandLine"],
 		ParentImage:   m["ParentImage"],
 		ParentCmdLine: m["ParentCommandLine"],
-		User:     m["User"],
+		User:          m["User"],
 
 		ImageLoaded: m["ImageLoaded"],
 		Signed:      m["Signed"],
@@ -73,8 +73,8 @@ func Parse(raw []byte, src event.Source) (event.Event, error) {
 		TargetImage:   m["TargetImage"],
 		GrantedAccess: m["GrantedAccess"],
 
-		DstIP:    m["DestinationIp"],
-		DstProto: m["Protocol"],
+		DstIP:        m["DestinationIp"],
+		DstProto:     m["Protocol"],
 		TargetFile:   m["TargetFilename"],
 		Archived:     m["Archived"],
 		TargetRegKey: m["TargetObject"],

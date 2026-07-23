@@ -10,10 +10,10 @@
 //
 // Flow:
 //  1. Every `interval` (default 1s), run:
-//       Get-WinEvent -FilterHashtable @{LogName=<ch>; ID=<eids>} -MaxEvents 2000
-//         -ErrorAction SilentlyContinue
-//       | Where-Object { $_.RecordId -gt <highWater> }
-//       | ForEach-Object { base64(UTF16LE($_.ToXml())) }
+//     Get-WinEvent -FilterHashtable @{LogName=<ch>; ID=<eids>} -MaxEvents 2000
+//     -ErrorAction SilentlyContinue
+//     | Where-Object { $_.RecordId -gt <highWater> }
+//     | ForEach-Object { base64(UTF16LE($_.ToXml())) }
 //  2. For each base64 line: decode -> UTF-16LE bytes -> decodeUTF16LE -> sysmonxml.Parse.
 //  3. Advance highWater to the max RecordId seen so the next poll is incremental.
 //
@@ -100,7 +100,7 @@ func NewSysmonRT(channel, _query string, log *slog.Logger) (Ingester, error) {
 }
 
 // ownExePath returns the normalized absolute path of the running sentinel.exe,
-	// or "" if it can't be determined (in which case self-ingestion filtering is
+// or "" if it can't be determined (in which case self-ingestion filtering is
 // disabled — safe, just noisier). Normalized via pathnorm so it matches Sysmon's
 // reported ParentImage regardless of slash/case form.
 func ownExePath() string {
@@ -230,7 +230,7 @@ func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 		var (
 			xmlUTF16 []byte
 			xmlStr   string
-			ev      event.Event
+			ev       event.Event
 			err      error
 		)
 		func() {

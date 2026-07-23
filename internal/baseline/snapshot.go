@@ -153,7 +153,6 @@ func field(rec []string, idx map[string]int, name string) string {
 // emits UTF-16LE; without this decode, csv parsing silently yields zero entries
 // because the header 'T\x00i\x00m\x00e\x00' matches no expected column name.
 
-
 // decodeUTF16IfNeeded returns a reader of UTF-8 bytes. autorunsc64.exe emits
 // UTF-16 LE (BOM FF FE) on Windows; encoding/csv is UTF-8-only and would
 // otherwise see 'T\x00i\x00m\x00e\x00' as the header, match no expected

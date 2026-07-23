@@ -32,17 +32,20 @@ type fakeDedup struct {
 
 func newFakeDedup() *fakeDedup { return &fakeDedup{last: map[string]time.Time{}} }
 func (d *fakeDedup) SweepSeen(id uint64) bool {
-	d.mu.Lock(); defer d.mu.Unlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return id > 0 && id <= d.max
 }
 func (d *fakeDedup) MarkSeen(id uint64) {
-	d.mu.Lock(); defer d.mu.Unlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if id > d.max {
 		d.max = id
 	}
 }
 func (d *fakeDedup) ReAlert(ruleID, tk string, win time.Duration) bool {
-	d.mu.Lock(); defer d.mu.Unlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	k := ruleID + "|" + tk
 	now := time.Now()
 	if t, ok := d.last[k]; ok && now.Sub(t) < win {

@@ -9,5 +9,5 @@
 // Build-tag split:
 //   - mutex_windows.go: real CreateMutexEx implementation.
 //   - mutex_other.go:   no-op stub so the rest of the tree compiles & the
-//                       mock-driven tests run on non-Windows (Linux dev / CI).
+//     mock-driven tests run on non-Windows (Linux dev / CI).
 package proc

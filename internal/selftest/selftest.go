@@ -110,10 +110,10 @@ func IncidentCases() []Case {
 		{
 			Name: "incident: unsigned DLL loaded from Temp",
 			Event: event.Event{
-				EID:        7,
-				Image:      `C:\Users\user01\Downloads\host.exe`,
+				EID:         7,
+				Image:       `C:\Users\user01\Downloads\host.exe`,
 				ImageLoaded: `C:\Users\user01\AppData\Local\Temp\payload.dll`,
-				Signed:     "false",
+				Signed:      "false",
 			},
 			Want: []string{"INJECT-002"},
 		},
@@ -231,8 +231,8 @@ func toSet(s []string) map[string]bool {
 // regardless of repeated target_keys across runs).
 type nopDedup struct{}
 
-func (nopDedup) SweepSeen(uint64) bool                  { return false }
-func (nopDedup) MarkSeen(uint64)                        {}
+func (nopDedup) SweepSeen(uint64) bool                      { return false }
+func (nopDedup) MarkSeen(uint64)                            {}
 func (nopDedup) ReAlert(string, string, time.Duration) bool { return true }
 
 // selfTestAllowlist is a minimal allowlist for the regression test: RFC1918 +

@@ -96,7 +96,6 @@ func TestParseToleratesSchemaGrowth(t *testing.T) {
 	}
 }
 
-
 // TestParseToleratesBareQuotesInUnquotedField: autorunsc emits NON-RFC-compliant
 // CSV for unsigned entries - the Signer/Company fields contain literal " chars
 // but the field itself is NOT quoted, e.g.:
@@ -217,7 +216,7 @@ func TestDiffNewEntry(t *testing.T) {
 // produces one event per survivor with the same shape as Diff().
 func TestDiffEntriesReturnsEntries(t *testing.T) {
 	clean := mustParse(t, sampleCSV)
-	daily := mustParse(t, sampleCSV +
+	daily := mustParse(t, sampleCSV+
 		"20260629-120000,HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run,BrandNew,enabled,Logon,System-wide,Brand New App,(Verified) Corp,(Verified) Corp,C:\\Program Files\\bn\\bn.exe,1.0,\"C:\\Program Files\\bn\\bn.exe\"\n")
 
 	entries := DiffEntries(clean, daily)
@@ -313,7 +312,7 @@ func TestDiffDeterministicOrder(t *testing.T) {
 // registry-backed, so the alert should land in TargetFile, not TargetRegKey.
 func TestDiffFilesystemLocationUsesTargetFile(t *testing.T) {
 	clean := mustParse(t, "Time,Entry Location,Entry,Enabled,Category,Profile,Description,Signer,Company,Image Path,Version,Launch String\n")
-	daily := mustParse(t, "Time,Entry Location,Entry,Enabled,Category,Profile,Description,Signer,Company,Image Path,Version,Launch String\n" +
+	daily := mustParse(t, "Time,Entry Location,Entry,Enabled,Category,Profile,Description,Signer,Company,Image Path,Version,Launch String\n"+
 		"20260629-140000,C:\\Users\\user01\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup,evil.lnk,enabled,Logon,user01,evil,,EvilCorp,C:\\ProgramData\\evil.exe,1.0,C:\\ProgramData\\evil.exe\n")
 	events := Diff(clean, daily)
 	if len(events) != 1 {
