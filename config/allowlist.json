@@ -11,15 +11,15 @@
       // now; path patterns below carry coverage.
     ],
     "path": [
-      "\\\\program files\\\\mozilla firefox\\\\.*\\.exe$",
-      "\\\\program files(?: \\(x86\\))?\\\\microsoft\\\\edge(?:update|webview)?\\\\.*\\.exe$",
-      "\\\\program files(?: \\(x86\\))?\\\\steam\\\\.*\\.exe$",
-      "\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
-      "\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|wc|git.*)\\.exe$",
-      "\\\\program files\\\\7-zip\\\\.*\\.exe$",
-      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:cursor|.*?vscode.*?|python)\\\\.*\\.exe$",
-      "\\\\users\\\\[^\\\\]+\\\\.cursor\\\\extensions\\\\.*\\\\claude-code-.*\\\\native-binary\\\\claude\\.exe$",
-      "\\\\users\\\\[^\\\\]+\\\\.local\\\\bin\\\\claude\\.exe$",
+      "^[a-z]:\\\\program files\\\\mozilla firefox\\\\.*\\.exe$",
+      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\microsoft\\\\edge(?:update|webview)?\\\\.*\\.exe$",
+      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\steam\\\\.*\\.exe$",
+      "^[a-z]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
+      "^[a-z]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|wc|git.*)\\.exe$",
+      "^[a-z]:\\\\program files\\\\7-zip\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:cursor|.*?vscode.*?|python)\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cursor\\\\extensions\\\\.*\\\\claude-code-.*\\\\native-binary\\\\claude\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.local\\\\bin\\\\claude\\.exe$",
       // Benign Windows session/service binaries BY NAME (NOT a blanket
       // System32 glob). Trusting \windows\system32\.*\.exe was a design
       // bug: it also trusted the LOLBins (powershell, conhost, mshta,
@@ -38,10 +38,10 @@
       // Trusting Sentinel's own alerting subprocess kills the loop for every
       // rule that uses image_in_allowlist. eventcreate only writes eventlog
       // entries (no exec/network), so it carries no detection value anyway.
-      "\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
-      "\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
-      "\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
-      "\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
+      "^[a-z]:\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
+      "^[a-z]:\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
+      "^[a-z]:\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
+      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
     ]
   },
   "allowed_destinations": {
@@ -59,23 +59,23 @@
   ],
   "dev_tool_paths": {
     "path": [
-      "\\\\users\\\\[^\\\\]+\\\\go\\\\bin\\\\.*\\.exe$",
-      "\\\\users\\\\[^\\\\]+\\\\.cargo\\\\bin\\\\.*\\.exe$",
-      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:python|node)\\\\.*\\.(exe|dll)$",
-      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\npm\\\\.*\\.exe$",
-      "\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
-      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\lm studio\\\\.*\\.exe$",
-      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\pnpm\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\go\\\\bin\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cargo\\\\bin\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:python|node)\\\\.*\\.(exe|dll)$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\npm\\\\.*\\.exe$",
+      "^[a-z]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\lm studio\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\pnpm\\\\.*\\.exe$",
       // pi-lite (operator's dev AI agent) — quiets NET-002/003. Scoped to the
       // built binary path, NOT the whole tree. Its API endpoints (128.14.69.x)
       // rotate, so trust the image rather than chasing each IP. NET-004
       // (Temp/AppData/ProgramData outbound) + NET-005 (loopback) still apply.
-      "\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pi-lite\\\\dist\\\\pi-lite\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pi-lite\\\\dist\\\\pi-lite\\.exe$",
       // bun runtime - operator JS toolchain. Trust image so NET-002/003
       // quiet down; NET-005 (loopback) still applies.
-      "\\\\users\\\\[^\\\\]+\\\\.bun\\\\bin\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.bun\\\\bin\\\\.*\\.exe$",
       // uv-installed CPython (appdata/roaming/uv/python/<ver>/python.exe).
-      "\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\uv\\\\python\\\\.*\\\\python\\.exe$"
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\uv\\\\python\\\\.*\\\\python\\.exe$"
     ]
   },
   // dev_scripts: CmdLine-anchored exceptions for EXEC-001 (see allowlist doc).

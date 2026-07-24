@@ -361,3 +361,102 @@ func TestProductionAllowlistDevTuning(t *testing.T) {
 		t.Error("dev_scripts must NOT match a hostile ProgramData script (EXEC-001 would be blinded)")
 	}
 }
+
+// TestProductionAllowlistDriveRootAnchored is the regression for the unanchored-
+// regex bypass: every trusted_binaries / dev_tool_paths path pattern is matched
+// via regexp.MatchString (UNANCHORED) on the normalized lower path, so without
+// a leading anchor a binary dropped anywhere the path merely CONTAINS a trusted
+// substring was treated as trusted — suppressing every rule keyed on
+// image_in_allowlist / image_in_dev_tools. Verified-exploitable examples before
+// the fix: C:\Users\Public\Program Files\Mozilla Firefox\implant.exe,
+// C:\Windows\Temp\Program Files\7-Zip\evil.exe, and a planted
+// C:\Users\Public\Windows\System32\svchost.exe (fake system32 sibling).
+//
+// The fix prepends ^[a-z]: to each path pattern: NormalizePath always emits
+// "<drive-letter>:\...", so the anchor pins the match to the drive root and the
+// trusted substring can no longer appear mid-path in a user-writable location.
+// This test loads the REAL config/allowlist.json and asserts both halves:
+// cross-directory substring mimics must be UNtrusted, while legit install paths
+// (including a non-C drive, proving the anchor is [a-z]: and not literal c:)
+// stay trusted.
+//
+// KNOWN LIMITATION (not asserted here, by design): this anchor does NOT close
+// per-user-profile mimicry — patterns like ^[a-z]:\users\[^\\]+\appdata\local\
+// programs\cursor\.*\exe$ intentionally wildcard the username, so malware running
+// AS the user can drop into C:\Users\<thatuser>\AppData\Local\Programs\Cursor\
+// and still match. Closing that requires trusting the sha256 set (currently
+// empty) rather than path patterns. The drive-root anchor removes the
+// cross-directory class only.
+func TestProductionAllowlistDriveRootAnchored(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	dir := filepath.Dir(file)
+	var prodPath string
+	for i := 0; i < 6; i++ {
+		cand := filepath.Join(dir, "config", "allowlist.json")
+		if _, err := os.Stat(cand); err == nil {
+			prodPath = cand
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	if prodPath == "" {
+		t.Skip("config/allowlist.json not found (running outside repo root)")
+	}
+	a, err := Load(prodPath)
+	if err != nil {
+		t.Fatalf("load production allowlist: %v", err)
+	}
+
+	// Attacker paths: a trusted substring planted in a user-writable / wrong
+	// location. Before the drive-root anchor these all returned trusted=true and
+	// silently disabled every image_in_allowlist / image_in_dev_tools rule.
+	attacks := []struct {
+		name  string
+		image string
+	}{
+		{"firefox substring under Public", `C:\Users\Public\Program Files\Mozilla Firefox\implant.exe`},
+		{"7-zip substring under Windows Temp", `C:\Windows\Temp\Program Files\7-Zip\evil.exe`},
+		{"fake system32 sibling dir", `C:\Users\Public\Windows\System32\svchost.exe`},
+		{"programdata defender substring mimic", `C:\Users\Public\ProgramData\Microsoft\Windows Defender\MpCmdRun.exe`},
+		{"go bin substring under Temp", `C:\Users\user01\AppData\Local\Temp\Program Files\Git\bin\git.exe`},
+	}
+	for _, c := range attacks {
+		t.Run("attack/"+c.name, func(t *testing.T) {
+			if a.ImageTrusted(&event.Event{Image: c.image}) {
+				t.Errorf("attacker path must NOT be trusted (unanchored-regex bypass): %s", c.image)
+			}
+			if a.ImageInDevTools(c.image) {
+				t.Errorf("attacker path must NOT be a dev tool (same unanchored class): %s", c.image)
+			}
+		})
+	}
+
+	// Legit install paths: must stay trusted. Includes a D: drive to prove the
+	// anchor is [a-z]: (any drive), not a literal c: that would break multi-drive
+	// boxes. Per-user patterns wildcard the username, so a real Cursor install
+	// for an arbitrary user must still match.
+	legit := []struct {
+		name  string
+		image string
+	}{
+		{"firefox (C:)", `C:\Program Files\Mozilla Firefox\firefox.exe`},
+		{"7-zip (D: drive)", `D:\Program Files\7-Zip\7z.exe`},
+		{"firefox (D: drive)", `D:\Program Files\Mozilla Firefox\firefox.exe`},
+		{"real system32 svchost", `C:\Windows\System32\svchost.exe`},
+		{"per-user cursor install", `C:\Users\anyone\AppData\Local\Programs\Cursor\Cursor.exe`},
+		{"per-user go bin", `C:\Users\anyone\go\bin\task.exe`},
+	}
+	for _, c := range legit {
+		t.Run("legit/"+c.name, func(t *testing.T) {
+			// Some legit cases are trusted_binaries, some dev_tool_paths; assert via
+			// the union so a path that legitimately lives in only one set still passes.
+			trusted := a.ImageTrusted(&event.Event{Image: c.image}) || a.ImageInDevTools(c.image)
+			if !trusted {
+				t.Errorf("legit path should be trusted or a dev tool (anchor too strict?): %s", c.image)
+			}
+		})
+	}
+}
