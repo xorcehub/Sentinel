@@ -39,6 +39,38 @@
       "^[a-z]:\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
       "^[a-z]:\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
       "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
+    ],
+    // hash_gated_path: Tier-2 user-writable dev-tool paths. A path match
+    // here is NOT trust by itself (Bypass B: the per-user username wildcard
+    // lets malware running AS the user plant a same-path binary). Trust
+    // additionally requires an Authenticode signature by one of
+    // allowed_signers, verified lazily by internal/sigverify and cached by
+    // SHA256. A legit auto-update (same vendor, new hash) re-verifies once
+    // and re-trusts with zero operator action; a planted/unsigned mimic is
+    // rejected whether it runs before or after the legit tool. Signers were
+    // DISCOVERED by internal/sigverify's test against the on-disk binaries
+    // (NOT guessed): Anysphere=Cursor, PSF=Python, Anthropic=claude.
+    // Dev-tool vendors ONLY — never a LOLBin signer like Microsoft (signs
+    // mshta/certutil). Patterns DUPLICATED in dev_tool_paths (below) on
+    // PURPOSE: the two sets have different semantics — hash_gated_path grants
+    // behavioral trust (Tier-2: path AND signature), dev_tool_paths is the
+    // NET-002/003/004 quiet-by-path set. If you edit one, edit the other to
+    // match, or the two will drift. No cross-check test exists; keep them in
+    // sync by hand. Patterns copied verbatim from dev_tool_paths.
+    "hash_gated_path": [
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:cursor|.*?vscode.*?|python)\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cursor\\\\extensions\\\\.*\\\\claude-code-.*\\\\native-binary\\\\claude\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.local\\\\bin\\\\claude\\.exe$"
+    ],
+    // allowed_signers: Authenticode subject names (simple-display type)
+    // that auto-trust a Tier-2 path match. Verified against the real
+    // on-disk binaries via internal/sigverify.Subjects. Add a vendor only
+    // after running that discovery (a guessed string silently fails to
+    // match and the tool stays untrusted — fail closed, but unintended).
+    "allowed_signers": [
+      "Anysphere, Inc.",
+      "Python Software Foundation",
+      "Anthropic, PBC"
     ]
   },
   "allowed_destinations": {
@@ -74,6 +106,10 @@
       // uv-installed CPython (appdata/roaming/uv/python/<ver>/python.exe).
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\uv\\\\python\\\\.*\\\\python\\.exe$",
       // Reclassified from trusted_binaries (interim Bypass-B hardening). These are
+      // DUPLICATED in trusted_binaries.hash_gated_path (above) — edit both
+      // together or they drift (see that section's comment). Here they serve
+      // NET-002/003/004 quiet-by-path; there they grant behavioral trust only
+      // with a valid allowed_signers signature.
       // USER-WRITABLE per-user paths, so path-trust alone let a planted mimic
       // (e.g. C:\Users\<you>\AppData\Local\Programs\Cursor\evil.exe) suppress every
       // image_in_allowlist rule. Moved here so ONLY NET-002/003/004 (which except
