@@ -10,7 +10,7 @@ import (
 )
 
 // EventLogAlerter is a no-op on non-Windows (tests / Linux dev). On Windows,
-// eventlog_windows.go provides the eventcreate.exe-backed implementation.
+// eventlog_windows.go provides the native ReportEventW-backed implementation.
 type EventLogAlerter struct {
 	log *slog.Logger
 }
