@@ -1,0 +1,4 @@
+# Built detection probes — produced by Invoke-DetectionTests.ps1 Build-Probes,
+# removed by -Cleanup. Derived artifacts (change every build, multi-MB), so
+# never commit them; rebuild with the driver.
+bin/
