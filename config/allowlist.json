@@ -29,7 +29,16 @@
       // disabled for the incident binaries. This explicit list quiets
       // NET-002/003 (svchost/explorer phoning home) WITHOUT trusting the
       // LOLBins. Add a binary here only if it is NOT a LOLBin.
-      "\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost)\\.exe$)",
+      // eventcreate.exe is trusted because Sentinel's OWN eventlog alerter
+      // shells to it (internal/alert/eventlog_windows.go) with the alert body
+      // on its command line. That body carries the rule title, which for
+      // EVADE-001 contains 'System.dll'/'amsi' -- tokens in EVADE-001's own
+      // match list -- so every eventlog alert re-triggered EVADE-001 in a
+      // self-sustaining loop (~1 popup/min, gated only by flood-collapse).
+      // Trusting Sentinel's own alerting subprocess kills the loop for every
+      // rule that uses image_in_allowlist. eventcreate only writes eventlog
+      // entries (no exec/network), so it carries no detection value anyway.
+      "\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
       "\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
       "\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
       "\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
