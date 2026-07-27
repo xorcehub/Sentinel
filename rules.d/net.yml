@@ -76,7 +76,16 @@ x-sentinel:
   id: NET-004
   severity: critical
   alert: [popup, toast, log, eventlog]
-  except: { image_in_allowlist: trusted_binaries }
+  # image_in_dev_tools added with the Bypass-B interim reclassification: the
+  # per-user dev tools (Cursor/vscode/python/claude, in AppData) were moved
+  # from trusted_binaries to dev_tool_paths because user-writable path-trust
+  # let a planted mimic suppress this rule. NET-004 keys on Image|contains
+  # AppData, which fires on every legit Cursor outbound, so without this except
+  # the move would toast-flood. NET-005 (loopback C2) has no image except and
+  # stays armed regardless.
+  except:
+    image_in_allowlist: trusted_binaries
+    image_in_dev_tools: dev_tool_paths
 ---
 title: Loopback connection to non-baseline listener (broker driver channel)
 id: 785787a7-8a92-5364-a31c-09af26b4c43a

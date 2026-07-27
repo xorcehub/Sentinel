@@ -17,9 +17,6 @@
       "^[a-z]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
       "^[a-z]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|wc|git.*)\\.exe$",
       "^[a-z]:\\\\program files\\\\7-zip\\\\.*\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:cursor|.*?vscode.*?|python)\\\\.*\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cursor\\\\extensions\\\\.*\\\\claude-code-.*\\\\native-binary\\\\claude\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.local\\\\bin\\\\claude\\.exe$",
       // Benign Windows session/service binaries BY NAME (NOT a blanket
       // System32 glob). Trusting \windows\system32\.*\.exe was a design
       // bug: it also trusted the LOLBins (powershell, conhost, mshta,
@@ -29,15 +26,15 @@
       // disabled for the incident binaries. This explicit list quiets
       // NET-002/003 (svchost/explorer phoning home) WITHOUT trusting the
       // LOLBins. Add a binary here only if it is NOT a LOLBin.
-      // eventcreate.exe is trusted because Sentinel's OWN eventlog alerter
-      // shells to it (internal/alert/eventlog_windows.go) with the alert body
-      // on its command line. That body carries the rule title, which for
-      // EVADE-001 contains 'System.dll'/'amsi' -- tokens in EVADE-001's own
-      // match list -- so every eventlog alert re-triggered EVADE-001 in a
-      // self-sustaining loop (~1 popup/min, gated only by flood-collapse).
-      // Trusting Sentinel's own alerting subprocess kills the loop for every
-      // rule that uses image_in_allowlist. eventcreate only writes eventlog
-      // entries (no exec/network), so it carries no detection value anyway.
+      // eventcreate.exe was trusted because Sentinel's eventlog alerter used
+      // to shell to it with the alert body on its command line, which caused
+      // the EVADE-001 feedback loop (the title carried 'System.dll'/'amsi',
+      // EVADE-001's own match tokens). Level 3 (internal/alert/eventlog_windows.go)
+      // replaced that shell-out with native ReportEventW, so the loop is now
+      // structurally impossible and this trust is belt-and-suspenders for any
+      // older deployed build still on the eventcreate path. Kept because it is
+      // harmless (eventcreate only writes eventlog entries; no rule selects on
+      // it as an actor) and guards a config/binary version mismatch.
       "^[a-z]:\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
       "^[a-z]:\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
       "^[a-z]:\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
@@ -75,7 +72,17 @@
       // quiet down; NET-005 (loopback) still applies.
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.bun\\\\bin\\\\.*\\.exe$",
       // uv-installed CPython (appdata/roaming/uv/python/<ver>/python.exe).
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\uv\\\\python\\\\.*\\\\python\\.exe$"
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\uv\\\\python\\\\.*\\\\python\\.exe$",
+      // Reclassified from trusted_binaries (interim Bypass-B hardening). These are
+      // USER-WRITABLE per-user paths, so path-trust alone let a planted mimic
+      // (e.g. C:\Users\<you>\AppData\Local\Programs\Cursor\evil.exe) suppress every
+      // image_in_allowlist rule. Moved here so ONLY NET-002/003/004 (which except
+      // image_in_dev_tools) treat them as quiet-by-path; the behavioral rules
+      // (EXEC/CRED/INJECT/PERSIST/EVADE) no longer suppress on these paths.
+      // Full close = hash-authority (sha256 seed), tracked separately.
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:cursor|.*?vscode.*?|python)\\\\.*\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cursor\\\\extensions\\\\.*\\\\claude-code-.*\\\\native-binary\\\\claude\\.exe$",
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.local\\\\bin\\\\claude\\.exe$"
     ]
   },
   // dev_scripts: CmdLine-anchored exceptions for EXEC-001 (see allowlist doc).
