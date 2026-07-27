@@ -110,7 +110,7 @@ func loader(dll string) {
 }
 
 // inject: CreateRemoteThread into a foreign PID with StartAddress=kernel32
-//!ExitThread, lpParameter=0. The remote thread immediately exits; the victim
+// !ExitThread, lpParameter=0. The remote thread immediately exits; the victim
 // process keeps running. This is the textbook EID 8 trigger for INJECT-001
 // without actually executing attacker logic. Needs elevation + a victim PID.
 func inject(pid uint32) {
