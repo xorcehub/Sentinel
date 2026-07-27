@@ -140,7 +140,20 @@
     // Path-anchored on Docker's stable install subdir so a same-named payload
     // elsewhere (e.g. C:\ProgramData\reglist.wsf via cscript+http) can't evade
     // EXEC-003. Docker's real path is the only legit occurrence of that subtree.
-    "regedit\\\\vbs\\\\reglist\\.wsf"
+    "regedit\\\\vbs\\\\reglist\\.wsf",
+    // OEM "Control Center" (AiStone) logon script. A scheduled task fires
+    // `powershell -ep bypass -File ...\AiStoneService\MyControlCenter\Command\LogonUserName.ps1`
+    // at every logon (plus a `cmd /c -> powershell` wrapper variant). Path-anchored
+    // on the admin-owned Program Files\OEM subtree; planting there already requires
+    // admin = game over, so the path anchor is safe. One pattern covers both the
+    // direct powershell and the cmd /c variants (same path substring).
+    "aistoneservice\\\\mycontrolcenter\\\\command\\\\logonusername\\.ps1",
+    // GCUBridge service-watchdog. A scheduled task runs
+    // `powershell -WindowStyle Hidden -ep bypass -Command "Get-Service -Name 'GCUBridge';
+    // if not running, Start-Service"` at every logon. Anchored on the GCUBridge
+    // Get-Service probe (regex compiled (?i) case-insensitive); a real attacker won't
+    // name their service GCUBridge AND use this exact watchdog form.
+    "get-service -name 'gcubridge'"
   ],
 
   // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the
