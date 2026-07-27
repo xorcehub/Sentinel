@@ -40,6 +40,7 @@ import (
 	"sentinel/internal/rules"
 	"sentinel/internal/selftest"
 	"sentinel/internal/sigmaeval"
+	"sentinel/internal/sigverify"
 	"sentinel/internal/snapshot"
 	"sentinel/internal/state"
 )
@@ -567,6 +568,12 @@ func buildEngine(fl *flags, st *state.State, logger *slog.Logger) (*rules.Engine
 		logger.Warn("allowlist load failed; engine runs with nothing trusted (expect noise)",
 			"path", fl.allowlistPath, "err", alErr)
 		al = nil
+	}
+	// Inject the Tier-2 (hash_gated_path) signature verifier. On Windows this is
+	// native WinVerifyTrust; on non-Windows (CI/dev) the stub fails closed. Must
+	// be set before the first Evaluate so the lazy cache sees the verifier.
+	if al != nil {
+		al.SetSigVerifier(sigverify.IsSignedBy)
 	}
 	eng, err := rules.New(compiled, al, st)
 	if err != nil {

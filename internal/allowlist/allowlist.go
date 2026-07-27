@@ -10,6 +10,18 @@
 //	dst_in_allowlist: allowed_destinations -> DstInCIDR(ip)
 //	dst_in_allowlist: known_loopback_listeners -> DstIsKnownLoopback(ip, port)
 //
+// trusted_binaries splits into two TIERS (see ImageTrusted):
+//   - Tier-1 (`path`): admin-owned install dirs (system32, Program Files).
+//     Planting there already requires admin = game over, so path match alone
+//     suffices.
+//   - Tier-2 (`hash_gated_path`): user-writable install dirs (per-user
+//     AppData: Cursor, Python, ...). The username is wildcarded by design (any
+//     user's real install must match), so malware running AS the user can plant
+//     a same-path binary. Path match alone is NOT trust here: the binary must
+//     ALSO be Authenticode-signed by an allowed_signers vendor (verified lazily
+//     via internal/sigverify, cached by SHA256). Closes per-user-profile
+//     mimicry ("Bypass B") with provenance rather than bytes.
+//
 // dev_scripts is the ONLY set anchored on the CommandLine rather than the
 // Image. It exists for the dev-workflow EXEC-001 case: a developer running
 // their OWN script as `powershell -ExecutionPolicy Bypass -File <dev.ps1>`.
@@ -38,28 +50,53 @@ package allowlist
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"sentinel/internal/event"
 	"sentinel/internal/pathnorm"
 )
 
+// SigVerifier is the signature-verification primitive injected by the app
+// layer (internal/sigverify.IsSignedBy on Windows). It exists as an injected
+// type so the allowlist policy + lazy cache are unit-testable without Windows,
+// and so a nil verifier cleanly means "Tier-2 never auto-trusts" (fail closed).
+// The implementation must be safe for concurrent use.
+type SigVerifier func(imagePath string, allowedSigners []string) bool
+
 // Allowlist is the compiled, read-optimized form. All methods are safe for
-// concurrent use (they read immutable compiled structures).
+// concurrent use: the compiled structures (paths/cidrs/filters) are immutable
+// after Compile; only the Tier-2 lazy verify cache (verified) is mutable, and it
+// is guarded by mu. sigVerify is set once via SetSigVerifier before the first
+// Evaluate and read-only thereafter.
 type Allowlist struct {
-	tbSHA       map[string]bool  // lowercased sha256
-	tbPath      []*regexp.Regexp // path patterns, matched on normalized lower path
-	devPath     []*regexp.Regexp
-	devScript   []*regexp.Regexp // commandline anchors (dev scripts run via a LOLBin)
-	cidrs       []*net.IPNet
-	loopback    map[string]bool   // "host:port" lowercased
-	logFilter   []*logFilterEntry // event_log_filter: suppresses the per-event DEBUG dump only
-	capPatterns []*regexp.Regexp  // file_capture: path patterns matched on EID 11/23 TargetFile
+	tbSHA          map[string]bool  // lowercased sha256 (Tier-1+2 authoritative)
+	tbPath         []*regexp.Regexp // Tier-1 admin-owned path patterns, normalized lower path
+	tbHashGated    []*regexp.Regexp // Tier-2 user-writable path patterns (path match NOT sufficient — see ImageTrusted)
+	allowedSigners []string         // vendor subjects allowed for Tier-2 (dev-tool vendors only; never a LOLBin signer)
+	devPath        []*regexp.Regexp
+	devScript      []*regexp.Regexp // commandline anchors (dev scripts run via a LOLBin)
+	cidrs          []*net.IPNet
+	loopback       map[string]bool   // "host:port" lowercased
+	logFilter      []*logFilterEntry // event_log_filter: suppresses the per-event DEBUG dump only
+	capPatterns    []*regexp.Regexp  // file_capture: path patterns matched on EID 11/23 TargetFile
+
+	sigVerify SigVerifier // injected; nil = Tier-2 never auto-trusts (fail closed)
+	mu        sync.RWMutex
+	verified  map[string]bool // Tier-2 lazy cache: lowercased sha256 -> sigVerify(path) result
+	// ponytail: `verified` is unbounded. Ceiling = number of distinct SHA256s ever
+	// seen at a Tier-2 path, which is tiny in practice (a handful of dev-tool
+	// exes per box). It never grows from attacker traffic: an attacker plant at
+	// a Tier-2 path adds at most one entry (its hash). Add an LRU/size cap only
+	// if a box is observed to run many distinct signed dev-tool binaries.
 }
 
 // logFilterEntry is one AND-conjunction rule from the optional event_log_filter
@@ -94,6 +131,7 @@ func Compile(jsonBytes []byte) (*Allowlist, error) {
 	a := &Allowlist{
 		tbSHA:    map[string]bool{},
 		loopback: map[string]bool{},
+		verified: map[string]bool{},
 	}
 	for _, h := range doc.TrustedBinaries.SHA256 {
 		a.tbSHA[strings.ToLower(strings.TrimSpace(h))] = true
@@ -104,6 +142,18 @@ func Compile(jsonBytes []byte) (*Allowlist, error) {
 			return nil, fmt.Errorf("bad trusted_binaries path regex %q: %w", p, err)
 		}
 		a.tbPath = append(a.tbPath, re)
+	}
+	for _, p := range doc.TrustedBinaries.HashGatedPath {
+		re, err := regexp.Compile("(?i)" + p)
+		if err != nil {
+			return nil, fmt.Errorf("bad trusted_binaries.hash_gated_path regex %q: %w", p, err)
+		}
+		a.tbHashGated = append(a.tbHashGated, re)
+	}
+	for _, s := range doc.TrustedBinaries.AllowedSigners {
+		if s = strings.TrimSpace(s); s != "" {
+			a.allowedSigners = append(a.allowedSigners, s)
+		}
 	}
 	for _, p := range doc.DevToolPaths.Path {
 		re, err := regexp.Compile("(?i)" + p)
@@ -181,21 +231,141 @@ func compileFilter(f filterRaw) (*logFilterEntry, error) {
 	return ent, nil
 }
 
-// ImageTrusted reports whether the event's acting process is trusted:
-// SHA256 match is authoritative; otherwise the normalized Image path matches a
-// trusted path pattern.
+// ImageTrusted reports whether the event's acting process is trusted. Trust is
+// resolved in three tiers, first match wins:
+//
+//  1. Known-good SHA256 (operator-seeded tbSHA, or a cached Tier-2 verify) —
+//     authoritative for any tier.
+//  2. Tier-1 admin-owned path (system32, Program Files): path match alone is
+//     trusted, because planting there requires admin (already game over).
+//  3. Tier-2 user-writable path (per-user AppData: Cursor, Python, ...): path
+//     match is NOT sufficient — the binary must ALSO be Authenticode-signed by
+//     an allowed_signers vendor. The sigVerify result is cached by SHA256 so a
+//     legit auto-update (same vendor, new hash) re-verifies once and is
+//     re-trusted with zero operator action. Requires e.Hashes["SHA256"] (always
+//     present on EID 1 when <HashAlgorithms>SHA256</HashAlgorithms> is set, per
+//     install-sysmon.ps1); without it Tier-2 simply never auto-trusts (fail
+//     closed = same posture as before this tier existed, no regression).
 func (a *Allowlist) ImageTrusted(e *event.Event) bool {
 	if a == nil {
 		return false
 	}
+	sha := ""
 	if e.Hashes != nil {
-		if sha, ok := e.Hashes["SHA256"]; ok && sha != "" {
-			if a.tbSHA[strings.ToLower(sha)] {
-				return true
-			}
+		if s, ok := e.Hashes["SHA256"]; ok && s != "" {
+			sha = strings.ToLower(s)
 		}
 	}
-	return a.pathMatchesTrusted(e.Image)
+	if sha != "" && a.tbSHA[sha] {
+		return true
+	}
+	if a.pathMatchesTrusted(e.Image) { // Tier-1
+		return true
+	}
+	// Tier-2: user-writable path -> require provenance (sig by allowed vendor).
+	if sha != "" && a.pathMatchesHashGated(e.Image) && a.sigVerifiedCached(sha, e.Image) {
+		return true
+	}
+	return false
+}
+
+// SetSigVerifier injects the Tier-2 signature verifier. Call once after Load,
+// before the first Evaluate. nil (the default) means Tier-2 paths never
+// auto-trust — safe (fail closed), just noisier for legit dev tools. The cache
+// is guarded by mu; the verifier itself must be safe for concurrent use.
+func (a *Allowlist) SetSigVerifier(v SigVerifier) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.sigVerify = v
+	a.mu.Unlock()
+}
+
+// pathMatchesHashGated reports whether image's normalized path matches a Tier-2
+// (user-writable) trusted path pattern. A match here is necessary but NOT
+// sufficient for trust — the caller (ImageTrusted) additionally requires a
+// passing signature verify.
+func (a *Allowlist) pathMatchesHashGated(image string) bool {
+	np := pathnorm.NormalizePath(image)
+	for _, re := range a.tbHashGated {
+		if re.MatchString(np) {
+			return true
+		}
+	}
+	return false
+}
+
+// sigVerifiedCached returns the Tier-2 signature result for sha, verifying
+// on first sight (outside the read lock, so concurrent first-sight checks of
+// different hashes don't serialize) and caching both positive and negative
+// results by hash.
+//
+// TOCTOU guard (re-hash on success): the cache key is `sha` = Sysmon's
+// e.Hashes["SHA256"] computed at EVENT time, but sigVerify reads the file at
+// VERIFY time. Those are two separate observations of the bytes. Without a
+// guard, an attacker could swap a planted malware file to genuine signed bytes
+// inside the verify window, letting winverify pass on the good bytes and poison
+// cache[sha-of-the-malware]=true. So on a PASSING verify we re-hash the file and
+// only cache true if that hash == sha; a mismatch (bytes changed between event
+// and verify) leaves the entry uncached and returns false (fail closed, and the
+// next sighting re-verifies). A file deleted between event and verify likewise
+// fails closed (hashFile errors -> no cache write -> false).
+func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
+	a.mu.RLock()
+	if v, ok := a.verified[sha]; ok {
+		a.mu.RUnlock()
+		return v
+	}
+	vf := a.sigVerify
+	a.mu.RUnlock()
+	if vf == nil {
+		return false
+	}
+	result := vf(imagePath, a.allowedSigners)
+	// TOCTOU guard: a passing verify proves the CURRENT on-disk bytes are signed
+	// by an allowed vendor, but `sha` was computed from the bytes at event time.
+	// Only trust the verify if those are the same bytes: re-hash now and require a
+	// match. Any divergence (swap-to-signed attack, file replaced mid-window) and
+	// we do NOT cache true — return false so the caller fails closed.
+	if result {
+		if got, err := hashFile(imagePath); err != nil || got != sha {
+			return false
+		}
+	}
+	a.mu.Lock()
+	// Re-check: another goroutine may have populated the same hash meanwhile.
+	if v, ok := a.verified[sha]; ok {
+		a.mu.Unlock()
+		return v
+	}
+	a.verified[sha] = result
+	a.mu.Unlock()
+	return result
+}
+
+// hashFile returns the lowercased hex SHA256 of the file at path, mirroring how
+// Sysmon computes e.Hashes["SHA256"] (full-file SHA256, hex). Used by the Tier-2
+// TOCTOU guard to confirm the bytes winverify read are the bytes `sha` keys.
+// Stdlib only. ponytail: reads the whole file into a streaming hasher; fine for
+// dev-tool PEs (tens of MB), not a hot path (called only on a verify miss).
+
+// hashFile returns the lowercased hex SHA256 of the file at path, mirroring how
+// Sysmon computes e.Hashes["SHA256"] (full-file SHA256, hex). Used by the Tier-2
+// TOCTOU guard to confirm the bytes winverify read are the bytes `sha` keys.
+// Stdlib only. ponytail: reads the whole file into a streaming hasher; fine for
+// dev-tool PEs (tens of MB), not a hot path (called only on a verify miss).
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (a *Allowlist) pathMatchesTrusted(image string) bool {
@@ -335,8 +505,10 @@ func (a *Allowlist) ShouldCapture(e *event.Event) string {
 
 type rawDoc struct {
 	TrustedBinaries struct {
-		SHA256 []string `json:"sha256"`
-		Path   []string `json:"path"`
+		SHA256         []string `json:"sha256"`
+		Path           []string `json:"path"`            // Tier-1 admin-owned
+		HashGatedPath  []string `json:"hash_gated_path"` // Tier-2 user-writable (path AND sig)
+		AllowedSigners []string `json:"allowed_signers"` // vendor subjects for Tier-2
 	} `json:"trusted_binaries"`
 	AllowedDestinations struct {
 		CIDR []string `json:"cidr"`
