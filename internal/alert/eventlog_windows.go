@@ -176,12 +176,16 @@ func sourceRegistered(source string) bool {
 
 // severityToEvent maps Sentinel severity to the eventlog event type (render
 // hint) and Sentinel's event ID convention (1=critical, 2=suspicious, 3=info).
+// The event type is Event Viewer's icon/column: Error (red) for critical,
+// Warning (amber) for suspicious, Information for info — monotonic in severity
+// and uses all three EVT types, so a critical alert renders as a red Error
+// (not a mere amber Warning) and suspicious is distinguishable from info.
 func severityToEvent(sev event.Severity) (evType uint16, eid int) {
 	switch sev {
 	case event.SevCritical:
-		return eventlogWarningType, 1
+		return eventlogErrorType, 1
 	case event.SevSuspicious:
-		return eventlogInformationType, 2
+		return eventlogWarningType, 2
 	default:
 		return eventlogInformationType, 3
 	}

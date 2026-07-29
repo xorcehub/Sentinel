@@ -242,7 +242,15 @@ func (s *Snapshotter) capture(r Request) {
 	contentPath := filepath.Join(capDir, "content")
 	f, err := os.OpenFile(contentPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
+		// We already created capDir above, so mirror the lost-race bookkeeping
+		// (manifest + back-link index + miss counter) instead of orphaning an
+		// empty dir. Layer B's archive can still cross-reference it by
+		// record_id/time. (mf.Status is still the initial "lost-race".)
 		s.log.Warn("snapshot: create content file failed", "path", contentPath, "err", err)
+		mf.Status = "lost-race"
+		s.writeManifest(capDir, mf)
+		s.indexCaptured(r.Path, capDir)
+		s.lostRace.Add(1)
 		return
 	}
 

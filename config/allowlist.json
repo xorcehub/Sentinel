@@ -153,7 +153,7 @@
     // if not running, Start-Service"` at every logon. Anchored on the GCUBridge
     // Get-Service probe (regex compiled (?i) case-insensitive); a real attacker won't
     // name their service GCUBridge AND use this exact watchdog form.
-    "Get-Service -Name 'GCUBridge'",
+    "Get-Service -Name 'GCUBridge'"
   ],
 
   // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the

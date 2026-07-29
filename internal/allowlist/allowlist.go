@@ -349,12 +349,6 @@ func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 // TOCTOU guard to confirm the bytes winverify read are the bytes `sha` keys.
 // Stdlib only. ponytail: reads the whole file into a streaming hasher; fine for
 // dev-tool PEs (tens of MB), not a hot path (called only on a verify miss).
-
-// hashFile returns the lowercased hex SHA256 of the file at path, mirroring how
-// Sysmon computes e.Hashes["SHA256"] (full-file SHA256, hex). Used by the Tier-2
-// TOCTOU guard to confirm the bytes winverify read are the bytes `sha` keys.
-// Stdlib only. ponytail: reads the whole file into a streaming hasher; fine for
-// dev-tool PEs (tens of MB), not a hot path (called only on a verify miss).
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {

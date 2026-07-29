@@ -10,6 +10,31 @@ import (
 	"sentinel/internal/event"
 )
 
+// TestSeverityToEventMapping pins the severity -> (event type, event id) map:
+// Critical must render as Error (red) in Event Viewer, Suspicious as Warning
+// (amber), Info as Information — and the three must be distinct. A prior
+// revision collapsed Suspicious/Info to Information and left eventlogErrorType
+// unused, so Critical showed amber and the lower two severities were
+// indistinguishable in the event log.
+func TestSeverityToEventMapping(t *testing.T) {
+	cases := []struct {
+		sev      event.Severity
+		wantType uint16
+		wantEID  int
+	}{
+		{event.SevCritical, eventlogErrorType, 1},
+		{event.SevSuspicious, eventlogWarningType, 2},
+		{event.SevInfo, eventlogInformationType, 3},
+	}
+	for _, c := range cases {
+		gotType, gotEID := severityToEvent(c.sev)
+		if gotType != c.wantType || gotEID != c.wantEID {
+			t.Errorf("severityToEvent(%v) = (type=%d, eid=%d); want (type=%d, eid=%d)",
+				c.sev, gotType, gotEID, c.wantType, c.wantEID)
+		}
+	}
+}
+
 // TestEventLogAlerterUnregisteredSourceLoudErrors proves the registration probe:
 // an unregistered source must make Alert() return a clear error, NOT succeed
 // silently while dropping the event (the failure mode that blinded the earlier

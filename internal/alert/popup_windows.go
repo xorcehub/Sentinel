@@ -152,7 +152,7 @@ func (p *PopupAlerter) wtsPopup(text, caption string) error {
 		uintptr(unsafe.Pointer(&titleUTF[0])),
 		uintptr((len(titleUTF)-1)*2), // WTSSendMessageW length is in BYTES, not wchars
 		uintptr(unsafe.Pointer(&msgUTF[0])),
-		uintptr((len(msgUTF)-1)*2), // passing wchars truncated body at the half-byte mark
+		uintptr((len(msgUTF)-1)*2), // WTSSendMessageW length is in BYTES, not wchars
 		uintptr(flags),
 		0, // timeout (ignored when bWait=FALSE)
 		uintptr(unsafe.Pointer(&resp)),
