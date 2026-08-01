@@ -325,3 +325,42 @@ func TestDiffFilesystemLocationUsesTargetFile(t *testing.T) {
 		t.Errorf("filesystem location should set TargetFile")
 	}
 }
+
+// TestDiffPerUserServiceSuffixRotation: Windows per-user services register a
+// bare template (cbdhsvc) plus a per-session instance whose _<hex> suffix
+// rotates every logon/user. A legit service must NOT churn as new persistence
+// when only the suffix changed. Conversely, a hex-tailed name with NO bare
+// template (HWiNFO_214, a version number) MUST stay flagged — the safety relies
+// on the bare template being trusted-present, not on the suffix looking hex.
+func TestDiffPerUserServiceSuffixRotation(t *testing.T) {
+	const svcLoc = `HKLM\System\CurrentControlSet\Services`
+	// Fields kept comma-free so no CSV quoting is needed; only Key() semantics matter.
+	row := func(entry string) string {
+		return "20260723-090000," + svcLoc + "," + entry + ",enabled,Services,System-wide,svc,(Verified) Microsoft Windows,(Verified) Microsoft Windows,C:\\WINDOWS\\system32\\svchost.exe,10.0,svchost.exe\n"
+	}
+	// clean: bare per-user service templates + a versioned service with NO bare template.
+	cleanCSV := sampleCSV +
+		row("cbdhsvc") +
+		row("WpnUserService") +
+		row("HWiNFO_214")
+	clean := mustParse(t, cleanCSV)
+	// daily: clean + a ROTATED per-user suffix (bare cbdhsvc exists -> suppressed)
+	// and a brand-new malicious service with a hex tail but no template (-> new).
+	daily := mustParse(t, cleanCSV+
+		row("cbdhsvc_f62dc")+
+		row("EvilSvc_dead"))
+
+	events := Diff(clean, daily)
+	var keys []string
+	for _, ev := range events {
+		keys = append(keys, ev.TargetRegKey)
+	}
+	// Only EvilSvc_dead should survive: cbdhsvc_f62dc matched the bare template,
+	// HWiNFO_214 was identical to clean, WpnUserService unchanged.
+	if len(events) != 1 {
+		t.Fatalf("want exactly 1 new event (EvilSvc_dead); got %d: %v", len(events), keys)
+	}
+	if !strings.Contains(events[0].TargetRegKey, "EvilSvc_dead") {
+		t.Errorf("the one new event must be EvilSvc_dead; got %q", events[0].TargetRegKey)
+	}
+}
