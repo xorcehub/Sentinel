@@ -46,11 +46,12 @@ func DiffEntries(clean, daily Snapshot) []Entry {
 		// (cbdhsvc) plus a per-session instance (cbdhsvc_<hex>) whose suffix
 		// rotates every logon/user, so a legit service churns as "new"
 		// daily. If this daily entry is a <base>_<hex> instance under the
-		// Services hive AND its bare template base is in the clean baseline,
-		// treat it as known. Safe because the suffix is matched only against a
-		// trusted template already present; coincidence names like HWiNFO_214
-		// (hex tail but no bare HWiNFO template) are left flagged.
-		if base, ok := serviceTemplateBase(e.Location, e.Entry); ok && seen[e.Location+"\x00"+base] {
+		// Services hive AND base is one of the documented Windows per-user
+		// service families (perUserSvcFamily), treat it as known. The family
+		// list is the safety gate, not the suffix shape: a hex-tailed name
+		// whose base is NOT a real family (PrintWorkflowSvc_deadbeef mimicking
+		// the real PrintWorkflowUserSvc, or HWiNFO_214) stays flagged.
+		if base, ok := serviceTemplateBase(e.Location, e.Entry); ok && perUserSvcFamily[strings.ToLower(base)] {
 			continue
 		}
 		newEntries = append(newEntries, e)
@@ -117,13 +118,43 @@ func isServicesLocation(loc string) bool {
 	return strings.HasSuffix(strings.ToLower(loc), `\currentcontrolset\services`)
 }
 
+// perUserSvcFamily is the fixed, documented set of Windows per-user service
+// families. Each registers a bare template plus a per-session instance
+// <template>_<LogonId hex> whose suffix rotates every logon/user. Only these
+// bases qualify for the suffix-rotation fallback in DiffEntries — a hardcoded
+// family list (not "any template present in the baseline") so an attacker who
+// creates BackdoorSvc_deadbeef or PrintWorkflowSvc_deadbeef (mimicking the real
+// PrintWorkflowUserSvc) is NOT suppressed. Live creation is still caught by
+// PERSIST-005 (Sysmon EID 13); this list only governs the retroactive baseline
+// diff. Sourced from the operator's baseline_clean.csv (24 Microsoft families;
+// Kaspersky's klupd_..._arkmon is excluded — it's a hex-tail coincidence, not a
+// per-user service). Lowercased for case-insensitive lookup.
+var perUserSvcFamily = func() map[string]bool {
+	m := make(map[string]bool, len(rawPerUserSvcFamily))
+	for _, n := range rawPerUserSvcFamily {
+		m[strings.ToLower(n)] = true
+	}
+	return m
+}()
+
+var rawPerUserSvcFamily = []string{
+	"AarSvc", "BcastDVRUserService", "BluetoothUserService", "CaptureService",
+	"cbdhsvc", "CDPUserSvc", "CloudBackupRestoreSvc", "ConsentUxUserSvc",
+	"CredentialEnrollmentManagerUserSvc", "DeviceAssociationBrokerSvc",
+	"DevicePickerUserSvc", "DevicesFlowUserSvc", "MessagingService", "NPSMSvc",
+	"OneSyncSvc", "P9RdrService", "PenService", "PimIndexMaintenanceSvc",
+	"PrintWorkflowUserSvc", "UdkUserSvc", "UnistoreSvc", "UserDataSvc",
+	"webthreatdefusersvc", "WpnUserService",
+}
+
 // serviceTemplateBase reports whether entry looks like a per-user-service
 // instance <base>_<hex> under the Services hive, returning the base name. The
 // hex suffix is Windows' per-session LogonId and rotates every logon/user
-// (observed widths 5-7; we accept 5-8). The caller MUST confirm the base is a
-// known trusted template before relying on this — a hex tail alone is not
-// proof: HWiNFO_214 and klupd_..._arkmon_DFE8DCB8 have hex tails but no bare
-// template, so they stay flagged.
+// (observed widths 5-7; we accept 5-8). Returning ok=true means ONLY "the shape
+// matches" — the caller MUST still check perUserSvcFamily[base] before relying
+// on it, since a hex tail alone is not proof (HWiNFO_214,
+// klupd_..._arkmon_DFE8DCB8, and any attacker-chosen <name>_<hex> all share the
+// shape).
 func serviceTemplateBase(loc, entry string) (base string, ok bool) {
 	if !isServicesLocation(loc) {
 		return "", false
@@ -133,11 +164,10 @@ func serviceTemplateBase(loc, entry string) (base string, ok bool) {
 		return "", false
 	}
 	suffix := entry[i+1:]
-	// Real Windows per-user session LogonIds are 5-7 hex chars wide (every
-	// observed row). Tighten the floor to 5 so a future version-suffixed entry
-	// that shares a bare template name (e.g. <template>_1) is NOT wrongly
-	// collapsed. The template-present guard is the primary safety; this floor
-	// is a belt that avoids surprises from short coincidental tails.
+	// Real Windows per-user session LogonIds are 5-7 hex chars wide. Accept
+	// 5-8 (with a lower bound of 5) so a version-suffixed name with a short tail
+	// (HWiNFO_214) is never considered. The perUserSvcFamily membership check in
+	// the caller is the primary safety gate; this width bound is a cheap belt.
 	if len(suffix) < 5 || len(suffix) > 8 {
 		return "", false
 	}

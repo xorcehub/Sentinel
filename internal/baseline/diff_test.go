@@ -329,38 +329,57 @@ func TestDiffFilesystemLocationUsesTargetFile(t *testing.T) {
 // TestDiffPerUserServiceSuffixRotation: Windows per-user services register a
 // bare template (cbdhsvc) plus a per-session instance whose _<hex> suffix
 // rotates every logon/user. A legit service must NOT churn as new persistence
-// when only the suffix changed. Conversely, a hex-tailed name with NO bare
-// template (HWiNFO_214, a version number) MUST stay flagged — the safety relies
-// on the bare template being trusted-present, not on the suffix looking hex.
+// when only the suffix changed. Conversely, a hex-tailed name whose base is NOT
+// one of the documented per-user families MUST stay flagged — whether it has no
+// template (HWiNFO_214) or mimics a real family name (PrintWorkflowSvc_deadbeef
+// vs the real PrintWorkflowUserSvc). Safety = family membership, not suffix shape.
 func TestDiffPerUserServiceSuffixRotation(t *testing.T) {
 	const svcLoc = `HKLM\System\CurrentControlSet\Services`
 	// Fields kept comma-free so no CSV quoting is needed; only Key() semantics matter.
 	row := func(entry string) string {
 		return "20260723-090000," + svcLoc + "," + entry + ",enabled,Services,System-wide,svc,(Verified) Microsoft Windows,(Verified) Microsoft Windows,C:\\WINDOWS\\system32\\svchost.exe,10.0,svchost.exe\n"
 	}
-	// clean: bare per-user service templates + a versioned service with NO bare template.
+	// clean: bare per-user service templates + a versioned service with NO family match.
 	cleanCSV := sampleCSV +
 		row("cbdhsvc") +
 		row("WpnUserService") +
+		row("PrintWorkflowUserSvc") + // real family
 		row("HWiNFO_214")
 	clean := mustParse(t, cleanCSV)
-	// daily: clean + a ROTATED per-user suffix (bare cbdhsvc exists -> suppressed)
-	// and a brand-new malicious service with a hex tail but no template (-> new).
+	// daily: clean + (a) rotated cbdhsvc suffix (real family -> suppressed),
+	// (b) PrintWorkflowSvc_deadbeef mimicking the real PrintWorkflowUserSvc but
+	// NOT a family member -> must flag, and (c) BackdoorSvc_123456 -> must flag.
 	daily := mustParse(t, cleanCSV+
 		row("cbdhsvc_f62dc")+
-		row("EvilSvc_dead"))
+		row("PrintWorkflowSvc_deadbeef")+
+		row("BackdoorSvc_123456"))
 
 	events := Diff(clean, daily)
-	var keys []string
+	got := map[string]bool{}
 	for _, ev := range events {
-		keys = append(keys, ev.TargetRegKey)
+		got[ev.TargetRegKey] = true
 	}
-	// Only EvilSvc_dead should survive: cbdhsvc_f62dc matched the bare template,
-	// HWiNFO_214 was identical to clean, WpnUserService unchanged.
-	if len(events) != 1 {
-		t.Fatalf("want exactly 1 new event (EvilSvc_dead); got %d: %v", len(events), keys)
+	// Exactly two NEW events: the mimic and the backdoor. cbdhsvc_f62dc must be
+	// suppressed (real family); HWiNFO_214 and the bare templates are identical.
+	if len(events) != 2 {
+		t.Fatalf("want exactly 2 new events (PrintWorkflowSvc_deadbeef, BackdoorSvc_123456); got %d: %v",
+			len(events), got)
 	}
-	if !strings.Contains(events[0].TargetRegKey, "EvilSvc_dead") {
-		t.Errorf("the one new event must be EvilSvc_dead; got %q", events[0].TargetRegKey)
+	for _, want := range []string{"PrintWorkflowSvc_deadbeef", "BackdoorSvc_123456"} {
+		found := false
+		for k := range got {
+			if strings.Contains(k, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s must FLAG (not suppressed); events were %v", want, got)
+		}
+	}
+	// cbdhsvc_f62dc must NOT appear — it's a real per-user family rotation.
+	for k := range got {
+		if strings.Contains(k, "cbdhsvc_f62dc") {
+			t.Errorf("cbdhsvc_f62dc (real family rotation) must be suppressed; got %q", k)
+		}
 	}
 }
