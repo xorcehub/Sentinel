@@ -39,13 +39,18 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -75,13 +80,11 @@ type sysmonRT struct {
 	log        *slog.Logger
 	interval   time.Duration
 	maxPerPoll int
-	// selfExe is the normalized path of sentinel.exe itself. Events whose
-	// ParentImage matches are skipped: the poller's powershell.exe child and the
-	// toast/eventlog alerters' powershell.exe children are all spawned by
-	// sentinel.exe, and ingesting them floods the log + buries real activity at
-	// ~1 EID 1/sec. An attacker cannot make sentinel.exe their parent without
-	// already controlling the process, so this filter has no false-negative risk.
-	selfExe string
+	// parents silences helper processes spawned by sentinel's own binaries
+	// (poller/toast/eventlog powershell.exe, sentinel-tray's relay children).
+	// Hash-gated (see selfParents) so an imposter dropped into our user-writable
+	// install dir is detected rather than silenced.
+	parents *selfParents
 }
 
 // NewSysmonRT constructs the default Sysmon ingester (PowerShell poller).
@@ -95,20 +98,105 @@ func NewSysmonRT(channel, _query string, log *slog.Logger) (Ingester, error) {
 		log:        log,
 		interval:   defaultPollInterval,
 		maxPerPoll: defaultMaxPerPoll,
-		selfExe:    ownExePath(),
+		parents:    newSelfParents(),
 	}, nil
 }
 
-// ownExePath returns the normalized absolute path of the running sentinel.exe,
-// or "" if it can't be determined (in which case self-ingestion filtering is
-// disabled — safe, just noisier). Normalized via pathnorm so it matches Sysmon's
-// reported ParentImage regardless of slash/case form.
-func ownExePath() string {
+// ownExeDir returns the directory of the running sentinel.exe (the install
+// dir, where sentinel-tray.exe also lives), or "" if undeterminable.
+func ownExeDir() string {
 	p, err := os.Executable()
 	if err != nil {
 		return ""
 	}
-	return pathnorm.NormalizePath(p)
+	// No EvalSymlinks: we match whatever path form Sysmon reports as ParentImage
+	// (same NormalizePath on both stored and lookup side, as the old ownExePath
+	// did), and os.Executable() already resolves the real path on Windows.
+	// Resolving here but not on the lookup side would make a symlink-launched
+	// binary fail to match (safe but noisy).
+	return filepath.Dir(p)
+}
+
+// selfRecheck bounds how often a self-parent binary is re-hashed: at most one
+// SHA256 of sentinel.exe / sentinel-tray.exe per path per window. Large enough
+// that verify cost is negligible under toast bursts (~12ms for a 6MB binary,
+// once per 5s); small enough that a post-startup binary swap is caught soon.
+// A swapped-but-cached binary leaves a blind window up to selfRecheck wide —
+// acceptable given the foothold needed (write our dir + replace a running exe +
+// time the spawn inside the window).
+const selfRecheck = 5 * time.Second
+
+// selfParents maps the normalized paths of sentinel's own binaries to the
+// SHA256 recorded at startup. A process whose ParentImage matches one is
+// silenced ONLY if the on-disk binary still hashes to the recorded value, so a
+// same-named imposter swapped into our (user-writable) install dir is detected
+// instead of given a free pass to spawn -ep bypass powershell. Verification is
+// cached per path for selfRecheck to bound cost; a verify failure (missing /
+// changed / unreadable) returns false = the event is NOT silenced (fail-open
+// for detection). A nil or empty selfParents disables filtering (safe, noisier).
+type selfParents struct {
+	want map[string]string // normalized parent path -> lowercase hex SHA256
+	mu   sync.Mutex
+	ok   map[string]time.Time // normalized parent path -> last successful verify
+}
+
+// newSelfParents hashes sentinel.exe and sentinel-tray.exe in the install dir.
+// An unreadable or unbuilt sibling is skipped (not added) so its children are
+// detected rather than silenced — safe.
+func newSelfParents() *selfParents {
+	sp := &selfParents{want: map[string]string{}, ok: map[string]time.Time{}}
+	dir := ownExeDir()
+	if dir == "" {
+		return sp
+	}
+	for _, name := range []string{"sentinel.exe", "sentinel-tray.exe"} {
+		p := pathnorm.NormalizePath(filepath.Join(dir, name))
+		if h, err := sha256of(p); err == nil {
+			sp.want[p] = h
+		}
+	}
+	return sp
+}
+
+// matches reports whether parentImage is a sentinel-binary whose on-disk hash
+// still matches startup. now is injected so tests control the cache clock.
+func (sp *selfParents) matches(parentImage string, now time.Time) bool {
+	if sp == nil || len(sp.want) == 0 || parentImage == "" {
+		return false
+	}
+	p := pathnorm.NormalizePath(parentImage)
+	want, ok := sp.want[p]
+	if !ok {
+		return false
+	}
+	sp.mu.Lock()
+	last, seen := sp.ok[p]
+	sp.mu.Unlock()
+	if seen && now.Sub(last) < selfRecheck {
+		return true // recently confirmed legit; trust until recheck expires
+	}
+	h, err := sha256of(p)
+	if err != nil || h != want {
+		return false // imposter / swapped / unreadable -> do NOT silence
+	}
+	sp.mu.Lock()
+	sp.ok[p] = now
+	sp.mu.Unlock()
+	return true
+}
+
+// sha256of returns the lowercase hex SHA256 of the file at path.
+func sha256of(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Start implements Ingester.
@@ -175,14 +263,15 @@ func (s *sysmonRT) pollAndEmit(ctx context.Context, highWater *int64, out chan<-
 	}
 }
 
-// isSelfChild reports whether ev is a process spawned by sentinel.exe itself —
-// the poller's powershell.exe child (every poll cycle) and the toast/eventlog
-// alerters' powershell.exe children (every alert). Together ~1 EID 1/sec of
-// self-noise that buries real activity. An attacker cannot make sentinel.exe
-// their parent without already controlling the process, so no false-negative
-// risk. ParentImage is only meaningful for EID 1, so we gate on EID.
+// isSelfChild reports whether ev is a process spawned by a sentinel binary
+// (sentinel.exe / sentinel-tray.exe) whose on-disk hash still matches startup
+// — the poller's powershell.exe child (every poll), the toast/eventlog
+// alerters' powershell.exe children (every alert), the tray relay's children.
+// Together ~1 EID 1/sec of self-noise. Hash-gating means an imposter swapped
+// into our user-writable install dir is NOT silenced (detected instead).
+// ParentImage is only meaningful for EID 1, so we gate on EID.
 func (s *sysmonRT) isSelfChild(ev event.Event) bool {
-	return ev.EID == 1 && s.selfExe != "" && pathnorm.NormalizePath(ev.ParentImage) == s.selfExe
+	return ev.EID == 1 && s.parents.matches(ev.ParentImage, time.Now())
 }
 
 // poll runs one Get-WinEvent query and returns the parsed new events (RecordId
