@@ -147,7 +147,7 @@
     // on the admin-owned Program Files\OEM subtree; planting there already requires
     // admin = game over, so the path anchor is safe. One pattern covers both the
     // direct powershell and the cmd /c variants (same path substring).
-    "aistoneservice\\\\mycontrolcenter\\\\command\\\\logonusername\\.ps1",
+    "aistoneservice[\\\\/]+mycontrolcenter[\\\\/]+command[\\\\/]+logonusername\\.ps1",
     // GCUBridge service-watchdog. A scheduled task runs
     // `powershell -WindowStyle Hidden -ep bypass -Command "Get-Service -Name 'GCUBridge';
     // if not running, Start-Service"` at every logon. Anchored on the GCUBridge
