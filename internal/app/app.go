@@ -359,8 +359,23 @@ func (a *App) heartbeat(ctx context.Context, interval time.Duration, done chan<-
 }
 
 func (a *App) writeHeartbeat(t time.Time) {
-	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d\n",
-		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained())
+	// allowlist status surfaces a broken config/allowlist.json (parse error or
+	// missing file) that would otherwise silently disable forensic capture
+	// (ShouldCapture) and the log-noise filter — detection itself fails open,
+	// but the vault going dark deserves a recurring health signal, not just the
+	// one-time startup WARN from buildEngine. ok = engine + allowlist loaded;
+	// degraded = engine running but allowlist off (the case to investigate);
+	// n/a = no engine (raw mode / engine build failed).
+	allowlist := "n/a"
+	if a.opts.Engine != nil {
+		if a.opts.Engine.AllowlistActive() {
+			allowlist = "ok"
+		} else {
+			allowlist = "degraded"
+		}
+	}
+	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d allowlist=%s\n",
+		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained(), allowlist)
 	if err := os.WriteFile(a.opts.HeartbeatPath, []byte(line), 0o644); err != nil {
 		a.log.Warn("heartbeat write failed", "err", err)
 		return

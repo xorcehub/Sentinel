@@ -117,14 +117,14 @@ func formatHit(h event.Hit) string {
 		hdr,
 		h.RuleID,
 		h.RuleName,
-		h.Event.Image,
-		trunc(h.Event.CmdLine, 200),
+		sanitize(h.Event.Image),
+		trunc(sanitize(h.Event.CmdLine), 200),
 	)
 	for _, line := range contextLines(h.Event) {
 		fmt.Fprintf(&b, "\n    %s", line)
 	}
 	fmt.Fprintf(&b, "\n    match : %s\n    action: %s",
-		trunc(h.Matched, 200),
+		trunc(sanitize(h.Matched), 200),
 		joinActions(h.AlertTo),
 	)
 	return b.String()
@@ -142,14 +142,23 @@ func formatHit(h event.Hit) string {
 // channel surfaces the same context (05-ALERTING.md observability) — including
 // the parent, which previously only the popup surfaced (hardcoded in formatPopup).
 func contextLines(e event.Event) []string {
+	// cl formats one "label : value" line, sanitizing control chars out of the
+	// value so no attacker-reachable field (command line, registry value data,
+	// DNS answer, cert subject, ...) can inject a forged line into ALERTS.log.
+	// Routing every context line through cl means a newly-added field can't
+	// regress the protection. See sanitize for why every field (even FS paths)
+	// is sanitized uniformly rather than classifying per field.
+	cl := func(label, value string) string {
+		return fmt.Sprintf("%-6s: %s", label, sanitize(value))
+	}
 	var lines []string
 	// Parent process — universal (every Sysmon event carries it). Emitted first
 	// so lineage reads Proc → cmd → parent → [specific context]. See the comment
 	// above for why this matters for generic-image alerts (powershell/cursor).
 	if e.ParentImage != "" {
-		lines = append(lines, fmt.Sprintf("%-6s: %s", "parent", e.ParentImage))
+		lines = append(lines, cl("parent", e.ParentImage))
 		if e.ParentCmdLine != "" {
-			lines = append(lines, fmt.Sprintf("%-6s: %s", "pcmd", trunc(e.ParentCmdLine, 160)))
+			lines = append(lines, cl("pcmd", trunc(sanitize(e.ParentCmdLine), 160)))
 		}
 	}
 	// EID 3 (NetworkConnect)
@@ -161,41 +170,41 @@ func contextLines(e event.Event) []string {
 		if e.DstProto != "" {
 			dst += "/" + e.DstProto
 		}
-		lines = append(lines, fmt.Sprintf("%-6s: %s", "dst", dst))
+		lines = append(lines, cl("dst", dst))
 	}
 	// EID 7 (ImageLoad)
 	if e.ImageLoaded != "" {
-		lines = append(lines, fmt.Sprintf("%-6s: %s", "loaded", e.ImageLoaded))
+		lines = append(lines, cl("loaded", e.ImageLoaded))
 		if e.Signed != "" {
-			lines = append(lines, fmt.Sprintf("%-6s: %s", "signed", e.Signed))
+			lines = append(lines, cl("signed", e.Signed))
 		}
 		if e.Signature != "" {
-			lines = append(lines, fmt.Sprintf("%-6s: %s", "signer", e.Signature))
+			lines = append(lines, cl("signer", e.Signature))
 		}
 	}
 	// EID 8 / 10 (CreateRemoteThread / ProcessAccess)
 	if e.TargetImage != "" {
-		lines = append(lines, fmt.Sprintf("%-6s: %s", "target", e.TargetImage))
+		lines = append(lines, cl("target", e.TargetImage))
 		if e.GrantedAccess != "" {
-			lines = append(lines, fmt.Sprintf("%-6s: %s", "access", e.GrantedAccess))
+			lines = append(lines, cl("access", e.GrantedAccess))
 		}
 	}
 	// EID 11 / 23 (FileCreate / FileDelete)
 	if e.TargetFile != "" {
-		lines = append(lines, fmt.Sprintf("%-6s: %s", "file", e.TargetFile))
+		lines = append(lines, cl("file", e.TargetFile))
 	}
 	// EID 12 / 13 (Registry)
 	if e.TargetRegKey != "" {
-		lines = append(lines, fmt.Sprintf("%-6s: %s", "regkey", e.TargetRegKey))
+		lines = append(lines, cl("regkey", e.TargetRegKey))
 		if e.Details != "" {
-			lines = append(lines, fmt.Sprintf("%-6s: %s", "detail", e.Details))
+			lines = append(lines, cl("detail", e.Details))
 		}
 	}
 	// EID 22 (DNSQuery)
 	if e.QueryName != "" {
-		lines = append(lines, fmt.Sprintf("%-6s: %s", "query", e.QueryName))
+		lines = append(lines, cl("query", e.QueryName))
 		if e.QueryResults != "" {
-			lines = append(lines, fmt.Sprintf("%-6s: %s", "results", e.QueryResults))
+			lines = append(lines, cl("results", e.QueryResults))
 		}
 	}
 	return lines
@@ -205,8 +214,8 @@ func formatSuppression(s Suppression) string {
 	return fmt.Sprintf("[%s] SUPPRESSED rule=%-12s reason=%s\n    image : %s\n    cmd   : %s",
 		time.Now().Format(time.RFC3339),
 		s.RuleID, s.Reason,
-		s.Event.Image,
-		trunc(s.Event.CmdLine, 200),
+		sanitize(s.Event.Image),
+		trunc(sanitize(s.Event.CmdLine), 200),
 	)
 }
 
@@ -236,6 +245,27 @@ func trunc(s string, n int) string {
 		n-- // back up to a rune-start byte; never slice through a multibyte seq
 	}
 	return s[:n] + "…"
+}
+
+// sanitize replaces C0 control characters (0x00-0x1F: newline, carriage
+// return, tab, and the rest) with a space so an attacker cannot forge lines
+// in ALERTS.log by embedding '\n' in attacker-controlled event data. The live
+// vectors are command lines (lpCommandLine accepts any byte), registry value
+// data (Details), registry key paths, DNS names/answers, and cert subjects —
+// Windows filesystem paths cannot hold 0x0A, but every event-derived field is
+// sanitized anyway: it's a free no-op on clean values and removes the fragile
+// "which field is injectable" classification (an earlier fix narrowed it to
+// command lines only and missed Details, a confirmed registry-value vector).
+// Applied at every ALERTS.log embedding site in formatHit/contextLines/
+// formatSuppression. DEL (0x7f) and C1 (0x80-0x9f) are out of scope: they
+// don't break line structure in a text log.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 func joinActions(a []string) string {

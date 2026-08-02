@@ -173,6 +173,100 @@ func TestLogAlerterShowsHidAndRec(t *testing.T) {
 	}
 }
 
+// TestLogAlerterSanitizesNewline is the F1 regression: an attacker controls
+// several event fields verbatim (command line, registry value data, DNS
+// answer, ...), so a '\n' in any of them must NOT inject a forged line into
+// ALERTS.log (unprivileged append-forgery). sanitize() maps C0 controls to a
+// space; the forged content is flattened onto its context line as inert data
+// instead of starting a new "[ts] CRITICAL ..." block. The literal attack
+// tokens may still appear as text — what matters is they can no longer begin a
+// line that mimics an alert block header. Covers the CmdLine/ParentCmdLine,
+// registry Details (the confirmed vector: the Run-key value writer controls
+// those bytes), and DNS QueryName/QueryResults paths through contextLines.
+func TestLogAlerterSanitizesNewline(t *testing.T) {
+	var buf bytes.Buffer
+	la := NewLogAlerterTo(&buf)
+	h := event.Hit{
+		RuleID: "EXEC-001", RuleName: "PS bypass",
+		Severity: event.SevCritical,
+		Event: event.Event{
+			Image:         `C:\Windows\System32\powershell.exe`,
+			CmdLine:       "powershell -c evil\n[2099-01-01T00:00:00+00:00] CRITICAL hid=FAKE rule=PWNED",
+			ParentImage:   `C:\parent.exe`,
+			ParentCmdLine: "parent\r\ninject",
+			// Registry value data (Details) is a confirmed forgery vector: the
+			// attacker writing the Run-key value (the act PERSIST rules detect)
+			// controls these bytes, and a REG_SZ value holds 0x0A. TargetRegKey
+			// gates Details into contextLines.
+			TargetRegKey: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Evil`,
+			Details:      "evil.exe\n[2099-01-01T00:00:00+00:00] CRITICAL hid=DETAILFORGE rule=PWN-REG",
+			// DNS answer strings are also attacker-controlled (rogue resolver).
+			QueryName:    "evil.example\n[2099] CRITICAL hid=DNSFORGE",
+			QueryResults: "1.2.3.4\nFORGED-RESULTS",
+		},
+		Matched: "EXEC-001\ton powershell",
+		AlertTo: []string{"log"},
+		Time:    time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	}
+	if err := la.Alert(h); err != nil {
+		t.Fatalf("Alert: %v", err)
+	}
+	out := buf.String()
+	// No line may look like a forged alert header. The real block has exactly
+	// one header line (starts with '['); a successful injection would add a
+	// second. Lines beginning with '[' = header candidates.
+	headers := 0
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(ln, "[") {
+			headers++
+		}
+	}
+	if headers != 1 {
+		t.Errorf("want exactly 1 header line, got %d (forged header injected?):\n%s", headers, out)
+	}
+	// Structural check: the sanitized block has the same newline count as a
+	// clean hit whose cmd/pcmd carry the same text without control chars. A
+	// forged block would add lines.
+	var clean bytes.Buffer
+	NewLogAlerterTo(&clean).Alert(event.Hit{
+		RuleID: "EXEC-001", RuleName: "PS bypass", Severity: event.SevCritical,
+		Event: event.Event{
+			Image:         `C:\Windows\System32\powershell.exe`,
+			CmdLine:       "powershell -c evil [2099-01-01T00:00:00+00:00] CRITICAL hid=FAKE rule=PWNED",
+			ParentImage:   `C:\parent.exe`,
+			ParentCmdLine: "parent inject",
+			TargetRegKey:  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Evil`,
+			Details:       "evil.exe [2099-01-01T00:00:00+00:00] CRITICAL hid=DETAILFORGE rule=PWN-REG",
+			QueryName:     "evil.example [2099] CRITICAL hid=DNSFORGE",
+			QueryResults:  "1.2.3.4 FORGED-RESULTS",
+		},
+		Matched: "EXEC-001 on powershell", AlertTo: []string{"log"},
+		Time: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if nlCount(out) != nlCount(clean.String()) {
+		t.Errorf("newline count differs: attack=%d clean=%d\n--- attack ---\n%s", nlCount(out), nlCount(clean.String()), out)
+	}
+}
+
+func nlCount(s string) int { return strings.Count(s, "\n") }
+
+func TestSanitize(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"clean", "clean"},
+		{"line1\nline2", "line1 line2"},
+		{"a\rb\tc\fd", "a b c d"},
+		{"null\x00byte", "null byte"},
+		{"\x1funit\x1f", " unit "},
+		{"keep émojiié ✓", "keep émojiié ✓"}, // non-ASCII passes through untouched
+	}
+	for _, c := range cases {
+		if got := sanitize(c.in); got != c.want {
+			t.Errorf("sanitize(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestContextLines(t *testing.T) {
 	cases := []struct {
 		name string

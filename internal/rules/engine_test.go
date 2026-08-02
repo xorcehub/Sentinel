@@ -196,6 +196,26 @@ func contains(ids []string, want string) bool {
 
 // --- tests ---
 
+// TestAllowlistActive is the F2 health-signal regression: buildEngine sets
+// al=nil when config/allowlist.json fails to parse, which silently disables
+// forensic capture (ShouldCapture) and the log-noise filter. The heartbeat
+// relies on AllowlistActive to surface that. It must report false for a nil
+// engine (raw mode) and an engine built without an allowlist, true otherwise.
+func TestAllowlistActive(t *testing.T) {
+	var nilEng *Engine
+	if nilEng.AllowlistActive() {
+		t.Error("nil engine should report AllowlistActive=false")
+	}
+	withoutAL := newEngine(t, nil)
+	if withoutAL.AllowlistActive() {
+		t.Error("engine with nil allowlist should report AllowlistActive=false")
+	}
+	withAL := newEngine(t, &fakeAL{trustedSHA: map[string]bool{}, loopback: map[string]bool{}})
+	if !withAL.AllowlistActive() {
+		t.Error("engine with an allowlist should report AllowlistActive=true")
+	}
+}
+
 func TestIncidentHitsAndRouting(t *testing.T) {
 	eng := newEngine(t, &fakeAL{trustedSHA: map[string]bool{}, loopback: map[string]bool{}})
 	// conhost headless incident -> EXEC-002, critical, popup routed

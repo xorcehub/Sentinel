@@ -183,6 +183,16 @@ func (eng *Engine) ShouldCapture(e *event.Event) string {
 	return eng.al.ShouldCapture(e)
 }
 
+// AllowlistActive reports whether the engine has a loaded allowlist. It is
+// used by the app-layer heartbeat to surface a broken config/allowlist.json
+// (parse error or missing file) that buildEngine otherwise hides behind a
+// single startup WARN: with al=nil, ShouldCapture/IsLogNoise go dark (forensic
+// capture + log-noise filter off) even though detection itself fails open.
+// Nil-safe: a nil Engine (raw passthrough / engine build failed) returns false.
+func (eng *Engine) AllowlistActive() bool {
+	return eng != nil && eng.al != nil
+}
+
 // ---- except (allowlist subtraction) ----
 
 func (eng *Engine) exceptSuppresses(r *sigmaeval.Rule, e *event.Event) bool {
