@@ -440,8 +440,8 @@ func TestCriticalNotificationIsLoud(t *testing.T) {
 	if !n.Loop {
 		t.Error("critical toast Loop = false, want true (alarm must repeat until dismissed)")
 	}
-	if !strings.HasPrefix(n.Title, "🛑") {
-		t.Errorf("critical toast Title = %q, want 🛑 prefix", n.Title)
+	if !strings.HasPrefix(n.Title, "ALERT! ") {
+		t.Errorf("critical toast Title = %q, want 'ALERT! 'prefix", n.Title)
 	}
 	if n.AppID != toastAppID {
 		t.Errorf("critical toast AppID = %q, want %q (group with suspicious-tier toasts)", n.AppID, toastAppID)

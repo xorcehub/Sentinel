@@ -1,10 +1,14 @@
 package alert
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"git.sr.ht/~jackmordaunt/go-toast"
+	"git.sr.ht/~jackmordaunt/go-toast/tmpl"
+	"git.sr.ht/~jackmordaunt/go-toast/wintoast"
 	"github.com/gen2brain/beeep"
 
 	"sentinel/internal/event"
@@ -23,7 +27,7 @@ func init() {
 
 // criticalNotification builds the toast config for a former-popup-tier
 // (critical) alert: a looping alarm sound, long on-screen duration, looped
-// audio, and a 🛑-prefixed title. This is what makes a critical hit stand out
+// audio, and an "ALERT!"-prefixed title. This is what makes a critical hit stand out
 // from the silent suspicious-tier toast when the operator has disabled
 // MessageBox (-popup=false). Pure (constructs the config, does not push) so
 // the "what makes it loud" policy is unit-testable without firing a real
@@ -33,7 +37,7 @@ func init() {
 func criticalNotification(title, body string) toast.Notification {
 	return toast.Notification{
 		AppID:    toastAppID,
-		Title:    "🛑 " + title,
+		Title:    "ALERT! " + title,
 		Body:     body,
 		Audio:    toast.LoopingAlarm,
 		Duration: toast.Long,
@@ -46,9 +50,34 @@ func criticalNotification(title, body string) toast.Notification {
 // also lands in ALERTS.log + Event Log, so a toast failure never drops the
 // audit trail. Uses go-toast directly because beeep hardcodes silent audio
 // (toastNotify(..., urgent=false) -> Audio=Silent), giving no way to be loud.
+//
+// LOOP-SAFETY: bypasses go-toast's high-level Notification.Push() and calls
+// wintoast.Push(xml) with NO option, which disables the PowerShell fallback.
+// That fallback writes a .ps1 to Temp and runs `powershell -ExecutionPolicy
+// Bypass -File <Temp>\X.ps1` — a command line that matches EXEC-001 +
+// PERSIST-001. When the COM path failed on an astral-plane title char (see
+// criticalNotification), the fallback fired on every critical and self-
+// triggered the rules in a ~700/hr loop. With the fallback disabled, a COM
+// failure (now impossible for ASCII titles, but possible if a command line
+// baked into the body carries an astral char) just returns an error the caller
+// logs and drops — never a shell-out. Same lesson as the eventlog/eventcreate
+// feedback fix: a Sentinel alerter must never emit a child process whose
+// command line matches the very rules Sentinel enforces.
 func LoudToast(title, body string) error {
 	n := criticalNotification(title, body)
-	return n.Push()
+	// wintoast.Push needs the AppID registered (the high-level Notification.Push
+	// calls SetAppData before pushing). We bypass Push to disable the PowerShell
+	// fallback, so replicate the registration here. Cheap HKCU registry write;
+	// idempotent. ActivationExe/Icon left empty (no click-through / branding),
+	// which is fine for a loud fire-and-forget alert.
+	if err := toast.SetAppData(wintoast.AppData{AppID: n.AppID}); err != nil {
+		return fmt.Errorf("set toast app data: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.XMLTemplate.Execute(&buf, n); err != nil {
+		return fmt.Errorf("render toast xml: %w", err)
+	}
+	return wintoast.Push(buf.String()) // zero options => no PowerShell fallback
 }
 
 // ToastAlerter shows a best-effort Windows toast (05-ALERTING.md §4).
@@ -92,14 +121,33 @@ func (t *ToastAlerter) Name() string { return "toast" }
 // toastText formats the title/body for a toast. Shared by ToastAlerter (fires
 // locally) and PipeToastAlerter (sends to the user-session relay).
 func toastText(h event.Hit) (title, body string) {
-	title = fmt.Sprintf("Sentinel: %s", trunc(h.RuleName, 60))
-	body = fmt.Sprintf("%s — %s", upper(string(h.Severity)), trunc(h.Event.Image, 80))
+	title = stripToastChars(fmt.Sprintf("Sentinel: %s", trunc(h.RuleName, 60)))
+	body = stripToastChars(fmt.Sprintf("%s — %s", upper(string(h.Severity)), trunc(h.Event.Image, 80)))
 	// Former-popup tier: append the command line (the MessageBox showed it) so a
 	// loud critical toast is actionable, not just loud. Suspicious stays compact.
 	if h.Severity == event.SevCritical && h.Event.CmdLine != "" {
-		body += " — " + trunc(h.Event.CmdLine, 100)
+		body = stripToastChars(body + " — " + trunc(h.Event.CmdLine, 100))
 	}
 	return
+}
+
+// stripToastChars drops characters go-toast's WinRT COM XML binding can't render.
+// go-toast fails XmlDocument.LoadXml (0xC00CE55F) on astral-plane (4-byte UTF-8)
+// chars; a command line or rule name can carry one (emoji in args, rare CJK),
+// which would break COM and — for beeep, which keeps go-toast's PowerShell
+// fallback — trigger exactly the self-referential powershell-bypass-from-Temp
+// spawn that EXEC-001/PERSIST-001 match. Dropping astral runes keeps COM green
+// for any event content, so neither the fallback (beeep) nor LoudToast's
+// no-fallback error path ever fires on real data. BMP chars (incl. em-dash) pass.
+// ponytail: only astral is dropped; if go-toast ever widens its char support,
+// remove this.
+func stripToastChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r > 0xFFFF {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Alert fires a toast. Critical hits get the loud looping-alarm treatment
