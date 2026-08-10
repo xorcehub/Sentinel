@@ -95,6 +95,7 @@ type flags struct {
 	snapshotPerFileKB int
 	snapshotTotalMB   int
 	sysmonArchiveDir  string
+	popup             bool
 }
 
 func parseFlags(args []string) (*flags, *flag.FlagSet) {
@@ -125,6 +126,7 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.IntVar(&out.snapshotPerFileKB, "snapshot-per-file-kb", 2048, "max KB copied per captured file (0 = unlimited; oversize files are truncated with status=truncated)")
 	f.IntVar(&out.snapshotTotalMB, "snapshot-total-mb", 500, "max total MB of the snapshot vault; oldest captures evicted when exceeded (0 = unlimited)")
 	f.StringVar(&out.sysmonArchiveDir, "sysmon-archive-dir", "", "Sysmon FileDelete archive directory (where <ArchiveDirectory> stores EID 23 archived copies). Enables guaranteed capture of create-and-delete files that are gone before EID 11 delivery. Empty = EID 23 archive captures disabled.")
+	f.BoolVar(&out.popup, "popup", true, "show a blocking MessageBox for critical alerts (default on). Set -popup=false to suppress popups: critical hits then surface as a loud looping-alarm toast instead of a click-away box (suspicious-tier toasts stay silent either way).")
 	return out, f
 }
 
@@ -320,16 +322,30 @@ func buildDispatcher(fl *flags, logger *slog.Logger) *alert.Dispatcher {
 	// in all modes.
 	alerters := []alert.Alerter{
 		logAlerter,
-		alert.NewPopupAlerter(logger),
 		alert.NewEventLogAlerter("Sentinel", logger),
 	}
+	if fl.popup {
+		alerters = append(alerters, alert.NewPopupAlerter(logger))
+	} else {
+		// -popup=false: MessageBox suppressed. Critical hits still carry
+		// "popup" in their engine-declared AlertTo, but the dispatcher skips it
+		// silently (no popup alerter registered) and the already-present
+		// "toast" channel fires a loud looping-alarm toast instead. log+
+		// eventlog are unchanged.
+		logger.Info("MessageBox popups disabled (-popup=false); critical alerts route to a loud looping-alarm toast")
+	}
+	// The loud critical toast (looping alarm) is the non-blocking REPLACEMENT
+	// for the gated-off popup: only escalate criticals to a loud toast when the
+	// popup is disabled. With popup on, criticals still toast silently alongside
+	// the MessageBox — a loud alarm too would be a redundant double-signal.
+	loudCritical := !fl.popup
 	if alert.InSession0() {
 		// Session 0 (SYSTEM) can't fire WinRT toasts directly ("Access is
 		// denied"). Hand them to the user-session relay over a named pipe.
-		alerters = append(alerters, alert.NewPipeToastAlerter(`\\.\pipe\sentinel-toast`, logger))
+		alerters = append(alerters, alert.NewPipeToastAlerter(`\\.\pipe\sentinel-toast`, logger, loudCritical))
 		logger.Info("running in Session 0; toast via relay pipe")
 	} else {
-		alerters = append(alerters, alert.NewToastAlerter(logger))
+		alerters = append(alerters, alert.NewToastAlerter(logger, loudCritical))
 	}
 	return alert.New(alerters, 256, logger)
 }

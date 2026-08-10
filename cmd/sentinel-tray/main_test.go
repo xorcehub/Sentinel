@@ -22,12 +22,12 @@ func TestPipeRoundTrip(t *testing.T) {
 
 	// Capture the parsed toast instead of firing a real one.
 	type captured struct {
-		title, body string
+		title, body, severity string
 	}
 	got := make(chan captured, 1)
 	orig := notifyFn
-	notifyFn = func(title, body string, _ any) error {
-		got <- captured{title, body}
+	notifyFn = func(title, body, severity string) error {
+		got <- captured{title, body, severity}
 		return nil
 	}
 	defer func() { notifyFn = orig }()
@@ -55,8 +55,8 @@ func TestPipeRoundTrip(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	want := toastMsg{Title: "Sentinel: EXEC-001", Body: "CRITICAL - powershell.exe"}
-	payload := []byte(`{"title":"` + want.Title + `","body":"` + want.Body + `"}`)
+	want := toastMsg{Title: "Sentinel: EXEC-001", Body: "CRITICAL - powershell.exe", Severity: "critical"}
+	payload := []byte(`{"title":"` + want.Title + `","body":"` + want.Body + `","severity":"` + want.Severity + `"}`)
 	var written uint32
 	if err := windows.WriteFile(h, payload, &written, nil); err != nil {
 		windows.CloseHandle(h)
@@ -69,9 +69,9 @@ func TestPipeRoundTrip(t *testing.T) {
 
 	select {
 	case c := <-got:
-		if c.title != want.Title || c.body != want.Body {
-			t.Fatalf("round-trip mismatch:\n got  title=%q body=%q\n want title=%q body=%q",
-				c.title, c.body, want.Title, want.Body)
+		if c.title != want.Title || c.body != want.Body || c.severity != want.Severity {
+			t.Fatalf("round-trip mismatch:\n got  title=%q body=%q sev=%q\n want title=%q body=%q sev=%q",
+				c.title, c.body, c.severity, want.Title, want.Body, want.Severity)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("relay did not deliver the toast (notifyFn never called)")
@@ -92,7 +92,7 @@ func TestPipeOverflowDropped(t *testing.T) {
 	// notifyFn must NOT fire on an overflow connection.
 	fired := make(chan struct{}, 1)
 	orig := notifyFn
-	notifyFn = func(_, _ string, _ any) error {
+	notifyFn = func(_, _, _ string) error {
 		fired <- struct{}{}
 		return nil
 	}

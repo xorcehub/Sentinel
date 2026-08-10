@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"git.sr.ht/~jackmordaunt/go-toast"
+
 	"sentinel/internal/event"
 )
 
@@ -394,6 +396,82 @@ func TestDispatcherUnknownAlerterSkipped(t *testing.T) {
 	d.Submit(event.Hit{RuleID: "X", AlertTo: []string{"log", "nonexistent"}})
 	waitFor(t, func() bool { return logal.Count() == 1 }, time.Second)
 	cancel()
+}
+
+// TestDispatcherSkipsPopupWhenNotRegistered pins the -popup=false contract:
+// when no popup alerter is registered, a critical hit whose AlertTo still
+// requests "popup" (engine declares intent; dispatcher delivers what's wired)
+// must (a) still hit its other alerters and (b) NOT touch the popup queue —
+// so a burst can't spuriously increment Dropped and surface as a fake health
+// problem in the heartbeat.
+func TestDispatcherSkipsPopupWhenNotRegistered(t *testing.T) {
+	logal := &fakeAlerter{name: "log"}
+	// popup deliberately NOT registered (operator ran -popup=false)
+	d := New([]Alerter{logal}, 16, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.Run(ctx)
+
+	d.Submit(event.Hit{RuleID: "C", Severity: event.SevCritical, AlertTo: []string{"popup", "log"}})
+	waitFor(t, func() bool { return logal.Count() == 1 }, time.Second)
+	cancel()
+
+	if logal.Count() != 1 {
+		t.Errorf("log should fire once; got %d", logal.Count())
+	}
+	if d.Dropped() != 0 {
+		t.Errorf("popup-not-wired must not count as dropped; got %d (popup queue touched?)", d.Dropped())
+	}
+}
+
+// TestCriticalNotificationIsLoud pins the "what makes a critical toast stand
+// out" policy: looping alarm audio, long duration, looped, 🛑-prefixed title,
+// grouped under the Sentinel AppID. Pure (no Push) so it asserts the config
+// without firing a WinRT toast. If someone weakens the alarm by accident this
+// fails. Tune the policy in criticalNotification and update the expectations
+// here in the same change.
+func TestCriticalNotificationIsLoud(t *testing.T) {
+	n := criticalNotification("Sentinel: EXEC-001", "CRITICAL — powershell.exe — -ep bypass x.ps1")
+	if n.Audio != toast.LoopingAlarm {
+		t.Errorf("critical toast Audio = %q, want LoopingAlarm (must stand out from silent suspicious tier)", n.Audio)
+	}
+	if n.Duration != toast.Long {
+		t.Errorf("critical toast Duration = %q, want Long", n.Duration)
+	}
+	if !n.Loop {
+		t.Error("critical toast Loop = false, want true (alarm must repeat until dismissed)")
+	}
+	if !strings.HasPrefix(n.Title, "🛑") {
+		t.Errorf("critical toast Title = %q, want 🛑 prefix", n.Title)
+	}
+	if n.AppID != toastAppID {
+		t.Errorf("critical toast AppID = %q, want %q (group with suspicious-tier toasts)", n.AppID, toastAppID)
+	}
+}
+
+// TestToastTextCriticalEnriched pins that the former-popup tier carries the
+// command line in the toast body (the MessageBox showed it) so a loud critical
+// toast is actionable. Suspicious stays compact (image only).
+func TestToastTextCriticalEnriched(t *testing.T) {
+	title, body := toastText(event.Hit{
+		Severity: event.SevCritical,
+		RuleName: "PS bypass",
+		Event:    event.Event{Image: `C:/bad.exe`, CmdLine: `-enc SGVsbG8=`},
+	})
+	if !strings.Contains(body, `-enc SGVsbG8=`) {
+		t.Errorf("critical toast body should include the command line; got %q", body)
+	}
+	if !strings.HasPrefix(title, "Sentinel: ") {
+		t.Errorf("title prefix; got %q", title)
+	}
+	// Suspicious tier: no command line in the body.
+	_, sbody := toastText(event.Hit{
+		Severity: event.SevSuspicious,
+		RuleName: "NET",
+		Event:    event.Event{Image: `C:/net.exe`, CmdLine: `should-not-appear`},
+	})
+	if strings.Contains(sbody, `should-not-appear`) {
+		t.Errorf("suspicious toast body should NOT include cmd; got %q", sbody)
+	}
 }
 
 func TestSubmitNonBlockingOnFullBuffer(t *testing.T) {

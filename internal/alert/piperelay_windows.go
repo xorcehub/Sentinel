@@ -22,11 +22,15 @@ import (
 type PipeToastAlerter struct {
 	pipe string
 	log  *slog.Logger
+	loud bool // send severity="critical" so the relay fires LoudToast; false = always silent (popup is on, MessageBox is the critical signal)
 }
 
-// NewPipeToastAlerter constructs a relay-backed toast alerter.
-func NewPipeToastAlerter(pipe string, log *slog.Logger) *PipeToastAlerter {
-	return &PipeToastAlerter{pipe: pipe, log: log}
+// NewPipeToastAlerter constructs a relay-backed toast alerter. loud=true makes
+// the relay fire LoudToast for criticals — wire it to the inverse of the popup
+// setting, mirroring ToastAlerter so a Session-0 daemon's criticals stand out
+// exactly when its popups are gated off.
+func NewPipeToastAlerter(pipe string, log *slog.Logger, loud bool) *PipeToastAlerter {
+	return &PipeToastAlerter{pipe: pipe, log: log, loud: loud}
 }
 
 // Name is "toast" so it slots into the existing alert routing (hits that
@@ -36,10 +40,20 @@ func (p *PipeToastAlerter) Name() string { return "toast" }
 // Alert writes one toast to the relay pipe and returns. Best-effort.
 func (p *PipeToastAlerter) Alert(h event.Hit) error {
 	title, body := toastText(h)
+	// Only tag the payload critical when loud is set (popup disabled). With
+	// popup on, criticals must NOT trigger the relay's looping alarm — the WTS
+	// MessageBox is already the attention-grabber, and the two together would be
+	// a redundant double-signal. An empty severity makes the relay use the
+	// silent beeep path (the suspicious-tier contract), matching ToastAlerter.
+	severity := ""
+	if h.Severity == event.SevCritical && p.loud {
+		severity = string(h.Severity)
+	}
 	msg, err := json.Marshal(struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
-	}{Title: title, Body: body})
+		Title    string `json:"title"`
+		Body     string `json:"body"`
+		Severity string `json:"severity"` // relay routes "critical" to LoudToast (looping alarm); everything else stays silent
+	}{Title: title, Body: body, Severity: severity})
 	if err != nil {
 		return nil // best-effort; never fail an alert on toast
 	}

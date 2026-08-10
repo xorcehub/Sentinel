@@ -14,7 +14,7 @@ import (
 // for cross-platform tests / Linux dev.
 type PipeToastAlerter struct{ log *slog.Logger }
 
-func NewPipeToastAlerter(pipe string, log *slog.Logger) *PipeToastAlerter {
+func NewPipeToastAlerter(pipe string, log *slog.Logger, loud bool) *PipeToastAlerter {
 	return &PipeToastAlerter{log: log}
 }
 

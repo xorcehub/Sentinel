@@ -28,6 +28,11 @@ mutex_name      = ""
 # --- alerting (Phase 2+) ---
 event_log_source = "Sentinel"               # registered via scripts/register-eventsource.ps1
 # webhook_url     = ""                      # optional Discord/Slack/Teams
+# popup           = true                    # blocking MessageBox for critical alerts (default on).
+#                                           # Set false (CLI: -popup=false) to suppress popups: critical
+#                                           # hits then fire a LOUD looping-alarm toast (stands out from
+#                                           # the silent suspicious-tier toasts) instead of a click-away
+#                                           # box. log + eventlog are unaffected either way.
 
 # --- file capture (forensics; see config/allowlist.json file_capture) ---
 # Copies EID-11 FileCreate events whose path matches a file_capture pattern into

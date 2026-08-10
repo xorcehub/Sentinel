@@ -117,6 +117,15 @@ func (d *Dispatcher) Run(ctx context.Context) {
 func (d *Dispatcher) dispatch(h event.Hit) {
 	for _, name := range h.AlertTo {
 		if name == "popup" {
+			// If no popup alerter is registered (operator ran -popup=false),
+			// skip silently: do NOT route to the popup queue (which would back
+			// up and spuriously increment Dropped on a burst, surfacing as a
+			// fake health problem in the heartbeat). The engine still lists
+			// "popup" in AlertTo because that's the rule's delivery INTENT;
+			// the dispatcher delivers only what's wired.
+			if _, ok := d.alerters["popup"]; !ok {
+				continue
+			}
 			// route through the bounded popup queue so a blocking MessageBox
 			// never stalls the reader or other alerters.
 			select {

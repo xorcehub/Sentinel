@@ -23,6 +23,8 @@ import (
 
 	"github.com/gen2brain/beeep"
 	"golang.org/x/sys/windows"
+
+	"sentinel/internal/alert"
 )
 
 const (
@@ -43,13 +45,26 @@ const (
 )
 
 type toastMsg struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
+	Title    string `json:"title"`
+	Body     string `json:"body"`
+	Severity string `json:"severity"` // "critical" => loud looping-alarm (alert.LoudToast); "" / other => silent beeep. Optional: absent in older daemons, treated as non-critical.
 }
 
 // notifyFn is the toast call, indirected so the round-trip test can capture
-// instead of firing a real toast. Production: beeep.Notify.
-var notifyFn = beeep.Notify
+// instead of firing a real toast. Production: notify (below). It routes
+// critical-severity toasts to the loud looping-alarm path (alert.LoudToast) and
+// everything else to the silent beeep path — mirroring the interactive
+// ToastAlerter's tiering so a Session-0 daemon's critical hits stand out too.
+// The loud-toast policy is shared (alert.LoudToast) so tuning it updates both
+// the interactive and relay paths in one place.
+var notifyFn = notify
+
+func notify(title, body, severity string) error {
+	if severity == "critical" {
+		return alert.LoudToast(title, body)
+	}
+	return beeep.Notify(title, body, "")
+}
 
 func main() {
 	// windowsgui process: no console, so log to a file for visibility.
@@ -118,7 +133,7 @@ func handleConnection(id int, namePtr *uint16) {
 		log.Printf("instance %d: bad JSON (%d bytes): %v", id, len(data), err)
 		return
 	}
-	if err := notifyFn(msg.Title, msg.Body, ""); err != nil {
+	if err := notifyFn(msg.Title, msg.Body, msg.Severity); err != nil {
 		log.Printf("instance %d: notify: %v", id, err)
 		return
 	}
