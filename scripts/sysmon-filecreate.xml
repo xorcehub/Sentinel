@@ -2,7 +2,21 @@
       <!-- Sentinel-FileCreate-Telemetry entries (merged into existing FileCreate
            group by enable-filecreate-telemetry.ps1). 'contains' only — universally
            supported. Do NOT add a second FileCreate RuleGroup — sysmon 15.21
-           crashes (0xC0000409) on duplicate event-type groups. -->
+           crashes (0xC0000409) on duplicate event-type groups.
+
+           CRED-001 (browser-vault stealer) entries are PATH-SCOPED to staging
+           locations (\Temp\, \Downloads\, \Desktop\) on purpose: the same
+           filenames written inside the browser's own profile
+           (\...\User Data\Default\..., \...\Profiles\...) are the browser
+           updating its OWN vault — normal, high-volume, and must NOT alert.
+           A real stealer copies these files OUT to a staging folder before
+           exfiltrating; that staging copy is what we catch. Generic names
+           like \Cookies or \Login Data without a path scope would fire on
+           every browser self-write, so they are scoped to Temp/Downloads/Desktop.
+           Caveat: catches only the copy-to-stage variant. A stealer that reads
+           the vault in memory and uploads the bytes directly never writes a
+           staging copy -> invisible to FileCreate (Sysmon logs creates, not
+           reads). NET-* rules cover the upload; 2FA is the backstop. -->
       <TargetFilename condition="contains">\Temp\ps-script-</TargetFilename>
       <TargetFilename condition="contains">\Start Menu\Programs\Startup</TargetFilename>
       <TargetFilename condition="contains">\rules.d\</TargetFilename>
@@ -10,3 +24,26 @@
       <TargetFilename condition="contains">sentinel.conf</TargetFilename>
       <TargetFilename condition="contains">state.db</TargetFilename>
       <TargetFilename condition="contains">baseline_clean.json</TargetFilename>
+      <!-- CRED-001: browser vault files copied to a staging path (stealer pattern).
+           Firefox / NSS SQLite vaults. -->
+      <TargetFilename condition="contains">\Temp\logins.json</TargetFilename>
+      <TargetFilename condition="contains">\Downloads\logins.json</TargetFilename>
+      <TargetFilename condition="contains">\Desktop\logins.json</TargetFilename>
+      <TargetFilename condition="contains">\Temp\key4.db</TargetFilename>
+      <TargetFilename condition="contains">\Downloads\key4.db</TargetFilename>
+      <TargetFilename condition="contains">\Desktop\key4.db</TargetFilename>
+      <TargetFilename condition="contains">\Temp\key3.db</TargetFilename>
+      <TargetFilename condition="contains">\Temp\signons.sqlite</TargetFilename>
+      <TargetFilename condition="contains">\Temp\cookies.sqlite</TargetFilename>
+      <TargetFilename condition="contains">\Temp\formhistory.sqlite</TargetFilename>
+      <!-- Chromium / Edge / Chrome / Brave: the 'Login Data', 'Cookies',
+           'Web Data', 'Local State' files (no extension — distinctive but only
+           inside a profile; scope to staging so the browser's own writes don't
+           fire). -->
+      <TargetFilename condition="contains">\Temp\Login Data</TargetFilename>
+      <TargetFilename condition="contains">\Downloads\Login Data</TargetFilename>
+      <TargetFilename condition="contains">\Desktop\Login Data</TargetFilename>
+      <TargetFilename condition="contains">\Temp\Login Data For Account</TargetFilename>
+      <TargetFilename condition="contains">\Temp\Web Data</TargetFilename>
+      <TargetFilename condition="contains">\Temp\Local State</TargetFilename>
+      <TargetFilename condition="contains">\Temp\Cookies</TargetFilename>

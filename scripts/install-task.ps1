@@ -62,7 +62,9 @@ if ($AsSystem) {
     if (-not $SnapshotDir) {
         $SnapshotDir = Join-Path (Split-Path $ExePath -Parent) "forensics\sentinel-vault"
     }
-    $actionArg = "-snapshot-dir `"$SnapshotDir`" -sysmon-archive-dir `"$ArchiveDir`""
+    # -popup=false: Session 0 (SYSTEM) can't surface MessageBox popups on the desktop;
+    # disabling it escalates criticals to a loud looping-alarm toast (relayed by sentinel-tray).
+    $actionArg = "-popup=false -snapshot-dir `"$SnapshotDir`" -sysmon-archive-dir `"$ArchiveDir`""
 }
 $action    = New-ScheduledTaskAction -Execute $ExePath -Argument $actionArg -WorkingDirectory (Split-Path $ExePath -Parent)
 $trigger   = New-ScheduledTaskTrigger -AtLogOn
