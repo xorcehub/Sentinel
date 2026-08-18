@@ -398,3 +398,102 @@ func extractKV(line, key string) string {
 	}
 	return rest
 }
+
+// TestNextDailyHour: the scheduling function must return the NEXT occurrence
+// of h:00 that is strictly after now. Test boundary cases.
+func TestNextDailyHour(t *testing.T) {
+	now := time.Now()
+
+	// Basic: any hour must be in the future.
+	for h := 0; h < 24; h++ {
+		next := nextDailyHour(h)
+		if !next.After(now) {
+			t.Errorf("nextDailyHour(%d) = %v, not after now %v", h, next, now)
+		}
+		if next.Minute() != 0 || next.Second() != 0 {
+			t.Errorf("nextDailyHour(%d) = %v, not at :00:00", h, next)
+		}
+		if next.Hour() != h {
+			t.Errorf("nextDailyHour(%d) has hour %d", h, next.Hour())
+		}
+	}
+
+	// If it's currently 10:30, nextDailyHour(10) must be tomorrow at 10:00
+	// (strictly after now, not equal to or before).
+	// We can't mock time.Now(), but we can verify the invariant:
+	h := now.Hour()
+	next := nextDailyHour(h)
+	if next.Sub(now) > 24*time.Hour {
+		t.Errorf("nextDailyHour(%d) is more than 24h away: %v", h, next.Sub(now))
+	}
+	if next.Sub(now) < 0 {
+		t.Errorf("nextDailyHour(%d) is in the past", h)
+	}
+
+	// nextDailyHour with the same hour should always be at least 1 minute away
+	// (since it must be strictly after now).
+	if h == now.Hour() && next.Day() == now.Day() {
+		// If same day, it must be tomorrow (since we're past h:00)
+		t.Errorf("nextDailyHour(%d) returned same day %v, should be tomorrow", h, next)
+	}
+}
+
+// TestRouteBaselineDiffMultipleNewEntries: when daily has several new entries,
+// all must fire once, and Option-A suppresses them on subsequent scans.
+func TestRouteBaselineDiffMultipleNewEntries(t *testing.T) {
+	rs, err := sigmaeval.Load([]byte(baselineRuleYAML))
+	if err != nil {
+		t.Fatalf("sigmaeval Load: %v", err)
+	}
+	eng, err := rules.New(rs, nil, newFakeDedup())
+	if err != nil {
+		t.Fatalf("rules.New: %v", err)
+	}
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer st.Close()
+
+	var hits atomic.Uint64
+	a, err := New(Options{
+		Logger:   discardLogger(),
+		Ingester: mock.New(),
+		Engine:   eng,
+		OnHit:    func(event.Hit) { hits.Add(1) },
+		Baseline: BaselineConfig{Enabled: true, State: st},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const runKey = `HKLM\Software\Microsoft\Windows\CurrentVersion\Run`
+	clean := baseline.Snapshot{Entries: []baseline.Entry{
+		{Location: runKey, Entry: "A"},
+	}}
+	// 3 new entries at once
+	daily := baseline.Snapshot{Entries: []baseline.Entry{
+		{Location: runKey, Entry: "A"},
+		{Location: runKey, Entry: "Evil1", Launch: `C:\evil1.exe`},
+		{Location: runKey, Entry: "Evil2", Launch: `C:\evil2.exe`},
+		{Location: runKey, Entry: "Evil3", Launch: `C:\evil3.exe`},
+	}}
+
+	// First scan: all 3 fire.
+	newN, fired := a.routeBaselineDiff(clean, daily)
+	if newN != 3 || fired != 3 {
+		t.Fatalf("scan 1: new=%d fired=%d, want 3/3", newN, fired)
+	}
+	if got := hits.Load(); got != 3 {
+		t.Errorf("scan 1: hits=%d want 3", got)
+	}
+
+	// Second scan: all 3 still NEW but already alerted → 0 fire.
+	newN2, fired2 := a.routeBaselineDiff(clean, daily)
+	if newN2 != 3 || fired2 != 0 {
+		t.Fatalf("scan 2: new=%d fired=%d, want 3/0", newN2, fired2)
+	}
+	if got := hits.Load(); got != 3 {
+		t.Errorf("scan 2: hits=%d want 3 (no new alerts)", got)
+	}
+}
