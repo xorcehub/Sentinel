@@ -164,10 +164,10 @@ func TestServiceTemplateBaseEdgeCases(t *testing.T) {
 	const svcLoc = `HKLM\System\CurrentControlSet\Services`
 
 	tests := []struct {
-		name    string
-		loc     string
-		entry   string
-		wantOk  bool
+		name     string
+		loc      string
+		entry    string
+		wantOk   bool
 		wantBase string
 	}{
 		{"real family cbdhsvc_f62dc", svcLoc, "cbdhsvc_f62dc", true, "cbdhsvc"},
@@ -180,7 +180,7 @@ func TestServiceTemplateBaseEdgeCases(t *testing.T) {
 		{"empty suffix after underscore", svcLoc, "cbdhsvc_", false, ""},
 		{"underscore at start", svcLoc, "_f62dc", false, ""},
 		{"wrong location", `HKLM\Software\Microsoft\Windows\CurrentVersion\Run`, "cbdhsvc_f62dc", false, ""},
-		{"HWiNFO_214 not family", svcLoc, "HWiNFO_214", false, ""}, // suffix too short
+		{"HWiNFO_214 not family", svcLoc, "HWiNFO_214", false, ""},                // suffix too short
 		{"HWiNFO_214ABCD family check", svcLoc, "HWiNFO_214ABCD", true, "HWiNFO"}, // shape matches, but family gate blocks
 	}
 
@@ -222,7 +222,7 @@ func TestUTF16BOMVariants(t *testing.T) {
 		"20260101-000000,HKCU\\Run,Test,enabled,Logon,user01,D,S,S,C:\\x.exe,1.0,x\n"
 
 	tests := []struct {
-		name  string
+		name   string
 		encode func(string) []byte
 	}{
 		{"UTF-8 no BOM", func(s string) []byte { return []byte(s) }},
@@ -445,11 +445,11 @@ func TestDiffEmptyCleanVsPopulatedDaily(t *testing.T) {
 // Image, CmdLine, User (signer), and the correct Target* field.
 func TestBaselineEventFieldPopulation(t *testing.T) {
 	tests := []struct {
-		name           string
-		entry          Entry
-		wantRegKey     bool // true = TargetRegKey set; false = TargetFile set
-		wantRegKeyVal  string
-		wantFileVal    string
+		name          string
+		entry         Entry
+		wantRegKey    bool // true = TargetRegKey set; false = TargetFile set
+		wantRegKeyVal string
+		wantFileVal   string
 	}{
 		{
 			name: "registry location",
@@ -472,7 +472,7 @@ func TestBaselineEventFieldPopulation(t *testing.T) {
 				ImagePath: `C:\ProgramData\payload.exe`,
 				Launch:    `C:\ProgramData\payload.exe`,
 			},
-			wantRegKey: false,
+			wantRegKey:  false,
 			wantFileVal: `C:\Users\user01\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup :: evil.lnk`,
 		},
 	}
@@ -534,17 +534,6 @@ func TestDiffManyNewEntries(t *testing.T) {
 			break
 		}
 	}
-}
-
-// testParseUTF16LE is a test helper: encodes s as UTF-16LE with BOM.
-func testParseUTF16LE(s string) []byte {
-	runes := []rune(s)
-	codes := utf16.Encode(runes)
-	out := []byte{0xFF, 0xFE}
-	for _, c := range codes {
-		out = append(out, byte(c), byte(c>>8))
-	}
-	return out
 }
 
 // TestParseUTF16LEWithRealBaseline: parse the real baseline_clean.csv through

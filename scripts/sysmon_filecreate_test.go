@@ -24,8 +24,8 @@ type RuleGroup struct {
 }
 
 type Sysmon struct {
-	XMLName     xml.Name    `xml:"Root"` // wrapper for snippet parsing
-	RuleGroups  []RuleGroup `xml:"RuleGroup"`
+	XMLName    xml.Name    `xml:"Root"` // wrapper for snippet parsing
+	RuleGroups []RuleGroup `xml:"RuleGroup"`
 	// Snippet is flat <TargetFilename> elements (no RuleGroup wrapper),
 	// so we also parse them directly.
 	DirectTargets []TargetFilename `xml:"TargetFilename"`
@@ -118,7 +118,7 @@ func TestFileCreateHasOriginalEntries(t *testing.T) {
 		got[strings.TrimSpace(tf.Inner)] = true
 	}
 
- originals := []string{
+	originals := []string{
 		`\Temp\ps-script-`,
 		`\Start Menu\Programs\Startup`,
 		`\rules.d\`,
