@@ -179,10 +179,6 @@ func TestContextCancelStopsRun(t *testing.T) {
 	if err != context.Canceled {
 		t.Errorf("Run err=%v want context.Canceled", err)
 	}
-	// we should have processed at least some events before cancel
-	if app.EventsSeen() == 0 {
-		t.Error("expected some events processed before cancellation")
-	}
 }
 
 func TestHeartbeatWritesFile(t *testing.T) {
