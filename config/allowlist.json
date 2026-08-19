@@ -131,11 +131,11 @@
     // operator install/uninstall scripts. Path-anchored on the repo dir so a
     // same-named dropper (install.ps1 is a top-tier dropper name) can't evade
     // EXEC-001. Requires absolute-path invocation
-    // (-File C:\\...\\leave-my-shit-alone\\install.ps1); a relative run
+    // (-File C:\\...\\sentinel\\install.ps1); a relative run
     // (-File .\\install.ps1) won't match here and will (safely) alert, which is
     // the correct failure for a one-shot, supervised install.
-    "leave-my-shit-alone\\\\install\\.ps1",
-    "leave-my-shit-alone\\\\uninstall\\.ps1",
+    "sentinel\\\\install\\.ps1",
+    "sentinel\\\\uninstall\\.ps1",
     // Docker Desktop registry-list helper (cscript ...\regedit\vbs\regList.wsf).
     // Path-anchored on Docker's stable install subdir so a same-named payload
     // elsewhere (e.g. C:\ProgramData\reglist.wsf via cscript+http) can't evade
