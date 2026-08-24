@@ -95,13 +95,16 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
+# Out-Null: the returned task object otherwise prints its formatted table
+# out of order amid the Write-Host steps (observed on-host).
 Register-ScheduledTask `
     -TaskName  $TaskName `
     -Action    $action `
     -Trigger   $trigger `
     -Settings  $settings `
     -Principal $principal `
-    -Description "Sentinel endpoint guard (session-scoped). Replaces BeaconHunt."
+    -Description "Sentinel endpoint guard (session-scoped). Replaces BeaconHunt." |
+    Out-Null
 
 Write-Host "Registered task '$TaskName' -> $ExePath (at-logon, RunLevel=Highest, RestartCount=999)." -ForegroundColor Green
 if ($AsSystem) {

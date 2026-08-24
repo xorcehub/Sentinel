@@ -102,3 +102,26 @@ if (-not $running) {
 } else {
     Ok "sentinel-tray already running"
 }
+
+# --- 8. autoruns check (optional dependency for daily baseline diff) ---
+Step 8 "Checking Autoruns (baseline diffing)"
+# Mirror the search order of cmd\sentinel\main.go findAutorunsc(): exe dir,
+# known Sysinternals install dirs, PATH. Missing = daemon degrades silently
+# (one warning, no daily baseline diff) - so only warn here, never fail.
+$autorunscDirs = @($root, "C:\Tools\Autoruns", "C:\Program Files\Sysinternals\Autoruns")
+$found = $autorunscDirs | ForEach-Object { Join-Path $_ "autorunsc64.exe" } |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $found) {
+    $cmd = Get-Command autorunsc64.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $found = $cmd.Source }
+}
+if ($found) {
+    Ok "autorunsc64.exe found: $found"
+} else {
+    Write-Host "    WARN: autorunsc64.exe not found - daily persistence baseline diff is DISABLED." -ForegroundColor Yellow
+    Write-Host "    Download Autoruns (Sysinternals) and place autorunsc64.exe in one of:"
+    Write-Host "      $root\  or  C:\Tools\Autoruns\  or  add to PATH"
+    Write-Host "    https://learn.microsoft.com/sysinternals/downloads/autoruns"
+    Write-Host "    Live detection (Sysmon rules) works regardless; restart the task afterwards:"
+    Write-Host "      Restart-ScheduledTask -TaskName Sentinel"
+}
