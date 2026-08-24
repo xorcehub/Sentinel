@@ -264,6 +264,18 @@ var defaultAlerters = map[event.Severity][]string{
 	event.SevInfo:       {"log"},
 }
 
+// DefaultAlerters returns the default alert-channel list for a severity.
+// Exported so non-rule hits (app's HEALTH-001) route identically to rule hits
+// instead of duplicating the table and drifting apart when tuning changes it.
+func DefaultAlerters(sev event.Severity) []string {
+	if def, ok := defaultAlerters[sev]; ok {
+		out := make([]string, len(def))
+		copy(out, def)
+		return out
+	}
+	return []string{"log"}
+}
+
 func severity(r *sigmaeval.Rule) event.Severity {
 	if r.XSeverity != "" {
 		switch strings.ToLower(r.XSeverity) {

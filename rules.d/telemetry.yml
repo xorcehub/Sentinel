@@ -1,0 +1,18 @@
+# Sentinel catalog — Telemetry integrity (docs/hardening-plan_2308.md H2)
+
+title: Sysmon configuration changed
+id: 6f1e0a3d-9b74-4c52-a8d1-2e5c7f904b31
+status: experimental
+logsource: { product: windows, service: sysmon }
+detection:
+  selection:
+    EventID: 16
+  condition: selection
+level: medium
+tags: [attack.defense_evasion, attack.t1562.001]
+x-sentinel:
+  id: TELEMETRY-001
+  severity: suspicious
+  dedup: 24h
+  alert: [toast, log, eventlog]
+  note: "Fires on every legitimate `sysmon64 -c <config>` update too — severity stays suspicious (not critical) for that reason. Realistic value is catching ACCIDENTS (bad script overwrites config) + forensic record of when/what changed; deliberate tampering requires admin = out of scope per THREAT-MODEL."

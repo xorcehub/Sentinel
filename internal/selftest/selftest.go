@@ -118,6 +118,14 @@ func IncidentCases() []Case {
 			Want: []string{"INJECT-002"},
 		},
 		{
+			Name: "telemetry: Sysmon config change (EID 16)",
+			Event: event.Event{
+				EID:   16,
+				Image: `C:\Windows\Sysmon64.exe`,
+			},
+			Want: []string{"TELEMETRY-001"},
+		},
+		{
 			Name: "benign: powershell -c Get-Date (must NOT fire EXEC-001)",
 			Event: event.Event{
 				EID:     1,

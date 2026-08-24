@@ -48,6 +48,14 @@ type Options struct {
 	HeartbeatPath     string        // empty = no heartbeat file
 	HeartbeatInterval time.Duration // 0 (with path) = default 5m; set <0 to disable
 
+	// TelemetryStaleThreshold is how long Sysmon event flow may go silent before
+	// the heartbeat fires a HEALTH-001 critical hit (docs/hardening-plan_2308.md
+	// H1). Zero value = default 10m (mirrors HeartbeatInterval's pattern);
+	// negative disables the check entirely. Only Sysmon-sourced events
+	// (sysmon_rt / sysmon_sweep) count as flow — baseline pseudo-events would
+	// mask a dead Sysmon channel.
+	TelemetryStaleThreshold time.Duration
+
 	// Dispatcher receives Hits asynchronously (Phase 2). If set, every Hit is
 	// Submit-ed non-blocking; the dispatcher fans out to alerters (log/popup/
 	// eventlog/toast) on its own goroutine(s). If nil, hits are only logged +
@@ -104,6 +112,16 @@ type App struct {
 	// noteSuppressed / flushSuppSummary.
 	suppMu sync.Mutex
 	supp   map[string]*suppTally
+
+	// lastSysmonEvent is the unix-nano time of the most recent Sysmon-sourced
+	// event (H1 telemetry-lost check). 0 = none seen yet (startup grace).
+	lastSysmonEvent atomic.Int64
+	// healthAlerted latches the alert-once-per-stale-episode semantics: HEALTH-001
+	// fires once when flow goes stale, and re-arms only when flow resumes.
+	healthAlerted atomic.Bool
+	// idGen mints conforming hit IDs for synthetic hits (HEALTH-001) — same
+	// format as every rule hit, so correlation tooling sees one shape.
+	idGen *rules.HitIDGen
 }
 
 // New constructs an App. Returns an error only if required fields are missing.
@@ -114,7 +132,12 @@ func New(opts Options) (*App, error) {
 	if opts.Ingester == nil {
 		return nil, fmt.Errorf("app: Ingester is required")
 	}
-	return &App{opts: opts, log: opts.Logger, stats: &Stats{}, supp: map[string]*suppTally{}}, nil
+	a := &App{opts: opts, log: opts.Logger, stats: &Stats{}, supp: map[string]*suppTally{}, idGen: rules.NewHitIDGen()}
+	// Bound the startup grace (H1): staleness accrues from process start, so a
+	// Sysmon channel that was already dead before Sentinel launched still trips
+	// HEALTH-001 instead of reporting flowing forever.
+	a.lastSysmonEvent.Store(time.Now().UnixNano())
+	return a, nil
 }
 
 // EventsSeen, Hits, Suppressed, PanicsContained — atomic snapshot getters.
@@ -168,11 +191,12 @@ func (a *App) Run(ctx context.Context) error {
 		case ev, ok := <-ch:
 			if !ok {
 				// Feed closed normally — flush the allowlist-suppression summary
-				// and a final heartbeat line, then exit.
+				// and a final heartbeat line, then exit. final=true: no spurious
+				// HEALTH-001 on the way out (a shutdown gap isn't a telemetry loss).
 				a.log.Info("ingester channel closed; exiting drain loop")
 				a.flushSuppSummary()
 				if a.opts.HeartbeatPath != "" {
-					a.writeHeartbeat(time.Now())
+					a.writeHeartbeat(time.Now(), true)
 				}
 				return nil
 			}
@@ -196,6 +220,12 @@ func (a *App) Run(ctx context.Context) error {
 
 func (a *App) handleEvent(ev event.Event) {
 	a.stats.eventsSeen.Add(1)
+	// H1 telemetry-lost tracking: only REAL Sysmon events count as flow.
+	// Baseline pseudo-events are excluded — they'd mask a dead Sysmon channel.
+	if ev.Source == event.SrcSysmonRT || ev.Source == event.SrcSysmonSweep {
+		a.lastSysmonEvent.Store(time.Now().UnixNano())
+		a.healthAlerted.Store(false) // flow resumed → re-arm the stale alert
+	}
 	if a.opts.OnEvent != nil {
 		a.opts.OnEvent(ev)
 	}
@@ -353,12 +383,17 @@ func (a *App) heartbeat(ctx context.Context, interval time.Duration, done chan<-
 			return
 		case <-t.C:
 			a.flushSuppSummary()
-			a.writeHeartbeat(time.Now())
+			a.writeHeartbeat(time.Now(), false)
 		}
 	}
 }
 
-func (a *App) writeHeartbeat(t time.Time) {
+// writeHeartbeat writes the alive/counts line and runs the H1 telemetry-lost
+// check: if no Sysmon event has been seen for TelemetryStaleThreshold, fire ONE
+// critical HEALTH-001 hit per stale episode (re-armed by resumed flow in
+// handleEvent). final=true (shutdown path) skips the check — an orderly exit
+// must not manufacture a health alarm.
+func (a *App) writeHeartbeat(t time.Time, final bool) {
 	// allowlist status surfaces a broken config/allowlist.json (parse error or
 	// missing file) that would otherwise silently disable forensic capture
 	// (ShouldCapture) and the log-noise filter — detection itself fails open,
@@ -374,13 +409,67 @@ func (a *App) writeHeartbeat(t time.Time) {
 			allowlist = "degraded"
 		}
 	}
-	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d allowlist=%s\n",
-		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained(), allowlist)
+	// H1 staleness. Seeded with process start in New(), so the startup grace is
+	// bounded: if Sysmon was ALREADY dead before Sentinel started (lastSysmonEvent
+	// never refreshed), staleness accrues from startup and HEALTH-001 still fires.
+	// A negative threshold disables the check entirely; zero = default 10m.
+	sysmon := "flowing"
+	threshold := a.opts.TelemetryStaleThreshold
+	if threshold == 0 {
+		threshold = 10 * time.Minute
+	}
+	var stale time.Duration
+	if last := a.lastSysmonEvent.Load(); last != 0 {
+		stale = t.Sub(time.Unix(0, last))
+	}
+	if threshold > 0 && stale > threshold && !final {
+		sysmon = "STALE"
+		a.fireHealth001(t, stale, threshold)
+	}
+	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d allowlist=%s sysmon=%s\n",
+		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained(), allowlist, sysmon)
 	if err := os.WriteFile(a.opts.HeartbeatPath, []byte(line), 0o644); err != nil {
 		a.log.Warn("heartbeat write failed", "err", err)
 		return
 	}
 	a.log.Debug("heartbeat written", "path", a.opts.HeartbeatPath)
+}
+
+// fireHealth001 emits the telemetry-lost hit DIRECTLY (not through Engine
+// Evaluate): there is no real Event to evaluate, so we synthesize the Hit and
+// mirror handleEvent's emit block (stats + log + dispatcher + OnHit). Alert-once
+// per stale episode via the healthAlerted latch. Precedent: routeBaselineDiff
+// synthesizes pipeline items outside normal ingest.
+func (a *App) fireHealth001(t time.Time, stale, threshold time.Duration) {
+	if !a.healthAlerted.CompareAndSwap(false, true) {
+		return // already alerted during this stale episode
+	}
+	h := event.Hit{
+		ID:       a.idGen.Next(),
+		RuleID:   "HEALTH-001",
+		RuleName: "Sysmon telemetry lost",
+		Severity: event.SevCritical,
+		Matched:  fmt.Sprintf("no Sysmon events for %s (threshold %s)", stale.Truncate(time.Second), threshold),
+		AlertTo:  rules.DefaultAlerters(event.SevCritical), // route identically to rule hits — no duplicated table
+		Time:     t,
+	}
+	a.stats.hits.Add(1)
+	a.log.Info("HIT",
+		"hid", h.ID,
+		"rule", h.RuleID,
+		"severity", h.Severity,
+		"alert", h.AlertTo,
+		"stale", stale.Truncate(time.Second),
+		"threshold", threshold,
+		"matched", truncate(h.Matched, 120))
+	if a.opts.Dispatcher != nil {
+		a.opts.Dispatcher.Submit(h) // non-blocking; drops+counts on overflow
+	}
+	if a.opts.OnHit != nil {
+		a.opts.OnHit(h)
+	}
+	a.log.Warn("telemetry lost: Sysmon events stale; HEALTH-001 fired",
+		"stale", stale.Truncate(time.Second), "threshold", threshold)
 }
 
 // suppTally accumulates allowlist suppressions for one (rule, image) pair

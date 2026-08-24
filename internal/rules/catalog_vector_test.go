@@ -113,6 +113,10 @@ var vectorCases = []vectorCase{
 	{"CONFIG-001", "config tamper: a non-sentinel process writes into rules.d\\ (real install path, not Temp)",
 		event.Event{EID: 11, Image: `C:\Users\jurij\Downloads\tamper.exe`,
 			TargetFile: `C:\Users\jurij\Documents\Github\leave-my-shit-alone\rules.d\persistence.yml`}, event.SevCritical},
+
+	// --- G. Telemetry integrity (docs/hardening-plan_2308.md H2) ---
+	{"TELEMETRY-001", "Sysmon config changed (EID 16): fires on legit -c updates too, hence suspicious",
+		event.Event{EID: 16, Image: `C:\Windows\Sysmon64.exe`}, event.SevSuspicious},
 }
 
 // TestCatalogVectorRegression is the "every rule fires on its motivating

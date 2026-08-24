@@ -39,6 +39,15 @@ func (g *hitIDGen) Next() string {
 	return fmt.Sprintf("R-%s-%s-%06d", g.date, g.nonce, n)
 }
 
+// HitIDGen is the exported view of the per-run ID minter (same R-YYYYMMDD-
+// <nonce>-<NNNNNN> format as every rule hit). Exported so subsystems outside
+// rule evaluation — app's synthetic HEALTH-001 — emit conforming IDs that log
+// tooling and correlation scripts parse identically.
+type HitIDGen = hitIDGen
+
+// NewHitIDGen constructs a generator with a fresh random nonce.
+func NewHitIDGen() *HitIDGen { return newHitIDGen() }
+
 // randomNonce returns n base36 characters drawn from crypto/rand (CSPRNG). 5
 // chars gives ~60M combos → a birthday collision becomes likely only after
 // ~9000 restarts (sqrt(36^5)≈7776), i.e. years of use. rand.Read failing is
