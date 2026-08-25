@@ -114,16 +114,22 @@ func New(dir string, perFileMaxKB, totalMaxMB int, log *slog.Logger) (*Snapshott
 }
 
 // Submit queues a file for snapshotting. Non-blocking: returns false (and
-// increments dropped) if the buffer is full, so a capture flood never blocks
-// the detection goroutine. The returned value is advisory — capture is always
-// best-effort.
+// increments dropped) if the buffer is full, and also returns false after Close
+// (no-op). Safe against Close: the closed check and the channel send happen
+// under closedMu, so a send can never race close(s.in) into a panic.
 func (s *Snapshotter) Submit(r Request) bool {
-	s.wg.Add(1)
+	s.closedMu.Lock()
+	if s.closed {
+		s.closedMu.Unlock()
+		return false
+	}
 	select {
 	case s.in <- r:
+		s.wg.Add(1)
+		s.closedMu.Unlock()
 		return true
 	default:
-		s.wg.Done()
+		s.closedMu.Unlock()
 		s.dropped.Add(1)
 		s.log.Warn("snapshot buffer full; request dropped", "path", r.Path)
 		return false

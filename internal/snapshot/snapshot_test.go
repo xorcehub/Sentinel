@@ -406,3 +406,19 @@ func TestNewestArchiveFile(t *testing.T) {
 		t.Error("empty dir should return empty")
 	}
 }
+
+// Submit after Close must be a no-op (return false), never panic on a send to
+// the closed channel — the doc has always claimed this; now the code honors it.
+func TestSubmitAfterCloseIsNoop(t *testing.T) {
+	s, err := New(t.TempDir(), 0, 0, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { s.Run(context.Background()); close(done) }()
+	s.Close()
+	<-done
+	if s.Submit(Request{Path: `C:\does\not\exist`}) {
+		t.Fatal("Submit after Close returned true; want false (no-op)")
+	}
+}
