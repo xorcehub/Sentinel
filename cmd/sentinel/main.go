@@ -445,6 +445,11 @@ func runBaselineSnapshot(fl *flags) error {
 			warn = fmt.Sprintf("warning: reset baseline alert set: %v\n", rerr)
 		}
 		st.Close()
+	} else {
+		// Silent skip would leave stale alert-once entries suppressing genuine
+		// reappearances with zero signal. The common cause is the daemon
+		// holding the bbolt lock; the operator can rerun after stopping it.
+		warn = fmt.Sprintf("warning: could not open state (%v); baseline alert-once set was NOT reset\n", serr)
 	}
 	var b strings.Builder
 	b.WriteString(warn)
