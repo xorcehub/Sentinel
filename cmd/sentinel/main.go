@@ -230,9 +230,9 @@ func run(args []string) error {
 	// Windows-only alerters (popup/eventlog/toast) register too. If the log
 	// file can't open, degrade to no-dispatcher (hits still logged via slog).
 	disp := buildDispatcher(fl, logger)
+	dispDone := make(chan struct{})
 	if disp != nil {
-		go disp.Run(ctx)
-		defer disp.Close()
+		go func() { defer close(dispDone); disp.Run(ctx) }()
 	}
 
 	// Snapshot vault: copies file_capture-matched files (EID 11) to disk before
@@ -241,9 +241,9 @@ func run(args []string) error {
 	// Submit is non-blocking so a capture flood never stalls ingestion or
 	// detection (see internal/snapshot).
 	snap := buildSnapshot(fl, logger)
+	snapDone := make(chan struct{})
 	if snap != nil {
-		go snap.Run(ctx)
-		defer snap.Close()
+		go func() { defer close(snapDone); snap.Run(ctx) }()
 	}
 
 	a, err := app.New(app.Options{
@@ -262,6 +262,21 @@ func run(args []string) error {
 	}
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
+	}
+	// Shutdown order matters: cancel ctx FIRST so the dispatcher drains its
+	// buffered hits and the snapshotter finishes pending copies BEFORE the
+	// deferred logCleanup/st.Close run — previously Close raced the drain against
+	// log-file closure, losing shutdown-window alerts and log lines, and neither
+	// worker was ever joined. Close afterwards is then a harmless no-op for the
+	// workers (already exited) but still blocks late Submits.
+	stop()
+	<-dispDone
+	<-snapDone
+	if disp != nil {
+		disp.Close()
+	}
+	if snap != nil {
+		snap.Close()
 	}
 	logger.Info("sentinel exited cleanly")
 	return nil
