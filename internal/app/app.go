@@ -435,8 +435,15 @@ func (a *App) writeHeartbeat(t time.Time, final bool) {
 		sysmon = "STALE"
 		a.fireHealth001(t, stale, threshold)
 	}
-	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d allowlist=%s sysmon=%s\n",
-		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained(), allowlist, sysmon)
+	// Dropped = dispatcher overflow counter (inbound buffer full / post-Close).
+	// The dispatcher's own doc says to surface this in the heartbeat: drops are
+	// otherwise invisible to the operator's periodic health signal.
+	dropped := uint64(0)
+	if a.opts.Dispatcher != nil {
+		dropped = a.opts.Dispatcher.Dropped()
+	}
+	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d allowlist=%s sysmon=%s dropped=%d\n",
+		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained(), allowlist, sysmon, dropped)
 	if err := os.WriteFile(a.opts.HeartbeatPath, []byte(line), 0o644); err != nil {
 		a.log.Warn("heartbeat write failed", "err", err)
 		return
