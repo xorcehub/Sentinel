@@ -55,6 +55,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"regexp"
@@ -92,6 +93,12 @@ type Allowlist struct {
 	sigVerify SigVerifier // injected; nil = Tier-2 never auto-trusts (fail closed)
 	mu        sync.RWMutex
 	verified  map[string]bool // Tier-2 lazy cache: lowercased sha256 -> sigVerify(path) result
+
+	// tier2NoHashWarn fires once if a Tier-2 path pattern matches an event with
+	// no SHA256 hash — the silent wholesale-Tier-2-loss condition (Sysmon config
+	// drift, forwarded events from a differently-configured box). Fail-closed,
+	// but invisible without this signal.
+	tier2NoHashWarn sync.Once
 	// ponytail: `verified` is unbounded. Ceiling = number of distinct SHA256s ever
 	// seen at a Tier-2 path, which is tiny in practice (a handful of dev-tool
 	// exes per box). It never grows from attacker traffic: an attacker plant at
@@ -263,8 +270,15 @@ func (a *Allowlist) ImageTrusted(e *event.Event) bool {
 		return true
 	}
 	// Tier-2: user-writable path -> require provenance (sig by allowed vendor).
-	if sha != "" && a.pathMatchesHashGated(e.Image) && a.sigVerifiedCached(sha, e.Image) {
-		return true
+	if a.pathMatchesHashGated(e.Image) {
+		if sha == "" {
+			a.tier2NoHashWarn.Do(func() {
+				log.Printf("[warn] allowlist: tier-2 path %q matched but event carries no SHA256 — "+
+					"Tier-2 trust disabled until hashes return (check Sysmon <HashAlgorithms>)", e.Image)
+			})
+		} else if a.sigVerifiedCached(sha, e.Image) {
+			return true
+		}
 	}
 	return false
 }
