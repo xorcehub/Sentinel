@@ -60,7 +60,14 @@ func main() {
 func failExit(err error) {
 	// Best-effort log file write. Don't use the slog logger: it may not exist
 	// yet (failure can happen before NewLogger), and we want a clear fatal marker.
-	if f, ferr := os.OpenFile("sentinel.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
+	// Resolve next to the EXE (not CWD): Task Scheduler launches with
+	// CWD=system32, where the write would land in the wrong place or fail —
+	// same rationale as resolveExeRelative.
+	fatalLog := "sentinel.log"
+	if dir := exeDir(); dir != "" {
+		fatalLog = filepath.Join(dir, "sentinel.log")
+	}
+	if f, ferr := os.OpenFile(fatalLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
 		fmt.Fprintf(f, "%s [FATAL] sentinel: %v\n", time.Now().Format(time.RFC3339), err)
 		_ = f.Close()
 	}
