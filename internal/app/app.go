@@ -119,6 +119,12 @@ type App struct {
 	// healthAlerted latches the alert-once-per-stale-episode semantics: HEALTH-001
 	// fires once when flow goes stale, and re-arms only when flow resumes.
 	healthAlerted atomic.Bool
+	// hbMu serializes writeHeartbeat: on the clean feed-close path Run calls it
+	// from the drain loop while the ticker goroutine may still be mid-write, and
+	// two unsynchronized os.WriteFile(O_TRUNC) calls on the same path can
+	// transiently present an empty file to tailing monitors. One mutex, no torn
+	// writes, deterministic final line.
+	hbMu sync.Mutex
 	// idGen mints conforming hit IDs for synthetic hits (HEALTH-001) — same
 	// format as every rule hit, so correlation tooling sees one shape.
 	idGen *rules.HitIDGen
@@ -411,6 +417,8 @@ func (a *App) heartbeat(ctx context.Context, interval time.Duration, done chan<-
 // handleEvent). final=true (shutdown path) skips the check — an orderly exit
 // must not manufacture a health alarm.
 func (a *App) writeHeartbeat(t time.Time, final bool) {
+	a.hbMu.Lock()
+	defer a.hbMu.Unlock()
 	// allowlist status surfaces a broken config/allowlist.json (parse error or
 	// missing file) that would otherwise silently disable forensic capture
 	// (ShouldCapture) and the log-noise filter — detection itself fails open,
