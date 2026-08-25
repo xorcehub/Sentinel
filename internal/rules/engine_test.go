@@ -494,3 +494,37 @@ func TestMatchedActorFallback(t *testing.T) {
 		})
 	}
 }
+
+// Duplicate rule IDs must fail engine construction: templates, flood rollers,
+// and dedup keys are all keyed by ruleID, so a collision silently breaks both
+// rules instead of one loud failure at startup.
+func TestNewRejectsDuplicateRuleID(t *testing.T) {
+	const yaml = `
+title: rule A
+id: 44444444-4444-4444-4444-444444444444
+detection:
+  selection:
+    EventID: 1
+  condition: selection
+level: low
+---
+title: rule B (same x-sentinel id)
+id: 55555555-5555-5555-5555-555555555555
+detection:
+  selection:
+    EventID: 2
+  condition: selection
+level: low
+x-sentinel:
+  id: DUP-001
+`
+	docs, err := sigmaeval.Load([]byte(yaml + "\n---\n" + yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Make the two rules share an x-sentinel id.
+	docs[0].XID = "DUP-001"
+	if _, err := New(docs, nil, newMemDedup()); err == nil {
+		t.Fatal("New: expected duplicate-id error, got nil")
+	}
+}
