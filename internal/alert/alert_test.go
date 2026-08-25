@@ -308,21 +308,6 @@ func TestContextLines(t *testing.T) {
 	}
 }
 
-func TestLogAlerterWritesSuppression(t *testing.T) {
-	var buf bytes.Buffer
-	la := NewLogAlerterTo(&buf)
-	if err := la.WriteSuppression(Suppression{
-		RuleID: "CRED-002", Reason: "allowlist",
-		Event: event.Event{Image: "x.exe", CmdLine: "y"},
-	}); err != nil {
-		t.Fatalf("WriteSuppression: %v", err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, "SUPPRESSED") || !strings.Contains(out, "reason=allowlist") {
-		t.Errorf("suppression block unexpected:\n%s", out)
-	}
-}
-
 func TestDispatcherRoutesByAlertTo(t *testing.T) {
 	popup := &fakeAlerter{name: "popup"}
 	toast := &fakeAlerter{name: "toast"}

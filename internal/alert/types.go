@@ -6,9 +6,12 @@
 // alerters (ALERTS.log, MessageBox, Event Log, Toast) register by name.
 //
 // Design rules from the dossier:
-//   - ALERTS.log is ALWAYS written, all severities, even when suppressed by
-//     allowlist (the audit trail). The engine handles suppression; the log
-//     alerter just writes what it's given.
+//   - ALERTS.log is ALWAYS written, all severities, for every Hit routed to
+//     the "log" alerter. Suppressed matches intentionally do NOT appear here:
+//     ALERTS.log is the alert trail, and a suppressed match is by definition
+//     not an alert. Suppressions are audited in sentinel.log instead (the
+//     engine logs/summarizes them there; see internal/rules.Suppression and
+//     internal/app.handleEvent).
 //   - Critical MessageBox runs in its OWN goroutine via a bounded popup queue,
 //     so a blocking popup never stalls ingestion or other alerters.
 //   - Alerter failure must never crash Sentinel: every Alert() is recovered
@@ -32,16 +35,6 @@ type Alerter interface {
 	// logged by the dispatcher and never propagated to the caller — a failed
 	// alerter must not drop other alerters or crash the process.
 	Alert(h event.Hit) error
-}
-
-// Suppression is the alerter-side mirror of rules.Suppression (a matched hit
-// that was allowlisted or deduped). The dispatcher writes these to ALERTS.log
-// too, marked [SUPPRESSED], so the audit trail shows them.
-type Suppression struct {
-	RuleID   string
-	RuleName string
-	Reason   string // "allowlist" | "dedup-window"
-	Event    event.Event
 }
 
 // logOf returns the logger the dispatcher uses for its own diagnostics — never
