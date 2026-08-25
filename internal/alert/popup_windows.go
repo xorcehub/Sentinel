@@ -105,7 +105,7 @@ func (p *PopupAlerter) Alert(h event.Hit) error {
 
 // formatPopup builds the message body + window caption for a critical hit.
 func formatPopup(h event.Hit) (text, caption string) {
-	caption = fmt.Sprintf("🛑 SENTINEL %s — %s", h.ID, upper(string(h.Severity)))
+	caption = fmt.Sprintf("🛑 SENTINEL %s — %s", h.ID, strings.ToUpper(string(h.Severity)))
 	var b strings.Builder
 	fmt.Fprintf(&b,
 		"Rule:   %s  (%s)\n"+

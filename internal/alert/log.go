@@ -96,7 +96,7 @@ func formatHit(h event.Hit) string {
 	// analyst can pivot to the raw event in Event Viewer. rec is omitted for
 	// baseline pseudo-events (RecordID == 0) since 0 carries no Sysmon event.
 	hdr := fmt.Sprintf("[%s] %-8s hid=%s ",
-		ts.Format(time.RFC3339), upper(string(h.Severity)), h.ID)
+		ts.Format(time.RFC3339), strings.ToUpper(string(h.Severity)), h.ID)
 	if h.Event.RecordID > 0 {
 		hdr += fmt.Sprintf("rec=%d ", h.Event.RecordID)
 	}
@@ -112,7 +112,7 @@ func formatHit(h event.Hit) string {
 	}
 	fmt.Fprintf(&b, "\n    match : %s\n    action: %s",
 		trunc(sanitize(h.Matched), 200),
-		joinActions(h.AlertTo),
+		strings.Join(h.AlertTo, ","),
 	)
 	return b.String()
 }
@@ -197,18 +197,6 @@ func contextLines(e event.Event) []string {
 	return lines
 }
 
-func upper(s string) string {
-	out := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'a' && c <= 'z' {
-			c -= 'a' - 'A'
-		}
-		out[i] = c
-	}
-	return string(out)
-}
-
 // trunc returns the first n bytes of s (backed up to a rune boundary so the
 // result is always valid UTF-8) with "…" appended when truncated. The naive
 // s[:n] slice split multibyte runes in non-ASCII command lines (Cyrillic/CJK
@@ -244,15 +232,4 @@ func sanitize(s string) string {
 		}
 		return r
 	}, s)
-}
-
-func joinActions(a []string) string {
-	out := ""
-	for i, s := range a {
-		if i > 0 {
-			out += ","
-		}
-		out += s
-	}
-	return out
 }

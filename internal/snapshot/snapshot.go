@@ -38,6 +38,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -466,13 +467,7 @@ func (s *Snapshotter) evictIfNeeded() {
 		dirs = append(dirs, fi{p, info.ModTime()})
 	}
 	// sort oldest first
-	for i := 0; i < len(dirs); i++ {
-		for j := i + 1; j < len(dirs); j++ {
-			if dirs[j].mt.Before(dirs[i].mt) {
-				dirs[i], dirs[j] = dirs[j], dirs[i]
-			}
-		}
-	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].mt.Before(dirs[j].mt) })
 	for _, d := range dirs {
 		if total < s.totalMax {
 			break
