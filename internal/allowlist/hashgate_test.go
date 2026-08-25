@@ -111,14 +111,17 @@ func TestTier2HashGateClosesBypassB(t *testing.T) {
 		})
 	}
 
-	// Re-evaluating the same two must NOT re-verify (cache hit).
+	// The signed binary must hit the cache (no re-verify). The unsigned plant
+	// deliberately does NOT: negative verify results are never cached so a
+	// transient failure (AV lock) self-heals on the next sighting instead of
+	// poisoning trust until restart.
 	firstCalls := atomic.LoadInt64(calls)
 	for i := 0; i < 10; i++ {
 		a.ImageTrusted(&event.Event{Image: legitPath, Hashes: map[string]string{"SHA256": legitSHA}})
 		a.ImageTrusted(&event.Event{Image: plantPath, Hashes: map[string]string{"SHA256": plantSHA}})
 	}
-	if got := atomic.LoadInt64(calls); got != firstCalls {
-		t.Errorf("repeated eval should hit cache, not re-verify: before=%d after=%d", firstCalls, got)
+	if got := atomic.LoadInt64(calls); got != firstCalls+10 {
+		t.Errorf("legit should hit cache; unsigned plant should re-verify each sighting: before=%d after=%d", firstCalls, got)
 	}
 }
 

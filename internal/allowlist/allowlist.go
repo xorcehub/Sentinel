@@ -298,8 +298,13 @@ func (a *Allowlist) pathMatchesHashGated(image string) bool {
 
 // sigVerifiedCached returns the Tier-2 signature result for sha, verifying
 // on first sight (outside the read lock, so concurrent first-sight checks of
-// different hashes don't serialize) and caching both positive and negative
-// results by hash.
+// different hashes don't serialize) and caching POSITIVE results by hash.
+// Negative results are deliberately NOT cached: SigVerifier collapses every
+// failure mode (locked by AV/updater, mid-write, unreadable) into false with no
+// error channel, so caching false would pin a transient failure for process
+// lifetime — a legit dev tool stays distrusted until restart. Cost: an actually-
+// unsigned plant re-runs WinVerifyTrust per sighting; acceptable at Tier-2
+// volumes.
 //
 // TOCTOU guard (re-hash on success): the cache key is `sha` = Sysmon's
 // e.Hashes["SHA256"] computed at EVENT time, but sigVerify reads the file at
@@ -308,9 +313,8 @@ func (a *Allowlist) pathMatchesHashGated(image string) bool {
 // inside the verify window, letting winverify pass on the good bytes and poison
 // cache[sha-of-the-malware]=true. So on a PASSING verify we re-hash the file and
 // only cache true if that hash == sha; a mismatch (bytes changed between event
-// and verify) leaves the entry uncached and returns false (fail closed, and the
-// next sighting re-verifies). A file deleted between event and verify likewise
-// fails closed (hashFile errors -> no cache write -> false).
+// and verify) returns false uncached (fail closed, and the next sighting re-verifies).
+// A file deleted between event and verify likewise fails closed (hashFile errors -> false).
 func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 	a.mu.RLock()
 	if v, ok := a.verified[sha]; ok {
@@ -323,15 +327,20 @@ func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 		return false
 	}
 	result := vf(imagePath, a.allowedSigners)
+	if !result {
+		// ponytail: negative results are never cached — a transient failure (AV
+		// lock) must self-heal on the next sighting instead of poisoning trust
+		// until restart. Revisit only if unsigned-plant re-verification ever
+		// shows up in profiles.
+		return false
+	}
 	// TOCTOU guard: a passing verify proves the CURRENT on-disk bytes are signed
 	// by an allowed vendor, but `sha` was computed from the bytes at event time.
 	// Only trust the verify if those are the same bytes: re-hash now and require a
 	// match. Any divergence (swap-to-signed attack, file replaced mid-window) and
 	// we do NOT cache true — return false so the caller fails closed.
-	if result {
-		if got, err := hashFile(imagePath); err != nil || got != sha {
-			return false
-		}
+	if got, err := hashFile(imagePath); err != nil || got != sha {
+		return false
 	}
 	a.mu.Lock()
 	// Re-check: another goroutine may have populated the same hash meanwhile.
@@ -339,9 +348,9 @@ func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 		a.mu.Unlock()
 		return v
 	}
-	a.verified[sha] = result
+	a.verified[sha] = true
 	a.mu.Unlock()
-	return result
+	return true
 }
 
 // hashFile returns the lowercased hex SHA256 of the file at path, mirroring how
