@@ -709,6 +709,12 @@ func resolveExeRelative(fl *flags) {
 	resolve(&fl.heartbeatPath)
 	resolve(&fl.alertsPath)
 	resolve(&fl.baselineClean)
+	// The snapshot vault and Sysmon archive dir are paths too: left relative,
+	// a Task Scheduler launch (CWD = system32) would create/read them under
+	// system32 — same failure class resolveExeRelative exists to prevent for
+	// every other path flag.
+	resolve(&fl.snapshotDir)
+	resolve(&fl.sysmonArchiveDir)
 }
 
 func defaultMutexName() string {
