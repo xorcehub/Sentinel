@@ -149,6 +149,12 @@ func (a *App) PanicsContained() uint64 { return a.stats.panicsContained.Load() }
 // Run drives ingestion until the context is cancelled or the feed closes.
 // It returns nil on clean completion (channel closed) or ctx.Err() on cancel.
 func (a *App) Run(ctx context.Context) error {
+	// Derived ctx so Run's own exit (including a CLEAN ingester-channel close,
+	// which does not cancel the caller's ctx) tears down the heartbeat and
+	// baseline goroutines. Without this, the deferred <-hbDone / <-baselineDone
+	// joins below block forever on the clean-close path and Run never returns
+	// (reproduced: -mock hangs holding the single-instance mutex).
+	ctx, cancel := context.WithCancel(ctx)
 	ch, err := a.opts.Ingester.Start(ctx)
 	if err != nil {
 		return fmt.Errorf("start ingester: %w", err)
@@ -181,6 +187,9 @@ func (a *App) Run(ctx context.Context) error {
 		close(baselineDone)
 	}
 	defer func() { <-baselineDone }()
+	// cancel must run BEFORE the two joins above resolve their goroutines, so it
+	// is deferred here (LIFO: cancel -> join baseline -> join heartbeat).
+	defer cancel()
 
 	for {
 		select {
