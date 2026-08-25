@@ -32,9 +32,18 @@ func buildFieldMatch(key string, raw interface{}) (func(*event.Event) bool, erro
 	all := contains(mods, "all")
 	op := "" // last non-"all" modifier wins
 	for _, m := range mods {
-		if m != "all" {
-			op = m
+		if m == "all" {
+			continue
 		}
+		// Unknown modifier = rule-author error (typo or unsupported construct).
+		// Failing the rule beats silently degrading to equality matching: a
+		// quiet semantic change is a false-negative factory in a detection
+		// engine. (Package doc: unsupported constructs make Load return an
+		// error.) Known set mirrors the matchOne switch below.
+		if !knownModifiers[m] {
+			return nil, fmt.Errorf("unknown modifier %q in field %q (supported: contains, startswith, beginswith, endswith, re, all)", m, key)
+		}
+		op = m
 	}
 
 	// Precompile regexes once (docs: "compile-once, cache").
@@ -86,6 +95,16 @@ func buildFieldMatch(key string, raw interface{}) (func(*event.Event) bool, erro
 		}
 		return false
 	}, nil
+}
+
+// knownModifiers is the supported Sigma field-modifier set (docs/03-RULES.md
+// §2). Anything else fails compilation — see buildFieldMatch.
+var knownModifiers = map[string]bool{
+	"contains":   true,
+	"startswith": true,
+	"beginswith": true,
+	"endswith":   true,
+	"re":         true,
 }
 
 func contains(s []string, t string) bool {
