@@ -3,6 +3,7 @@ package alert
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 
 	"sentinel/internal/event"
@@ -25,6 +26,9 @@ type Dispatcher struct {
 
 	in      chan event.Hit
 	popupCh chan event.Hit
+
+	closedMu sync.RWMutex
+	closed   bool
 
 	dropped   atomic.Uint64 // popup queue overflow counter
 	delivered atomic.Uint64
@@ -60,9 +64,16 @@ func New(alerters []Alerter, bufferHits int, log *slog.Logger) *Dispatcher {
 func (d *Dispatcher) Sink() chan<- event.Hit { return d.in }
 
 // Submit pushes a hit non-blocking; returns false (and increments dropped) if
-// the inbound buffer is full. Use from the engine path so a flood never blocks
-// ingestion.
+// the inbound buffer is full, and also returns false after Close (no-op).
+// The closed check and send share a lock with Close so a submit can never
+// race close(d.in) into a panic. Use from the engine path so a flood never
+// blocks ingestion.
 func (d *Dispatcher) Submit(h event.Hit) bool {
+	d.closedMu.RLock()
+	defer d.closedMu.RUnlock()
+	if d.closed {
+		return false
+	}
 	select {
 	case d.in <- h:
 		return true
@@ -175,7 +186,15 @@ func (d *Dispatcher) callAlerter(name string, h event.Hit) (called bool) {
 	return true
 }
 
-// Close drains and closes the inbound channel (graceful shutdown helper).
+// Close drains-and-closes semantics for producers: after Close, Submit is a
+// no-op. The write lock serializes against Submit's read lock, so close(d.in)
+// can never race an in-flight send.
 func (d *Dispatcher) Close() {
+	d.closedMu.Lock()
+	defer d.closedMu.Unlock()
+	if d.closed {
+		return
+	}
+	d.closed = true
 	close(d.in)
 }
