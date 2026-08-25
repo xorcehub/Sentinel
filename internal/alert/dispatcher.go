@@ -78,11 +78,16 @@ func (d *Dispatcher) Submit(h event.Hit) bool {
 // start. Surface this in the heartbeat (05-ALERTING.md §5).
 func (d *Dispatcher) Dropped() uint64 { return d.dropped.Load() }
 
-// Delivered returns the count of successfully-dispatched hits.
+// Delivered returns the count of hits for which at least one registered
+// alerter was actually invoked since start ("delivered" = an attempt reached a
+// wired channel; hits routed only to unregistered channels don't count).
 func (d *Dispatcher) Delivered() uint64 { return d.delivered.Load() }
 
 // Run drives dispatch until ctx is cancelled. Spawns the popup worker.
-// Returns when ctx is done and the inbound channel is drained.
+// NOTE: on ctx cancellation it returns immediately — buffered inbound hits are
+// dropped, not drained (shutdown is best-effort; everything already dispatched
+// is in ALERTS.log/the event log). The deferred close(d.popupCh) lets the
+// popup worker finish queued boxes before Run's callers proceed.
 func (d *Dispatcher) Run(ctx context.Context) {
 	// popup worker: serializes blocking MessageBoxes (one at a time) so we never
 	// paint two at once, and overflow is counted not infinite-buffered.
@@ -108,13 +113,16 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			d.dispatch(h)
+			if d.dispatch(h) {
+				d.delivered.Add(1)
+			}
 		}
 	}
 }
 
-// dispatch fans one hit out to each named alerter.
-func (d *Dispatcher) dispatch(h event.Hit) {
+// dispatch fans one hit out to each named alerter. Reports whether at least
+// one registered alerter was invoked.
+func (d *Dispatcher) dispatch(h event.Hit) (sent bool) {
 	for _, name := range h.AlertTo {
 		if name == "popup" {
 			// If no popup alerter is registered (operator ran -popup=false),
@@ -130,6 +138,7 @@ func (d *Dispatcher) dispatch(h event.Hit) {
 			// never stalls the reader or other alerters.
 			select {
 			case d.popupCh <- h:
+				sent = true
 			default:
 				d.dropped.Add(1)
 				d.log.Warn("popup queue full; popup dropped (hit still logged via 'log' alerter)",
@@ -137,18 +146,21 @@ func (d *Dispatcher) dispatch(h event.Hit) {
 			}
 			continue
 		}
-		d.callAlerter(name, h)
+		if d.callAlerter(name, h) {
+			sent = true
+		}
 	}
-	d.delivered.Add(1)
+	return sent
 }
 
 // callAlerter invokes the named alerter, recovering from any panic so a faulty
 // alerter can never crash the dispatcher. Unknown alerter names are warned.
-func (d *Dispatcher) callAlerter(name string, h event.Hit) {
+// Reports whether a registered alerter was invoked.
+func (d *Dispatcher) callAlerter(name string, h event.Hit) (called bool) {
 	al, ok := d.alerters[name]
 	if !ok {
 		d.log.Debug("alerter not registered; skipping", "name", name, "rule", h.RuleID)
-		return
+		return false
 	}
 	func() {
 		defer func() {
@@ -160,6 +172,7 @@ func (d *Dispatcher) callAlerter(name string, h event.Hit) {
 			d.log.Warn("alerter error", "name", name, "rule", h.RuleID, "err", err)
 		}
 	}()
+	return true
 }
 
 // Close drains and closes the inbound channel (graceful shutdown helper).
