@@ -74,8 +74,16 @@ type Engine struct {
 // non-suppressed); dedup must be non-nil for correct sweep behavior.
 func New(rules []*sigmaeval.Rule, al Allowlist, dedup Deduper) (*Engine, error) {
 	eng := &Engine{rules: rules, al: al, dedup: dedup, tmpls: map[string]*template.Template{}, idGen: newHitIDGen()}
+	seen := map[string]bool{}
 	for _, r := range rules {
 		id := ruleID(r)
+		// Duplicate IDs silently collide on three keyed resources (target_key
+		// template, flood roller, dedup key). Fail loudly instead — a typo'd
+		// x-sentinel.id must not half-disable another rule.
+		if seen[id] {
+			return nil, fmt.Errorf("duplicate rule id %q (x-sentinel.id / id / title must be unique across the catalog)", id)
+		}
+		seen[id] = true
 		if r.XTargetKey == "" {
 			continue
 		}

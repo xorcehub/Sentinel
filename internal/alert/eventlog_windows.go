@@ -104,7 +104,7 @@ func (e *EventLogAlerter) Alert(h event.Hit) error {
 	// the event's insertion string stay consistent for downstream tooling.
 	var body strings.Builder
 	fmt.Fprintf(&body, "[%s] %s\nHID: %s\nRule: %s\nProc: %s\nCmd: %s",
-		upper(string(h.Severity)), h.RuleName, h.ID, h.RuleID,
+		strings.ToUpper(string(h.Severity)), h.RuleName, h.ID, h.RuleID,
 		h.Event.Image, trunc(h.Event.CmdLine, 300))
 	for _, line := range contextLines(h.Event) {
 		fmt.Fprintf(&body, "\n%s", line)

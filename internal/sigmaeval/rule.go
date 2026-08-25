@@ -13,6 +13,7 @@
 package sigmaeval
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -81,7 +82,7 @@ func decodeDocs(data []byte) ([]map[string]interface{}, error) {
 	for {
 		var m map[string]interface{}
 		if err := dec.Decode(&m); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, err

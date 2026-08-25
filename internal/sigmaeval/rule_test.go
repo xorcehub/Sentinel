@@ -71,3 +71,21 @@ level: low
 		t.Fatalf("got %d rules, want 1", len(rules))
 	}
 }
+
+// An unknown field modifier must FAIL compilation, not silently degrade to
+// equality matching (a typo'd `|contins` matching less than intended is a
+// false-negative factory in a detection engine).
+func TestUnknownModifierFailsLoad(t *testing.T) {
+	const yaml = `
+title: bad modifier
+id: 33333333-3333-3333-3333-333333333333
+detection:
+  selection:
+    CommandLine|contins: 'evil'
+  condition: selection
+level: low
+`
+	if _, err := Load([]byte(yaml)); err == nil {
+		t.Fatal("Load: expected error for unknown modifier, got nil")
+	}
+}

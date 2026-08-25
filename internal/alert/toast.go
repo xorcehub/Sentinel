@@ -122,7 +122,7 @@ func (t *ToastAlerter) Name() string { return "toast" }
 // locally) and PipeToastAlerter (sends to the user-session relay).
 func toastText(h event.Hit) (title, body string) {
 	title = stripToastChars(fmt.Sprintf("Sentinel: %s", trunc(h.RuleName, 60)))
-	body = stripToastChars(fmt.Sprintf("%s — %s", upper(string(h.Severity)), trunc(h.Event.Image, 80)))
+	body = stripToastChars(fmt.Sprintf("%s — %s", strings.ToUpper(string(h.Severity)), trunc(h.Event.Image, 80)))
 	// Former-popup tier: append the command line (the MessageBox showed it) so a
 	// loud critical toast is actionable, not just loud. Suspicious stays compact.
 	if h.Severity == event.SevCritical && h.Event.CmdLine != "" {

@@ -60,7 +60,14 @@ func main() {
 func failExit(err error) {
 	// Best-effort log file write. Don't use the slog logger: it may not exist
 	// yet (failure can happen before NewLogger), and we want a clear fatal marker.
-	if f, ferr := os.OpenFile("sentinel.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
+	// Resolve next to the EXE (not CWD): Task Scheduler launches with
+	// CWD=system32, where the write would land in the wrong place or fail —
+	// same rationale as resolveExeRelative.
+	fatalLog := "sentinel.log"
+	if dir := exeDir(); dir != "" {
+		fatalLog = filepath.Join(dir, "sentinel.log")
+	}
+	if f, ferr := os.OpenFile(fatalLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
 		fmt.Fprintf(f, "%s [FATAL] sentinel: %v\n", time.Now().Format(time.RFC3339), err)
 		_ = f.Close()
 	}
@@ -445,6 +452,11 @@ func runBaselineSnapshot(fl *flags) error {
 			warn = fmt.Sprintf("warning: reset baseline alert set: %v\n", rerr)
 		}
 		st.Close()
+	} else {
+		// Silent skip would leave stale alert-once entries suppressing genuine
+		// reappearances with zero signal. The common cause is the daemon
+		// holding the bbolt lock; the operator can rerun after stopping it.
+		warn = fmt.Sprintf("warning: could not open state (%v); baseline alert-once set was NOT reset\n", serr)
 	}
 	var b strings.Builder
 	b.WriteString(warn)
@@ -709,6 +721,12 @@ func resolveExeRelative(fl *flags) {
 	resolve(&fl.heartbeatPath)
 	resolve(&fl.alertsPath)
 	resolve(&fl.baselineClean)
+	// The snapshot vault and Sysmon archive dir are paths too: left relative,
+	// a Task Scheduler launch (CWD = system32) would create/read them under
+	// system32 — same failure class resolveExeRelative exists to prevent for
+	// every other path flag.
+	resolve(&fl.snapshotDir)
+	resolve(&fl.sysmonArchiveDir)
 }
 
 func defaultMutexName() string {

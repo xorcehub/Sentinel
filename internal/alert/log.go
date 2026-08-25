@@ -68,23 +68,10 @@ func (a *LogAlerter) Alert(h event.Hit) error {
 	return err
 }
 
-// WriteSuppression writes a suppression record (audit trail — matches are logged
-// even when no alert fires). Not part of the Alerter interface; called by the
-// dispatcher for each Suppression it receives.
-func (a *LogAlerter) WriteSuppression(s Suppression) error {
-	block := formatSuppression(s)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.dst != nil {
-		_, err := fmt.Fprintln(a.dst, block)
-		return err
-	}
-	if a.f == nil {
-		return fmt.Errorf("ALERTS.log not open")
-	}
-	_, err := a.f.WriteString(block + "\n")
-	return err
-}
+// NOTE: WriteSuppression was removed 2026-08: suppressed matches intentionally
+// do NOT go to ALERTS.log — it is the alert trail, and a suppressed match is
+// not an alert. They are audited in sentinel.log only. The function had no
+// production caller.
 
 // Close releases the underlying file handle.
 func (a *LogAlerter) Close() error {
@@ -109,7 +96,7 @@ func formatHit(h event.Hit) string {
 	// analyst can pivot to the raw event in Event Viewer. rec is omitted for
 	// baseline pseudo-events (RecordID == 0) since 0 carries no Sysmon event.
 	hdr := fmt.Sprintf("[%s] %-8s hid=%s ",
-		ts.Format(time.RFC3339), upper(string(h.Severity)), h.ID)
+		ts.Format(time.RFC3339), strings.ToUpper(string(h.Severity)), h.ID)
 	if h.Event.RecordID > 0 {
 		hdr += fmt.Sprintf("rec=%d ", h.Event.RecordID)
 	}
@@ -125,7 +112,7 @@ func formatHit(h event.Hit) string {
 	}
 	fmt.Fprintf(&b, "\n    match : %s\n    action: %s",
 		trunc(sanitize(h.Matched), 200),
-		joinActions(h.AlertTo),
+		strings.Join(h.AlertTo, ","),
 	)
 	return b.String()
 }
@@ -210,27 +197,6 @@ func contextLines(e event.Event) []string {
 	return lines
 }
 
-func formatSuppression(s Suppression) string {
-	return fmt.Sprintf("[%s] SUPPRESSED rule=%-12s reason=%s\n    image : %s\n    cmd   : %s",
-		time.Now().Format(time.RFC3339),
-		s.RuleID, s.Reason,
-		sanitize(s.Event.Image),
-		trunc(sanitize(s.Event.CmdLine), 200),
-	)
-}
-
-func upper(s string) string {
-	out := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'a' && c <= 'z' {
-			c -= 'a' - 'A'
-		}
-		out[i] = c
-	}
-	return string(out)
-}
-
 // trunc returns the first n bytes of s (backed up to a rune boundary so the
 // result is always valid UTF-8) with "…" appended when truncated. The naive
 // s[:n] slice split multibyte runes in non-ASCII command lines (Cyrillic/CJK
@@ -256,8 +222,8 @@ func trunc(s string, n int) string {
 // sanitized anyway: it's a free no-op on clean values and removes the fragile
 // "which field is injectable" classification (an earlier fix narrowed it to
 // command lines only and missed Details, a confirmed registry-value vector).
-// Applied at every ALERTS.log embedding site in formatHit/contextLines/
-// formatSuppression. DEL (0x7f) and C1 (0x80-0x9f) are out of scope: they
+// Applied at every ALERTS.log embedding site in formatHit/contextLines.
+// DEL (0x7f) and C1 (0x80-0x9f) are out of scope: they
 // don't break line structure in a text log.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -266,15 +232,4 @@ func sanitize(s string) string {
 		}
 		return r
 	}, s)
-}
-
-func joinActions(a []string) string {
-	out := ""
-	for i, s := range a {
-		if i > 0 {
-			out += ","
-		}
-		out += s
-	}
-	return out
 }

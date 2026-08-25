@@ -3,8 +3,8 @@
 package proc
 
 import (
+	"errors"
 	"fmt"
-
 	"golang.org/x/sys/windows"
 )
 
@@ -35,13 +35,13 @@ func Acquire(name string) (owned bool, release func(), err error) {
 		synchronizeAccess       = 0x00100000
 	)
 	h, cerr := windows.CreateMutexEx(nil, nameW, createMutexInitialOwner, synchronizeAccess)
-	if cerr != nil && cerr != windows.ERROR_ALREADY_EXISTS {
+	if cerr != nil && !errors.Is(cerr, windows.ERROR_ALREADY_EXISTS) {
 		return false, nil, fmt.Errorf("CreateMutexEx: %w", cerr)
 	}
 	if h == 0 {
 		return false, nil, fmt.Errorf("CreateMutexEx returned null handle")
 	}
-	if cerr == windows.ERROR_ALREADY_EXISTS {
+	if errors.Is(cerr, windows.ERROR_ALREADY_EXISTS) {
 		// Another instance owns it. Close our duplicate and bow out.
 		_ = windows.CloseHandle(h)
 		return false, nil, nil
