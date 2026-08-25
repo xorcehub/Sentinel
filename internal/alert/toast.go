@@ -131,23 +131,30 @@ func toastText(h event.Hit) (title, body string) {
 	return
 }
 
-// stripToastChars drops characters go-toast's WinRT COM XML binding can't render.
-// go-toast fails XmlDocument.LoadXml (0xC00CE55F) on astral-plane (4-byte UTF-8)
-// chars; a command line or rule name can carry one (emoji in args, rare CJK),
-// which would break COM and — for beeep, which keeps go-toast's PowerShell
-// fallback — trigger exactly the self-referential powershell-bypass-from-Temp
-// spawn that EXEC-001/PERSIST-001 match. Dropping astral runes keeps COM green
-// for any event content, so neither the fallback (beeep) nor LoudToast's
-// no-fallback error path ever fires on real data. BMP chars (incl. em-dash) pass.
+// stripToastChars drops characters go-toast's WinRT COM XML binding can't render,
+// and neutralizes the CDATA terminator. Two breakers, both reachable from
+// attacker-influenced event fields (Image/CmdLine):
+//
+//  1. Astral-plane (4-byte UTF-8) runes: go-toast fails XmlDocument.LoadXml
+//     (0xC00CE55F) on them.
+//  2. The literal sequence "]]>" — go-toast's XML template wraps Title/Body in
+//     CDATA (tmpl/xml.go.tmpl), and "]]>" terminates the CDATA section early,
+//     producing mismatched elements and the same LoadXml failure. Splitting it
+//     to "] ]>" keeps the text readable and the envelope sealed.
+//
+// Either breaker breaks COM and — for beeep, which keeps go-toast's PowerShell
+// fallback — triggers exactly the self-referential powershell-bypass-from-Temp
+// spawn that EXEC-001/PERSIST-001 match; LoudToast (no fallback) would silently
+// drop the critical toast instead. BMP chars (incl. em-dash) pass.
 // ponytail: only astral is dropped; if go-toast ever widens its char support,
-// remove this.
+// remove that leg.
 func stripToastChars(s string) string {
-	return strings.Map(func(r rune) rune {
+	return strings.ReplaceAll(strings.Map(func(r rune) rune {
 		if r > 0xFFFF {
 			return -1
 		}
 		return r
-	}, s)
+	}, s), "]]>", "] ]>")
 }
 
 // Alert fires a toast. Critical hits get the loud looping-alarm treatment
