@@ -227,7 +227,8 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-func (a *App) handleEvent(ev event.Event) {
+func (a *App) handleEvent(ev event.Event) (hits int, delivered bool) {
+	delivered = true
 	a.stats.eventsSeen.Add(1)
 	// H1 telemetry-lost tracking: only REAL Sysmon events count as flow.
 	// Baseline pseudo-events are excluded — they'd mask a dead Sysmon channel.
@@ -337,6 +338,7 @@ func (a *App) handleEvent(ev event.Event) {
 	}
 	res := a.opts.Engine.Evaluate(&ev)
 	for _, h := range res.Hits {
+		hits++
 		a.stats.hits.Add(1)
 		a.log.Info("HIT",
 			"hid", h.ID,
@@ -354,7 +356,12 @@ func (a *App) handleEvent(ev event.Event) {
 			a.opts.Snapshot.LinkHit(h.ID, h.Event.CmdLine, h.Event.TargetFile)
 		}
 		if a.opts.Dispatcher != nil {
-			a.opts.Dispatcher.Submit(h) // non-blocking; drops+counts on overflow
+			// non-blocking; drops+counts on overflow. A drop must propagate:
+			// callers that latch alert-once state (baseline Option-A) use it to
+			// avoid marking an entry alerted when its hit never reached an alerter.
+			if !a.opts.Dispatcher.Submit(h) {
+				delivered = false
+			}
 		}
 		if a.opts.OnHit != nil {
 			a.opts.OnHit(h)
@@ -380,6 +387,7 @@ func (a *App) handleEvent(ev event.Event) {
 			"reason", s.Reason,
 			"image", s.Event.Image)
 	}
+	return hits, delivered
 }
 
 func (a *App) heartbeat(ctx context.Context, interval time.Duration, done chan<- struct{}) {
@@ -723,6 +731,13 @@ func (a *App) runBaselineScan(ctx context.Context) error {
 // behavior is testable without shelling out. Option A: each Entry.Key() alerts
 // ONCE; subsequent scans of the same unaddressed entry stay quiet until
 // state.ResetBaselineAlerted() (triggered by re-snapshotting the clean baseline).
+//
+// Marking is gated on DELIVERY: an entry is marked alerted only when handleEvent
+// produced hits AND the dispatcher accepted all of them. Otherwise it stays
+// unmarked and retries next scan — failing open to duplicate alerts, never
+// failing closed to permanent silence. This also covers BASE-001 missing from
+// the loaded catalog (hits==0: nothing fired, nothing marked) and a contained
+// panic inside handleEvent.
 func (a *App) routeBaselineDiff(clean, daily baseline.Snapshot) (newN, fired int) {
 	newEntries := baseline.DiffEntries(clean, daily)
 	newN = len(newEntries)
@@ -730,11 +745,24 @@ func (a *App) routeBaselineDiff(clean, daily baseline.Snapshot) (newN, fired int
 		if a.opts.Baseline.State.BaselineAlerted(e.Key()) {
 			continue // already alerted on a prior scan → Option A: stay quiet
 		}
-		a.opts.Baseline.State.MarkBaselineAlerted(e.Key())
+		hits, delivered := 0, true
 		for _, ev := range baseline.EntriesToEvents([]baseline.Entry{e}) {
-			a.handleEvent(ev) // -> engine -> BASE-001 -> dispatcher (toast/log/eventlog)
-			fired++
+			h, d := a.handleEvent(ev) // -> engine -> BASE-001 -> dispatcher
+			hits += h
+			delivered = delivered && d
 		}
+		if !delivered {
+			a.log.Warn("baseline alert NOT delivered; entry left un-marked, will retry next scan",
+				"key", e.Key())
+			continue
+		}
+		if hits == 0 {
+			a.log.Warn("baseline entry matched no rule; left un-marked (is BASE-001 in the catalog?)",
+				"key", e.Key())
+			continue
+		}
+		a.opts.Baseline.State.MarkBaselineAlerted(e.Key())
+		fired += hits
 	}
 	return newN, fired
 }
