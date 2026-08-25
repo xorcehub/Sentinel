@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"time"
@@ -113,8 +114,10 @@ func handleConnection(id int, namePtr *uint16) {
 		return
 	}
 	// Block until the daemon connects. ERROR_PIPE_CONNECTED (client attached
-	// before we called Connect) is benign - fall through and read.
-	if err := windows.ConnectNamedPipe(h, nil); err != nil {
+	// before we called Connect) is benign - fall through and read. x/sys
+	// surfaces it as a non-nil error, so it must be excluded here or a client
+	// connecting in the CreateNamedPipe/ConnectNamedPipe window is dropped.
+	if err := windows.ConnectNamedPipe(h, nil); err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
 		log.Printf("instance %d: ConnectNamedPipe: %v", id, err)
 		windows.CloseHandle(h)
 		return
