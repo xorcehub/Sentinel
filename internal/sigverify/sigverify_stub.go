@@ -10,5 +10,8 @@ package sigverify
 // IsSignedBy always returns false on non-Windows (no Tier-2 signature trust).
 func IsSignedBy(path string, allowedSigners []string) bool { return false }
 
+// VerifyAndHash is the pinned verify+hash primitive; non-Windows fails closed.
+func VerifyAndHash(path string, allowedSigners []string) (bool, string) { return false, "" }
+
 // Subjects returns no subjects on non-Windows.
 func Subjects(path string) ([]string, bool) { return nil, false }

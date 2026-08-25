@@ -23,11 +23,89 @@ package sigverify
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"os"
 	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// VerifyAndHash is the TOCTOU-hardened Tier-2 primitive: it verifies
+// Authenticode provenance AND hashes the file under a SINGLE pinning open, so
+// the bytes that winverify judged are provably the bytes being hashed.
+//
+// The pin: the file is opened with FILE_SHARE_READ only (no write/delete
+// sharing). Windows blocks renames, replaces, deletes, and content writes for
+// as long as the handle is open, so an attacker's swap loop cannot change what
+// any step observes — the swap-to-signed-during-verify attack against the
+// separate-open flow (verify-by-name, then re-hash-by-name) cannot land here.
+//
+// Returns (subject matches allowedSigners, lowercase hex SHA256 of the pinned
+// bytes). On any error: (false, "") — fail closed.
+func VerifyAndHash(path string, allowedSigners []string) (bool, string) {
+	if len(allowedSigners) == 0 || path == "" {
+		return false, ""
+	}
+	path16, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return false, ""
+	}
+	// GENERIC_READ + FILE_SHARE_READ: concurrent readers fine; writers and
+	// renamers get a sharing violation until we're done. This is the lock that
+	// makes every observation below see one immutable set of bytes.
+	h, err := windows.CreateFile(
+		path16,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	if err != nil {
+		return false, ""
+	}
+	// os.NewFile takes ownership of the handle (its Close closes it) and gives us
+	// stdlib hashing for free.
+	file := os.NewFile(uintptr(h), path)
+	if file == nil {
+		windows.CloseHandle(h)
+		return false, ""
+	}
+	defer file.Close()
+
+	h256 := sha256.New()
+	if _, err := io.Copy(h256, file); err != nil {
+		return false, ""
+	}
+	sha := hex.EncodeToString(h256.Sum(nil))
+
+	if !isValidlySignedHandle(path, h) {
+		return false, sha
+	}
+	store, ok := openCertStore(path) // by-name safe: rename blocked by the pin
+	if !ok {
+		return false, sha
+	}
+	defer windows.CertCloseStore(store, 0)
+	subjects, ok := leafSubjects(store)
+	if !ok {
+		return false, sha
+	}
+	set := make(map[string]bool, len(allowedSigners))
+	for _, s := range allowedSigners {
+		set[strings.ToLower(strings.TrimSpace(s))] = true
+	}
+	for _, s := range subjects {
+		if set[strings.ToLower(strings.TrimSpace(s))] {
+			return true, sha
+		}
+	}
+	return false, sha
+}
 
 // IsSignedBy reports whether path is a validly Authenticode-signed PE whose
 // signing (leaf) cert's subject — simple-display name — matches one of
@@ -101,7 +179,12 @@ func Subjects(path string) ([]string, bool) {
 		return nil, false
 	}
 	defer windows.CertCloseStore(store, 0)
+	return leafSubjects(store)
+}
 
+// leafSubjects runs the DAG-leaf signer extraction over an OPENED cert store.
+// Split from Subjects so VerifyAndHash can reuse it.
+func leafSubjects(store windows.Handle) ([]string, bool) {
 	// First pass: gather every cert's (subject, issuer) raw name blobs and the
 	// human-readable subject name. CertEnumCertificatesInStore frees the previous
 	// context when called again with it, and frees the final context on the
@@ -177,13 +260,18 @@ func nameBlobBytes(b windows.CertNameBlob) []byte {
 	return out
 }
 
-// isValidlySigned runs WinVerifyTrustEx with no UI and no revocation check. No
-// revocation: the daemon runs as an offline scheduled task and must not fail
-// closed when the network/CRL is unreachable; revocation is not the trust
-// signal relied on here (vendor pinning is). Mirrors TestWinVerifyTrust exactly,
-// including the mandatory VERIFY→CLOSE pairing (close runs even on failure to
-// free state — see WinVerifyTrust docs).
-func isValidlySigned(path string) bool {
+// isValidlySigned verifies by path (unpinned — used for discovery/tests).
+func isValidlySigned(path string) bool { return isValidlySignedHandle(path, 0) }
+
+// isValidlySignedHandle runs WinVerifyTrustEx with no UI and no revocation
+// check. A nonzero h pins the verified bytes to the caller's open handle
+// (WinTrustFileInfo.File) so the verdict applies to exactly the bytes the
+// caller hashed. No revocation: the daemon runs as an offline scheduled task
+// and must not fail closed when the network/CRL is unreachable; revocation is
+// not the trust signal relied on here (vendor pinning is). Mirrors
+// TestWinVerifyTrust exactly, including the mandatory VERIFY→CLOSE pairing
+// (close runs even on failure to free state — see WinVerifyTrust docs).
+func isValidlySignedHandle(path string, h windows.Handle) bool {
 	path16, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return false
@@ -197,6 +285,7 @@ func isValidlySigned(path string) bool {
 		FileOrCatalogOrBlobOrSgnrOrCert: unsafe.Pointer(&windows.WinTrustFileInfo{
 			Size:     uint32(unsafe.Sizeof(windows.WinTrustFileInfo{})),
 			FilePath: path16,
+			File:     h,
 		}),
 	}
 	verifyErr := windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, data)
