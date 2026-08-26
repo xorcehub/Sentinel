@@ -233,6 +233,8 @@ func run(args []string) error {
 	dispDone := make(chan struct{})
 	if disp != nil {
 		go func() { defer close(dispDone); disp.Run(ctx) }()
+	} else {
+		close(dispDone) // nothing to join
 	}
 
 	// Snapshot vault: copies file_capture-matched files (EID 11) to disk before
@@ -244,6 +246,8 @@ func run(args []string) error {
 	snapDone := make(chan struct{})
 	if snap != nil {
 		go func() { defer close(snapDone); snap.Run(ctx) }()
+	} else {
+		close(snapDone) // nothing to join
 	}
 
 	a, err := app.New(app.Options{
