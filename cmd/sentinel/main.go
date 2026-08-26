@@ -274,17 +274,26 @@ func run(args []string) error {
 	//     worker's channel FIRST makes Run drain all buffered work and return
 	//     via the closed-channel path; the joins guarantee quiescence BEFORE
 	//     the deferred logCleanup/st.Close run. Queued alerts ARE delivered.
+	//     (Production-reachable only via -mock/tests: the RT poller closes its
+	//     feed only on cancel, i.e. the interrupt path below.)
 	//
 	//   • Signal/cancel path (Ctrl+C — only during manual runs; the scheduled
 	//     task has no console and is hard-terminated): ctx is already cancelled
 	//     when Close() runs, and both workers select on ctx.Done vs their
 	//     channel, so queued hits/captures MAY be dropped (Go picks randomly
-	//     between two ready cases). This is accepted best-effort: every hit is
-	//     logged to sentinel.log (HIT line) BEFORE Submit, undelivered baseline
-	//     entries are left un-marked and retried, and on the next start the RT
-	//     poller re-feeds recent events (see sysmon_rt_windows.go) so nothing
-	//     that matters is silently lost. Do NOT "fix" by draining on cancel —
-	//     that would delay interrupt handling.
+	//     between two ready cases). This is accepted best-effort, and the ONLY
+	//     guaranteed backstop is that every hit is logged to sentinel.log (HIT
+	//     line) BEFORE Submit. Recovery is partial, not guaranteed: the RT
+	//     poller re-feeds recent events on the next start (sysmon_rt_windows.go),
+	//     but (a) a rule whose dedup entry is still fresh (15 min, persisted,
+	//     stamped at Evaluate time — before Submit) replays as suppressed, and
+	//     (b) a baseline hit Submit-ACCEPTED into the buffer and then dropped
+	//     here still latches Option-A marking, permanently silencing that entry
+	//     until a re-snapshot (engine bypasses dedup for baseline events, but
+	//     BaselineAlerted(key) short-circuits the replay). Both windows are
+	//     milliseconds wide; the sentinel.log HIT line is the forensic record.
+	//     Do NOT "fix" by draining on cancel — that would delay interrupt
+	//     handling.
 	//
 	// Close() afterwards is a no-op for the workers (already exited) but still
 	// blocks late Submits.

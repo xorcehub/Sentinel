@@ -259,14 +259,14 @@ func TestBaselineAlertOnceRoutesAndDedups(t *testing.T) {
 	defer st.Close()
 
 	var hits atomic.Uint64
-	// Delivery must be real for Option-A marking: a wired dispatcher whose
-	// Submit succeeds is what makes `delivered` true (nil dispatcher ⇒ false).
-	la := alert.NewLogAlerterTo(&bytes.Buffer{})
+	// Option-A marking keys on Submit ACCEPTANCE: a non-nil dispatcher whose
+	// Submit accepts makes `delivered` true. Alerter invocation is not under
+	// test here (no Run() started), so the dispatcher carries no alerters.
 	a, err := New(Options{
 		Logger:     discardLogger(),
 		Ingester:   mock.New(), // empty; we drive baseline routing directly
 		Engine:     eng,
-		Dispatcher: alert.New([]alert.Alerter{la}, 256, discardLogger()),
+		Dispatcher: alert.New(nil, 256, discardLogger()),
 		OnHit:      func(event.Hit) { hits.Add(1) },
 		Baseline:   BaselineConfig{Enabled: true, State: st},
 	})
@@ -507,12 +507,12 @@ func TestRouteBaselineDiffMultipleNewEntries(t *testing.T) {
 	defer st.Close()
 
 	var hits atomic.Uint64
-	la := alert.NewLogAlerterTo(&bytes.Buffer{})
+	// As above: non-nil dispatcher with Submit acceptance; no alerters.
 	a, err := New(Options{
 		Logger:     discardLogger(),
 		Ingester:   mock.New(),
 		Engine:     eng,
-		Dispatcher: alert.New([]alert.Alerter{la}, 256, discardLogger()),
+		Dispatcher: alert.New(nil, 256, discardLogger()),
 		OnHit:      func(event.Hit) { hits.Add(1) },
 		Baseline:   BaselineConfig{Enabled: true, State: st},
 	})

@@ -176,7 +176,8 @@ properties of the current design that a reviewer should know about.
    change" below.
 
 8. **Single-instance mutex can be pre-squatted.** `Global\Sentinel-Running-*`
-   is created with no DACL and no owner check (`internal/proc/mutex_windows.go`),
+   is created with the creator's default DACL and no owner/creator check
+   (`internal/proc/mutex_windows.go`),
    so any local process — including a lower-privilege account — can create the
    name first and sentinel will exit 1 at every start: a silent local DoS of
    the monitor. Accepted alongside #7: while the install dir is user-writable,
@@ -190,12 +191,15 @@ properties of the current design that a reviewer should know about.
    (manual runs only — the scheduled task is hard-terminated by Windows with
    no drain opportunity at all), `Dispatcher.Run`/`Snapshotter.Run` select on
    ctx.Done vs their buffered channel, so queued work MAY be discarded.
-   *Decision (owner-approved, 2026-08):* accepted. Every hit is logged to
-   sentinel.log before dispatch, undelivered baseline entries stay un-marked
-   and retry, and the restart replay (limitation: `sysmon_rt_windows.go`
-   highWater seed) re-evaluates recent events — so the alert fires on the next
-   start rather than at the interrupted one. See the shutdown-ordering comment
-   in `cmd/sentinel/main.go`.
+   *Decision (owner-approved, 2026-08):* accepted, with sentinel.log as the
+   backstop — every hit is written there (HIT line) before dispatch, so the
+   alert is always on record even when its popup/toast/EventLog delivery is
+   lost. Restart replay (see `sysmon_rt_windows.go` highWater seed) recovers
+   only part of it: rules with a fresh dedup entry replay as suppressed
+   (15 min window, persisted, stamped before dispatch), and a baseline hit
+   accepted-then-dropped still latches alert-once marking. See the
+   shutdown-ordering comment in `cmd/sentinel/main.go` for the full window
+   analysis.
 
 ## Operational assumptions
 
