@@ -102,14 +102,19 @@ func (e *EventLogAlerter) Alert(h event.Hit) error {
 
 	// Body is identical to the prior eventcreate /D payload so ALERTS.log and
 	// the event's insertion string stay consistent for downstream tooling.
+	// Every attacker-reachable field (Image, CmdLine, Matched — RuleName is
+	// operator-authored but sanitized anyway for uniformity) goes through
+	// sanitize() exactly like ALERTS.log: command lines accept embedded C0
+	// bytes, and a raw \nHID:/\nMatch: would forge correlation lines in Event
+	// Viewer's rendering, poisoning the sentinel.log <-> Event Log HID join.
 	var body strings.Builder
 	fmt.Fprintf(&body, "[%s] %s\nHID: %s\nRule: %s\nProc: %s\nCmd: %s",
-		strings.ToUpper(string(h.Severity)), h.RuleName, h.ID, h.RuleID,
-		h.Event.Image, trunc(h.Event.CmdLine, 300))
+		strings.ToUpper(string(h.Severity)), sanitize(h.RuleName), h.ID, h.RuleID,
+		sanitize(h.Event.Image), trunc(sanitize(h.Event.CmdLine), 300))
 	for _, line := range contextLines(h.Event) {
 		fmt.Fprintf(&body, "\n%s", line)
 	}
-	fmt.Fprintf(&body, "\nMatch: %s", trunc(h.Matched, 200))
+	fmt.Fprintf(&body, "\nMatch: %s", trunc(sanitize(h.Matched), 200))
 
 	bodyW, err := windows.UTF16PtrFromString(body.String())
 	if err != nil {
