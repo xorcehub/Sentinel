@@ -55,7 +55,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"regexp"
@@ -105,6 +105,13 @@ type Allowlist struct {
 	sigVerify any // SigVerifier func, optionally also implementing PinnedVerifier; nil = Tier-2 never auto-trusts (fail closed)
 	mu        sync.RWMutex
 	verified  map[string]bool // Tier-2 lazy cache: lowercased sha256 -> sigVerify(path) result
+
+	// log receives once-only operational warnings (the Tier-2 no-SHA256
+	// degradation). Injected via SetLogger; nil falls back to slog.Default().
+	// The daemon injects its FILE-backed logger: stdlib log and the default
+	// slog write to stderr, which is a dead handle under the windowsgui
+	// production build — the warning would be invisible exactly where it matters.
+	log *slog.Logger
 
 	// tier2NoHashWarn fires once if a Tier-2 path pattern matches an event with
 	// no SHA256 hash — the silent wholesale-Tier-2-loss condition (Sysmon config
@@ -285,14 +292,40 @@ func (a *Allowlist) ImageTrusted(e *event.Event) bool {
 	if a.pathMatchesHashGated(e.Image) {
 		if sha == "" {
 			a.tier2NoHashWarn.Do(func() {
-				log.Printf("[warn] allowlist: tier-2 path %q matched but event carries no SHA256 — "+
-					"Tier-2 trust disabled until hashes return (check Sysmon <HashAlgorithms>)", e.Image)
+				a.logger().Warn("allowlist: tier-2 path matched but event carries no SHA256 — "+
+					"Tier-2 trust disabled until hashes return (check Sysmon <HashAlgorithms>)", "image", e.Image)
 			})
 		} else if a.sigVerifiedCached(sha, e.Image) {
 			return true
 		}
 	}
 	return false
+}
+
+// SetLogger injects the operational logger for once-only degradation warnings
+// (e.g. the Tier-2 no-SHA256 signal). Call once after Load, before the first
+// Evaluate (same contract as SetSigVerifier); nil is ignored so an accidental
+// nil injection can't silence the fallback.
+func (a *Allowlist) SetLogger(l *slog.Logger) {
+	if a == nil || l == nil {
+		return
+	}
+	a.mu.Lock()
+	a.log = l
+	a.mu.Unlock()
+}
+
+// logger returns the injected operational logger, or slog.Default() when none
+// was injected (tests / library-style use). Read under RLock so a concurrent
+// SetLogger can't tear the field.
+func (a *Allowlist) logger() *slog.Logger {
+	a.mu.RLock()
+	l := a.log
+	a.mu.RUnlock()
+	if l == nil {
+		return slog.Default()
+	}
+	return l
 }
 
 // SetSigVerifier injects the Tier-2 signature verifier: either a plain

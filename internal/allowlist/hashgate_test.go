@@ -1,6 +1,8 @@
 package allowlist
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -256,5 +258,33 @@ func TestTier2TOCTOUGuardBlocksCachePoisoning(t *testing.T) {
 	good := &event.Event{Image: legitPath, Hashes: map[string]string{"SHA256": realSHA}}
 	if !a.ImageTrusted(good) {
 		t.Error("matching hash + passing verify should be trusted (guard must not over-reject)")
+	}
+}
+
+// TestTier2NoHashWarnGoesToInjectedLogger pins the observability contract of
+// the once-only Tier-2 no-SHA256 warning: it must land in the INJECTED logger
+// (the daemon's file-backed one), and fire exactly once. The warning used to
+// go to stdlib log -> stderr, a dead handle under the windowsgui production
+// build — invisible in exactly the deployment it exists for.
+func TestTier2NoHashWarnGoesToInjectedLogger(t *testing.T) {
+	a, err := Compile([]byte(hashGateJSONC))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	var buf bytes.Buffer
+	a.SetLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+
+	noHash := event.Event{Image: `C:\Users\dev\AppData\Local\Programs\Cursor\cursor.exe`}
+	if a.ImageTrusted(&noHash) {
+		t.Fatal("no-SHA256 event at a Tier-2 path must not be trusted (fail closed)")
+	}
+	if !strings.Contains(buf.String(), "SHA256") {
+		t.Fatalf("warning missing from injected logger; buf=%q", buf.String())
+	}
+
+	// Once-only: a second no-hash sighting must not re-warn.
+	a.ImageTrusted(&noHash)
+	if n := strings.Count(buf.String(), "SHA256"); n != 1 {
+		t.Fatalf("warning fired %d times, want exactly 1 (once-only)", n)
 	}
 }
