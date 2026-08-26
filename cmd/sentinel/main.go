@@ -267,17 +267,27 @@ func run(args []string) error {
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
-	// Shutdown order matters, and the obvious-looking "cancel first" is wrong:
-	// both workers exit IMMEDIATELY on ctx.Done (Dispatcher.Run drops buffered
-	// hits per its own doc; snapshotter likewise), so cancelling first would
-	// deterministically discard everything queued at shutdown. Closing each
-	// worker's channel FIRST makes Run drain all buffered work (dispatching
-	// alerters / finishing pending copies) and return via the closed-channel
-	// path; the joins then guarantee quiescence BEFORE the deferred
-	// logCleanup/st.Close run — fixing the original race (Close racing the drain
-	// against log-file closure) without losing shutdown-window alerts. Close()
-	// afterwards is a no-op for the workers (already exited) but still blocks
-	// late Submits.
+	// Shutdown ordering — and what it does and does NOT guarantee (design
+	// decision, see THREAT-MODEL.md "Known limitations"):
+	//
+	//   • Clean feed-close path (ingester closed, no signal): closing each
+	//     worker's channel FIRST makes Run drain all buffered work and return
+	//     via the closed-channel path; the joins guarantee quiescence BEFORE
+	//     the deferred logCleanup/st.Close run. Queued alerts ARE delivered.
+	//
+	//   • Signal/cancel path (Ctrl+C — only during manual runs; the scheduled
+	//     task has no console and is hard-terminated): ctx is already cancelled
+	//     when Close() runs, and both workers select on ctx.Done vs their
+	//     channel, so queued hits/captures MAY be dropped (Go picks randomly
+	//     between two ready cases). This is accepted best-effort: every hit is
+	//     logged to sentinel.log (HIT line) BEFORE Submit, undelivered baseline
+	//     entries are left un-marked and retried, and on the next start the RT
+	//     poller re-feeds recent events (see sysmon_rt_windows.go) so nothing
+	//     that matters is silently lost. Do NOT "fix" by draining on cancel —
+	//     that would delay interrupt handling.
+	//
+	// Close() afterwards is a no-op for the workers (already exited) but still
+	// blocks late Submits.
 	if disp != nil {
 		disp.Close()
 	}

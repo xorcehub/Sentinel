@@ -165,6 +165,38 @@ properties of the current design that a reviewer should know about.
    who can write there already has user-level code execution; treat the repo
    directory as trusted.
 
+   *Decision (owner-approved, 2026-08):* sentinel is a single-workstation
+   sensor; the SYSTEM privilege exists to read `C:\SentinelArchive`, not to
+   defend against the user whose workstation it is. Consequence accepted:
+   same-user malware can edit `rules.d/`, `config/allowlist.json`, or
+   `baseline_clean.csv` in the user-writable install tree and thereby blind
+   or poison detection (CONFIG-001 is the tripwire for the rules path). If
+   this ever deploys beyond a personal box, move the install to an
+   admin-only directory (Program Files + ACLs) — see "What would need to
+   change" below.
+
+8. **Single-instance mutex can be pre-squatted.** `Global\Sentinel-Running-*`
+   is created with no DACL and no owner check (`internal/proc/mutex_windows.go`),
+   so any local process — including a lower-privilege account — can create the
+   name first and sentinel will exit 1 at every start: a silent local DoS of
+   the monitor. Accepted alongside #7: while the install dir is user-writable,
+   an attacker with user-level code execution has strictly better options
+   (edit the rules, swap the binary), so hardening the mutex alone buys
+   nothing. Revisit together with #7 — verify the existing mutex's owner SID
+   before bowing out, or alert via EventLog before exiting — when (and only
+   when) the install location is locked down.
+
+9. **Queued alerts may be dropped on interrupt-time shutdown.** On Ctrl+C
+   (manual runs only — the scheduled task is hard-terminated by Windows with
+   no drain opportunity at all), `Dispatcher.Run`/`Snapshotter.Run` select on
+   ctx.Done vs their buffered channel, so queued work MAY be discarded.
+   *Decision (owner-approved, 2026-08):* accepted. Every hit is logged to
+   sentinel.log before dispatch, undelivered baseline entries stay un-marked
+   and retry, and the restart replay (limitation: `sysmon_rt_windows.go`
+   highWater seed) re-evaluates recent events — so the alert fires on the next
+   start rather than at the interrupted one. See the shutdown-ordering comment
+   in `cmd/sentinel/main.go`.
+
 ## Operational assumptions
 
 - **Single-user workstation.** Multi-user hosts need at minimum the pipe ACL
@@ -181,6 +213,10 @@ properties of the current design that a reviewer should know about.
 ## What would need to change for broader deployment
 
 In order of what actually matters:
+- **Install dir out of user-writable space** — Program Files-style location
+  with admin-only write ACLs, plus the mutex owner check from limitation #8.
+  Without this, running as SYSTEM defends the door while the walls are
+  cardboard (limitations #7/#8).
 - **Pipe ACL hardening** — required for multi-user hosts.
 - **Off-host log/vault shipping** — required for any
   post-incident forensic value against a privileged adversary. Local logs are
