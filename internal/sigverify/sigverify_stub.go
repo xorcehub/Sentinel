@@ -15,3 +15,11 @@ func VerifyAndHash(path string, allowedSigners []string) (bool, string) { return
 
 // Subjects returns no subjects on non-Windows.
 func Subjects(path string) ([]string, bool) { return nil, false }
+
+// Pinned is the allowlist-injectable adapter; non-Windows fails closed.
+type Pinned struct{}
+
+// VerifyAndHash implements allowlist.PinnedVerifier (always false off-Windows).
+func (Pinned) VerifyAndHash(path string, allowedSigners []string) (bool, string) {
+	return false, ""
+}

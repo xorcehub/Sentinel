@@ -617,10 +617,12 @@ func buildEngine(fl *flags, st *state.State, logger *slog.Logger) (*rules.Engine
 		al = nil
 	}
 	// Inject the Tier-2 (hash_gated_path) signature verifier. On Windows this is
-	// native WinVerifyTrust; on non-Windows (CI/dev) the stub fails closed. Must
-	// be set before the first Evaluate so the lazy cache sees the verifier.
+	// native WinVerifyTrust run under ONE pinning open (Pinned: rename/replace/
+	// content-write blocked for the duration, closing the by-name reopen swap
+	// window); on non-Windows (CI/dev) the stub fails closed. Must be set before
+	// the first Evaluate so the lazy cache sees the verifier.
 	if al != nil {
-		al.SetSigVerifier(sigverify.IsSignedBy)
+		al.SetSigVerifier(sigverify.Pinned{})
 	}
 	eng, err := rules.New(compiled, al, st)
 	if err != nil {

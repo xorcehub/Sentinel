@@ -333,3 +333,14 @@ func subjectName(ctx *windows.CertContext) string {
 	}
 	return windows.UTF16ToString(buf[:n])
 }
+
+// Pinned is the allowlist-injectable adapter (allowlist.PinnedVerifier) that
+// routes Tier-2 verification through VerifyAndHash: ONE open handle held for
+// the whole verify+hash, blocking rename/replace/content-write for the
+// duration and closing the by-name reopen swap window.
+type Pinned struct{}
+
+// VerifyAndHash implements allowlist.PinnedVerifier.
+func (Pinned) VerifyAndHash(path string, allowedSigners []string) (bool, string) {
+	return VerifyAndHash(path, allowedSigners)
+}

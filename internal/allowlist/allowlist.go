@@ -295,13 +295,20 @@ func (a *Allowlist) ImageTrusted(e *event.Event) bool {
 	return false
 }
 
-// SetSigVerifier injects the Tier-2 signature verifier. Call once after Load,
-// before the first Evaluate. nil (the default) means Tier-2 paths never
-// auto-trust — safe (fail closed), just noisier for legit dev tools. The cache
-// is guarded by mu; the verifier itself must be safe for concurrent use.
-func (a *Allowlist) SetSigVerifier(v SigVerifier) {
-	if a == nil {
+// SetSigVerifier injects the Tier-2 signature verifier: either a plain
+// SigVerifier func or a PinnedVerifier implementation (production injects
+// sigverify.Pinned{}). Call once after Load, before the first Evaluate.
+// nil (the default) means Tier-2 paths never auto-trust — safe (fail closed),
+// just noisier for legit dev tools. A typed-nil SigVerifier is also rejected
+// here so the documented nil-means-fail-closed contract can't be bypassed by a
+// non-nil interface holding a nil func (which would panic at call time).
+// The cache is guarded by mu; the verifier itself must be safe for concurrent use.
+func (a *Allowlist) SetSigVerifier(v any) {
+	if a == nil || v == nil {
 		return
+	}
+	if fn, ok := v.(SigVerifier); ok && fn == nil {
+		return // typed-nil func: same as no verifier (fail closed)
 	}
 	a.mu.Lock()
 	a.sigVerify = v
@@ -351,21 +358,23 @@ func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 	if vf == nil {
 		return false
 	}
-	if pv, ok := vf.(PinnedVerifier); ok {
-		trusted, got := pv.VerifyAndHash(imagePath, a.allowedSigners)
+	switch v := vf.(type) {
+	case PinnedVerifier:
+		trusted, got := v.VerifyAndHash(imagePath, a.allowedSigners)
 		if !trusted || got != sha {
 			return false // unsigned, unreadable, or bytes changed since event time
 		}
-	} else {
-		vresult := vf.(SigVerifier)(imagePath, a.allowedSigners)
-		if !vresult {
-			return false // negative results are never cached (see doc above)
-		}
-		// Legacy-shape TOCTOU guard: re-hash and require a match with the event-
-		// time observation before caching true.
-		if got, err := hashFile(imagePath); err != nil || got != sha {
+	case SigVerifier:
+		if !a.legacyVerifyAndGuard(v, imagePath, sha) {
 			return false
 		}
+	case func(string, []string) bool:
+		// Unnamed func literal (e.g. test fakes): same contract as SigVerifier.
+		if !a.legacyVerifyAndGuard(v, imagePath, sha) {
+			return false
+		}
+	default:
+		return false // unknown/nil verifier shape: fail closed
 	}
 	a.mu.Lock()
 	// Re-check: another goroutine may have populated the same hash meanwhile.
@@ -376,6 +385,17 @@ func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 	a.verified[sha] = true
 	a.mu.Unlock()
 	return true
+}
+
+// legacyVerifyAndGuard runs the plain SigVerifier shape: verify by path, then
+// the TOCTOU guard — re-hash and require a match with the event-time observation
+// before allowing a true cache write. Returns whether trust may proceed.
+func (a *Allowlist) legacyVerifyAndGuard(fn func(string, []string) bool, imagePath, sha string) bool {
+	if !fn(imagePath, a.allowedSigners) {
+		return false // negative results are never cached (see sigVerifiedCached doc)
+	}
+	got, err := hashFile(imagePath)
+	return err == nil && got == sha
 }
 
 // hashFile returns the lowercased hex SHA256 of the file at path, mirroring how
