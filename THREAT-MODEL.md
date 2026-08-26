@@ -190,7 +190,10 @@ properties of the current design that a reviewer should know about.
 9. **Queued alerts may be dropped on interrupt-time shutdown.** On Ctrl+C
    (manual runs only — the scheduled task is hard-terminated by Windows with
    no drain opportunity at all), `Dispatcher.Run`/`Snapshotter.Run` select on
-   ctx.Done vs their buffered channel, so queued work MAY be discarded.
+   ctx.Done vs their buffered channel, so queued work MAY be discarded —
+   including queued popup boxes (the popup worker drops them on cancel so
+   interrupt exit never waits on human clicks; at most the one on-screen box
+   can still delay it).
    *Decision (owner-approved, 2026-08):* accepted, with sentinel.log as the
    backstop — every hit is written there (HIT line) before dispatch, so the
    alert is always on record even when its popup/toast/EventLog delivery is

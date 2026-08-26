@@ -281,7 +281,12 @@ func run(args []string) error {
 	//     task has no console and is hard-terminated): ctx is already cancelled
 	//     when Close() runs, and both workers select on ctx.Done vs their
 	//     channel, so queued hits/captures MAY be dropped (Go picks randomly
-	//     between two ready cases). This is accepted best-effort, and the ONLY
+	//     between two ready cases). Queued POPUP boxes drop too (the popup
+	//     worker checks ctx before taking another box), so interrupt exit is
+	//     bounded by at most the one on-screen box — a blocking MessageBox
+	//     cannot be interrupted, and exit must never wait on human clicks
+	//     (the process holds the single-instance mutex until it returns).
+	//     This is accepted best-effort, and the ONLY
 	//     guaranteed backstop is that every hit is logged to sentinel.log (HIT
 	//     line) BEFORE Submit. Recovery is partial, not guaranteed: the RT
 	//     poller re-feeds recent events on the next start (sysmon_rt_windows.go),
@@ -647,6 +652,11 @@ func buildEngine(fl *flags, st *state.State, logger *slog.Logger) (*rules.Engine
 	// the first Evaluate so the lazy cache sees the verifier.
 	if al != nil {
 		al.SetSigVerifier(sigverify.Pinned{})
+		// Tier-2 degradation warnings must reach sentinel.log: the allowlist's
+		// default sink (slog.Default -> stderr) is a dead handle under the
+		// windowsgui production build, which would make the once-only warning
+		// invisible exactly where it matters.
+		al.SetLogger(logger)
 	}
 	eng, err := rules.New(compiled, al, st)
 	if err != nil {

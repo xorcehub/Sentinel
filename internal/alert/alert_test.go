@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -493,5 +494,102 @@ func waitFor(t *testing.T, cond func() bool, deadline time.Duration) {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// clickBoxAlerter simulates blocking MessageBoxes faithfully: EVERY Alert
+// blocks until the test sends one click token (each box waits for its own
+// click, like a real MessageBox). Records entries pre-block so the test can
+// observe boxes on screen.
+type clickBoxAlerter struct {
+	name    string
+	clicks  chan struct{}
+	entered atomic.Int32
+}
+
+func (c *clickBoxAlerter) Name() string { return c.name }
+
+func (c *clickBoxAlerter) Alert(h event.Hit) error {
+	c.entered.Add(1)
+	<-c.clicks // box on screen, waiting for its click
+	return nil
+}
+
+// TestRunReturnsOnCancelWithQueuedPopups pins the interrupt-shutdown contract:
+// on ctx cancel, Dispatcher.Run must return after dismissing at most the ONE
+// in-flight box — queued boxes drop (same §9 best-effort semantics as the
+// inbound buffer; the hit is already in ALERTS.log/EventLog). Before the
+// ctx-aware popup worker, Run joined a worker that showed every queued box
+// serially, each blocking until dismissed: Ctrl+C then left the process alive
+// (holding the single-instance mutex, so the next scheduled start bowed out)
+// until someone clicked through all popups — and a second Ctrl+C was
+// swallowed because stop() had not run yet.
+//
+// Old code fails deterministically: after the one click, the worker ranges on
+// to box 2 and blocks forever (the test never clicks again). New code returns
+// via the ctx.Err() pre-check before taking another box.
+func TestRunReturnsOnCancelWithQueuedPopups(t *testing.T) {
+	popup := &clickBoxAlerter{name: "popup", clicks: make(chan struct{})}
+	d := New([]Alerter{popup}, 16, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); d.Run(ctx) }()
+
+	for i := 0; i < 3; i++ {
+		if !d.Submit(event.Hit{RuleID: "P", Severity: event.SevCritical, AlertTo: []string{"popup"}}) {
+			t.Fatal("submit failed")
+		}
+	}
+	// All 3 must be queued (Delivered==3) and box 1 on screen (entered==1)
+	// before we cancel — this is the exact Ctrl+C-with-pending-popups state.
+	waitFor(t, func() bool { return d.Delivered() == 3 && popup.entered.Load() == 1 }, 2*time.Second)
+
+	cancel()
+	popup.clicks <- struct{}{} // dismiss the ONE in-flight box
+
+	select {
+	case <-done:
+		// Run returned without waiting for the queued boxes to be dismissed.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dispatcher.Run did not return after cancel + one click: " +
+			"queued popups were drained serially — interrupt shutdown stalls until every box is clicked")
+	}
+	if got := popup.entered.Load(); got != 1 {
+		t.Fatalf("entered=%d boxes, want 1: queued boxes must not be shown after cancel", got)
+	}
+}
+
+// TestPopupQueueDrainsOnCleanClose pins the CLEAN shutdown path: Close() with
+// ctx NOT cancelled drains every queued popup (the deliberate 5b7ef38
+// behavior). The cancel-path drop (previous test) must not weaken this: after
+// Close, each queued box is shown serially and dismissed, and only then does
+// Run return.
+func TestPopupQueueDrainsOnCleanClose(t *testing.T) {
+	popup := &clickBoxAlerter{name: "popup", clicks: make(chan struct{})}
+	d := New([]Alerter{popup}, 16, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); d.Run(ctx) }()
+
+	for i := 0; i < 3; i++ {
+		if !d.Submit(event.Hit{RuleID: "P", Severity: event.SevCritical, AlertTo: []string{"popup"}}) {
+			t.Fatal("submit failed")
+		}
+	}
+	waitFor(t, func() bool { return popup.entered.Load() == 1 }, 2*time.Second)
+
+	d.Close() // clean path: no cancel, channel-closed drain
+	for i := 0; i < 3; i++ {
+		popup.clicks <- struct{}{} // click each box as it appears
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after Close + all boxes dismissed")
+	}
+	if got := popup.entered.Load(); got != 3 {
+		t.Fatalf("entered=%d boxes, want 3: clean Close must drain every queued popup", got)
 	}
 }
