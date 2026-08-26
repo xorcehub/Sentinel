@@ -235,7 +235,12 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) handleEvent(ev event.Event) (hits int, delivered bool) {
-	delivered = true
+	// No dispatcher wired ⇒ hits reach no alerter ⇒ nothing was delivered.
+	// Must default false, not true: callers that latch alert-once state
+	// (baseline Option-A marking) rely on it to avoid permanently silencing
+	// an entry whose alert never reached any channel (e.g. ALERTS.log failed
+	// to open and main degraded to a nil dispatcher).
+	delivered = a.opts.Dispatcher != nil
 	a.stats.eventsSeen.Add(1)
 	// H1 telemetry-lost tracking: only REAL Sysmon events count as flow.
 	// Baseline pseudo-events are excluded — they'd mask a dead Sysmon channel.

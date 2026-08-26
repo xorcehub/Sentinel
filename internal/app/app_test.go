@@ -259,12 +259,16 @@ func TestBaselineAlertOnceRoutesAndDedups(t *testing.T) {
 	defer st.Close()
 
 	var hits atomic.Uint64
+	// Delivery must be real for Option-A marking: a wired dispatcher whose
+	// Submit succeeds is what makes `delivered` true (nil dispatcher ⇒ false).
+	la := alert.NewLogAlerterTo(&bytes.Buffer{})
 	a, err := New(Options{
-		Logger:   discardLogger(),
-		Ingester: mock.New(), // empty; we drive baseline routing directly
-		Engine:   eng,
-		OnHit:    func(event.Hit) { hits.Add(1) },
-		Baseline: BaselineConfig{Enabled: true, State: st},
+		Logger:     discardLogger(),
+		Ingester:   mock.New(), // empty; we drive baseline routing directly
+		Engine:     eng,
+		Dispatcher: alert.New([]alert.Alerter{la}, 256, discardLogger()),
+		OnHit:      func(event.Hit) { hits.Add(1) },
+		Baseline:   BaselineConfig{Enabled: true, State: st},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -314,6 +318,57 @@ func TestBaselineAlertOnceRoutesAndDedups(t *testing.T) {
 // --- helpers ---
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// TestBaselineNotMarkedWithoutDispatcher: no dispatcher wired ⇒ nothing was
+// delivered to an alerter ⇒ the entry must NOT be latched alerted (Option A),
+// or a nil-dispatcher run would permanently silence it. Regression test:
+// `delivered` used to default true, marking entries with zero delivery.
+func TestBaselineNotMarkedWithoutDispatcher(t *testing.T) {
+	rs, err := sigmaeval.Load([]byte(baselineRuleYAML))
+	if err != nil {
+		t.Fatalf("sigmaeval Load: %v", err)
+	}
+	eng, err := rules.New(rs, nil, newFakeDedup())
+	if err != nil {
+		t.Fatalf("rules.New: %v", err)
+	}
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer st.Close()
+
+	a, err := New(Options{
+		Logger:   discardLogger(),
+		Ingester: mock.New(),
+		Engine:   eng,
+		// Dispatcher deliberately nil: ALERTS.log failed to open in main.
+		Baseline: BaselineConfig{Enabled: true, State: st},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const runKey = `HKLM\Software\Microsoft\Windows\CurrentVersion\Run`
+	clean := baseline.Snapshot{Entries: []baseline.Entry{{Location: runKey, Entry: "A"}}}
+	daily := baseline.Snapshot{Entries: []baseline.Entry{
+		{Location: runKey, Entry: "A"},
+		{Location: runKey, Entry: "Evil", Launch: `C:\ProgramData\evil.exe`},
+	}}
+
+	// Both scans: hit fires (BASE-001 matched) but nothing delivered → entry
+	// must stay un-marked so it re-alerts once a dispatcher exists again.
+	for i := 1; i <= 2; i++ {
+		newN, fired := a.routeBaselineDiff(clean, daily)
+		if newN != 1 || fired != 0 {
+			t.Fatalf("scan %d: new=%d fired=%d, want 1/0 (undelivered must not count)", i, newN, fired)
+		}
+	}
+	key := baseline.Entry{Location: runKey, Entry: "Evil", Launch: `C:\ProgramData\evil.exe`}.Key()
+	if st.BaselineAlerted(key) {
+		t.Fatal("entry was marked alerted with zero delivery — permanent silence bug")
+	}
+}
 
 func hugeEventStream() []event.Event {
 	out := make([]event.Event, 10000)
@@ -452,12 +507,14 @@ func TestRouteBaselineDiffMultipleNewEntries(t *testing.T) {
 	defer st.Close()
 
 	var hits atomic.Uint64
+	la := alert.NewLogAlerterTo(&bytes.Buffer{})
 	a, err := New(Options{
-		Logger:   discardLogger(),
-		Ingester: mock.New(),
-		Engine:   eng,
-		OnHit:    func(event.Hit) { hits.Add(1) },
-		Baseline: BaselineConfig{Enabled: true, State: st},
+		Logger:     discardLogger(),
+		Ingester:   mock.New(),
+		Engine:     eng,
+		Dispatcher: alert.New([]alert.Alerter{la}, 256, discardLogger()),
+		OnHit:      func(event.Hit) { hits.Add(1) },
+		Baseline:   BaselineConfig{Enabled: true, State: st},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
