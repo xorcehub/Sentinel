@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -421,4 +423,36 @@ func TestSubmitAfterCloseIsNoop(t *testing.T) {
 	if s.Submit(Request{Path: `C:\does\not\exist`}) {
 		t.Fatal("Submit after Close returned true; want false (no-op)")
 	}
+}
+
+// Regression for the send-then-Add WaitGroup race: with wg.Add AFTER the
+// channel send, a worker that received the request and finished capture() (a
+// lost-race capture is just a handful of syscalls) could hit the deferred
+// wg.Done() on a zero counter -> "sync: negative WaitGroup counter" panic.
+// Hammer Submit/Run/Wait concurrently; run under -race in CI.
+func TestSubmitWaitGroupOrderUnderLoad(t *testing.T) {
+	s, err := New(t.TempDir(), 1, 0, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.Run(context.Background())
+	lostDir := t.TempDir()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				s.Submit(Request{
+					Path:     filepath.Join(lostDir, "gone.txt"), // always lost-race: fast capture path
+					RecordID: uint64(n*1000 + j),
+				})
+			}
+		}(i)
+	}
+	wg.Wait()
+	// Shutdown MUST be Close-first: cancelling before drain would strand queued
+	// requests with outstanding wg reservations and hang Wait below.
+	s.Close()
+	s.Wait() // panics (negative counter) if Done can outrun Add
 }

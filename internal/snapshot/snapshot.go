@@ -116,20 +116,27 @@ func New(dir string, perFileMaxKB, totalMaxMB int, log *slog.Logger) (*Snapshott
 
 // Submit queues a file for snapshotting. Non-blocking: returns false (and
 // increments dropped) if the buffer is full, and also returns false after Close
-// (no-op). Safe against Close: the closed check and the channel send happen
-// under closedMu, so a send can never race close(s.in) into a panic.
+// (no-op). Safe against Close: the closed check, send and wg.Add happen under
+// closedMu, so a send can never race close(s.in) into a panic.
+// WaitGroup ordering: wg.Add(1) happens BEFORE the channel send (rollback Done
+// on the drop path). The reverse — send-then-Add, as an earlier revision had —
+// lets the worker receive, run capture() to completion and hit the deferred
+// wg.Done() before Add executes: "sync: negative WaitGroup counter" panic.
+// Add-before-send guarantees the counter is ≥1 before any receiver can observe
+// the request.
 func (s *Snapshotter) Submit(r Request) bool {
 	s.closedMu.Lock()
 	if s.closed {
 		s.closedMu.Unlock()
 		return false
 	}
+	s.wg.Add(1)
 	select {
 	case s.in <- r:
-		s.wg.Add(1)
 		s.closedMu.Unlock()
 		return true
 	default:
+		s.wg.Done() // nothing queued; undo the reservation
 		s.closedMu.Unlock()
 		s.dropped.Add(1)
 		s.log.Warn("snapshot buffer full; request dropped", "path", r.Path)
