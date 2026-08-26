@@ -745,8 +745,12 @@ func (a *App) runBaselineScan(ctx context.Context) error {
 // produced hits AND the dispatcher accepted all of them. Otherwise it stays
 // unmarked and retries next scan — failing open to duplicate alerts, never
 // failing closed to permanent silence. This also covers BASE-001 missing from
-// the loaded catalog (hits==0: nothing fired, nothing marked) and a contained
-// panic inside handleEvent.
+// the loaded catalog (hits==0: nothing fired, nothing marked).
+// ponytail ceiling: a PANIC inside handleEvent on this path is NOT contained —
+// the recover lives in Run's drain loop only, so it would kill the baseline
+// goroutine (entry stays unmarked = safe direction, but the loop dies). Add a
+// local recover here if a panic is ever observed on attacker-shaped baseline
+// pseudo-events.
 func (a *App) routeBaselineDiff(clean, daily baseline.Snapshot) (newN, fired int) {
 	newEntries := baseline.DiffEntries(clean, daily)
 	newN = len(newEntries)
