@@ -161,6 +161,7 @@ func (a *App) Run(ctx context.Context) error {
 	// joins below block forever on the clean-close path and Run never returns
 	// (reproduced: -mock hangs holding the single-instance mutex).
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // leak guard for early returns (e.g. Ingester.Start failure); idempotent
 	ch, err := a.opts.Ingester.Start(ctx)
 	if err != nil {
 		return fmt.Errorf("start ingester: %w", err)
