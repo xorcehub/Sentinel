@@ -267,21 +267,26 @@ func run(args []string) error {
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
-	// Shutdown order matters: cancel ctx FIRST so the dispatcher drains its
-	// buffered hits and the snapshotter finishes pending copies BEFORE the
-	// deferred logCleanup/st.Close run — previously Close raced the drain against
-	// log-file closure, losing shutdown-window alerts and log lines, and neither
-	// worker was ever joined. Close afterwards is then a harmless no-op for the
-	// workers (already exited) but still blocks late Submits.
-	stop()
-	<-dispDone
-	<-snapDone
+	// Shutdown order matters, and the obvious-looking "cancel first" is wrong:
+	// both workers exit IMMEDIATELY on ctx.Done (Dispatcher.Run drops buffered
+	// hits per its own doc; snapshotter likewise), so cancelling first would
+	// deterministically discard everything queued at shutdown. Closing each
+	// worker's channel FIRST makes Run drain all buffered work (dispatching
+	// alerters / finishing pending copies) and return via the closed-channel
+	// path; the joins then guarantee quiescence BEFORE the deferred
+	// logCleanup/st.Close run — fixing the original race (Close racing the drain
+	// against log-file closure) without losing shutdown-window alerts. Close()
+	// afterwards is a no-op for the workers (already exited) but still blocks
+	// late Submits.
 	if disp != nil {
 		disp.Close()
 	}
 	if snap != nil {
 		snap.Close()
 	}
+	<-dispDone
+	<-snapDone
+	stop() // restore signal handling; cancel for anything still watching
 	logger.Info("sentinel exited cleanly")
 	return nil
 }
