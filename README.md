@@ -24,11 +24,11 @@ Deliberately scoped to one operator, one box — see [Boundaries](#boundaries).
 | | |
 |---|---|
 | **Role** | Single-host behavior detector + forensic capture |
-| **Language** | Go (module `sentinel`, Go 1.26) — ~7.5k LOC core + ~7.4k tests, 78 files, 36 test files, 3 fuzz targets |
+| **Language** | Go (module `sentinel`, Go 1.26) — ~8.0k LOC core + ~8.2k tests, 82 files, 40 test files, 3 fuzz targets |
 | **Platform** | Windows 10 1607+ / Windows 11 (latest Sysmon from Sysinternals; installer pulls the current release, no version is pinned) |
 | **Telemetry source** | Sysmon (real-time, 1s poll) + Sysinternals Autoruns (daily persistence diff) |
 | **Detection paradigms** | Catch-by-act behavior rules + catch-by-result baseline diff |
-| **Coverage** | **25 hand-curated rules** across 8 categories, mapping to ~20 MITRE ATT&CK techniques |
+| **Coverage** | **26 hand-curated rules** across 9 categories, mapping to ~20 MITRE ATT&CK techniques |
 | **License** | MIT — [`LICENSE`](LICENSE); deps MIT/BSD/Apache only — [`THIRDPARTY.md`](THIRDPARTY.md) |
 | **Threat model** | Self-assessed — [`THREAT-MODEL.md`](THREAT-MODEL.md). Read before deploying. |
 
@@ -41,10 +41,14 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
 
 - Reads `Microsoft-Windows-Sysmon/Operational` in real time (1s poll; a native
   `EvtSubscribe` path exists but is broken — see `-sysmon-native`).
-- Evaluates **25 Sigma-style rules** (in-house evaluator, no external Sigma
+- Evaluates **26 Sigma-style rules** (in-house evaluator, no external Sigma
   library) across persistence, execution, network, credential, injection,
-  evasion, baseline, and config-tamper. Rules live in [`rules.d/`](rules.d)
+  evasion, baseline, config-tamper, and telemetry-integrity. Rules live in [`rules.d/`](rules.d)
   as Sigma YAML with an `x-sentinel:` extension block for routing/severity.
+- **Watches its own telemetry.** If no Sysmon event arrives for 10 minutes
+  (default), the daemon fires one critical `HEALTH-001` hit per stale episode
+  and flags `sysmon=STALE` in the heartbeat — a dead feed can no longer look
+  like a quiet machine. Sysmon config changes (EID 16) raise `TELEMETRY-001`.
 - On a hit, fans out to four alert channels: **popup, toast, Windows Event
   Log, and `ALERTS.log`**. Every hit gets a per-hit correlation ID (`hid`)
   stamped across the popup, EventLog, and ALERTS.log channels (toast omits it
@@ -98,7 +102,7 @@ sentinel -baseline-now
 ```
 
 Degrades silently when `autorunsc64.exe` isn't installed (one startup warning,
-no daily failures). The daily scan additionally no-ops if no clean baseline
+no daily failures; `install.ps1` step 8 also warns at install time). The daily scan additionally no-ops if no clean baseline
 exists yet.
 
 ---
@@ -161,7 +165,7 @@ exists yet.
 | | T1027 Obfuscated/Random-name Executable | EXEC-004 |
 | | T1204 / T1566 User Execution via Office/Doc parent | EXEC-005 |
 | **Defense Evasion** | T1562.002 Disable Tools: AMSI | EVADE-001 |
-| | T1562.001 Impair Defenses (config tamper) | CONFIG-001 |
+| | T1562.001 Impair Defenses (config tamper) | CONFIG-001, TELEMETRY-001 |
 | | T1055 Process Injection / Hollowing (INJECT-003) | INJECT-003 |
 | **Credential Access** | T1555 Credentials from Password Store (browser vault) | CRED-001 |
 | | T1003.001 LSASS Memory | CRED-002 |
@@ -268,7 +272,7 @@ From an elevated PowerShell in the repo root:
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-`install.ps1` runs seven idempotent steps:
+`install.ps1` runs eight idempotent steps:
 
 1. Build `sentinel.exe` + `sentinel-tray.exe` (with `-H windowsgui`)
 2. Install Sysmon + SwiftOnSecurity base config (re-applies SwiftOnSecurity if already installed)
@@ -279,6 +283,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 6. Start the task
 7. Install the toast relay (`HKLM\...\Run\SentinelTray`, started now and at
    every future logon)
+8. Check for `autorunsc64.exe` (exe dir, `C:\Tools\Autoruns`, Sysinternals
+   dir, PATH). Missing = the daily baseline diff silently disabled — the
+   installer warns with download instructions; never fails the install.
 
 Safe to re-run. Output paths (relative to the repo root):
 
