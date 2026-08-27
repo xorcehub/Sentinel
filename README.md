@@ -50,7 +50,11 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
   and flags `sysmon=STALE` in the heartbeat — a dead feed can no longer look
   like a quiet machine. Sysmon config changes (EID 16) raise `TELEMETRY-001`.
 - On a hit, fans out to four alert channels: **popup, toast, Windows Event
-  Log, and `ALERTS.log`**. Every hit gets a per-hit correlation ID (`hid`)
+  Log, and `ALERTS.log`**. Every severity toasts (suspicious silently, no
+  banner sound). With popup on, criticals also toast silently alongside the
+  MessageBox; the installed task's `-popup=false` (an unattended daemon
+  shouldn't block on a click) instead makes the critical hit's toast the loud
+  looping-alarm variant — same channel, louder tier. Every hit gets a per-hit correlation ID (`hid`)
   stamped across the popup, EventLog, and ALERTS.log channels (toast omits it
   — too little room).
 - Forensically captures files matching `file_capture.patterns` in
@@ -188,8 +192,11 @@ exists yet.
 - **Invariant tests** pin the load-bearing security properties:
   `catalog_blindspot_test.go` (detections survive a hostile allowlist),
   `noise_blinds_test.go` (the noise filter can't suppress a real hit).
-- **`sentinel -self-test`** runs an incident-coverage regression against the
-  catalog (each rule must fire on its motivating incident vector), then exits.
+- **`sentinel -self-test`** runs an incident-coverage regression of 12
+  representative vectors (core rules' motivating incidents), then exits. The
+  **full** per-rule regression — every catalog rule must fire on its vector
+  against the real shipped config — is
+  `internal/rules/catalog_vector_test.go` (`go test ./internal/rules`).
 - **`sentinel -self-test` is portable** — pure engine check, no mutex,
   ingestion, or alerters. It builds and runs on non-Windows too (the Windows
   alerters compile to no-op stubs behind build tags), so a reviewer on Linux
@@ -334,7 +341,7 @@ apply changes):
 | File | Purpose |
 |------|---------|
 | `rules.d/*.yml` | Sigma rules + `x-sentinel:` extension. Edit to add/tune detection. |
-| `config/allowlist.json` | Trusted binaries, allowed destinations, dev-tool paths, event-log noise filter, `file_capture.patterns`. JSONC (comments allowed). |
+| `config/allowlist.json` | Trusted binaries (incl. Tier-2 hash-gated signature trust, `hash_gated_path`), allowed destinations, dev-tool paths, event-log noise filter, `file_capture.patterns`. JSONC (comments allowed). |
 | `config/sentinel.conf.example` | Documents the runtime knobs and defaults. The daemon currently reads CLI flags (see `sentinel -h`); this file is the spec for the Phase 2 config-file loader. |
 
 ### Adding a rule
@@ -349,7 +356,7 @@ Sigma fields (`title`, `id`, `logsource`, `detection`, `condition`, `level`,
 | Field | Values | Purpose |
 |-------|--------|--------|
 | `id` | mnemonic like `PERSIST-004`, `EXEC-001` | Stable ID stamped in logs, dedup, EventLog, alerts. `EXEC-001` style is conventional. |
-| `severity` | `critical` / `suspicious` / `info` | Routes the alert. `critical` surfaces a blocking popup. |
+| `severity` | `critical` / `suspicious` / `info` | Routes the alert. `critical` surfaces a blocking popup (or, with `-popup=false`, the loud looping-alarm toast) and carries the severity in the toast text. |
 | `alert` | subset of `[popup, toast, log, eventlog]` | Which channels fire on hit. `log` should always be present. |
 
 **Optional `x-sentinel:` fields:**
@@ -395,7 +402,8 @@ x-sentinel:
 Mnemonic IDs are stable across logs, dedup state, and the self-test regression
 (`sentinel -self-test`). When you add a rule, pick a category prefix that
 matches an existing one (`EXEC-`, `PERSIST-`, `NET-`, `CRED-`, `INJECT-`,
-`EVADE-`, `BASE-`, `CONFIG-`) and the next free number, or mint a new prefix.
+`EVADE-`, `BASE-`, `CONFIG-`, `TELEMETRY-`) and the next free number, or mint
+a new prefix.
 
 ### All CLI flags
 
