@@ -230,9 +230,11 @@ func run(args []string) error {
 	// Windows-only alerters (popup/eventlog/toast) register too. If the log
 	// file can't open, degrade to no-dispatcher (hits still logged via slog).
 	disp := buildDispatcher(fl, logger)
+	dispDone := make(chan struct{})
 	if disp != nil {
-		go disp.Run(ctx)
-		defer disp.Close()
+		go func() { defer close(dispDone); disp.Run(ctx) }()
+	} else {
+		close(dispDone) // nothing to join
 	}
 
 	// Snapshot vault: copies file_capture-matched files (EID 11) to disk before
@@ -241,9 +243,11 @@ func run(args []string) error {
 	// Submit is non-blocking so a capture flood never stalls ingestion or
 	// detection (see internal/snapshot).
 	snap := buildSnapshot(fl, logger)
+	snapDone := make(chan struct{})
 	if snap != nil {
-		go snap.Run(ctx)
-		defer snap.Close()
+		go func() { defer close(snapDone); snap.Run(ctx) }()
+	} else {
+		close(snapDone) // nothing to join
 	}
 
 	a, err := app.New(app.Options{
@@ -263,6 +267,50 @@ func run(args []string) error {
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
+	// Shutdown ordering — and what it does and does NOT guarantee (design
+	// decision, see THREAT-MODEL.md "Known limitations"):
+	//
+	//   • Clean feed-close path (ingester closed, no signal): closing each
+	//     worker's channel FIRST makes Run drain all buffered work and return
+	//     via the closed-channel path; the joins guarantee quiescence BEFORE
+	//     the deferred logCleanup/st.Close run. Queued alerts ARE delivered.
+	//     (Production-reachable only via -mock/tests: the RT poller closes its
+	//     feed only on cancel, i.e. the interrupt path below.)
+	//
+	//   • Signal/cancel path (Ctrl+C — only during manual runs; the scheduled
+	//     task has no console and is hard-terminated): ctx is already cancelled
+	//     when Close() runs, and both workers select on ctx.Done vs their
+	//     channel, so queued hits/captures MAY be dropped (Go picks randomly
+	//     between two ready cases). Queued POPUP boxes drop too (the popup
+	//     worker checks ctx before taking another box), so interrupt exit is
+	//     bounded by at most the one on-screen box — a blocking MessageBox
+	//     cannot be interrupted, and exit must never wait on human clicks
+	//     (the process holds the single-instance mutex until it returns).
+	//     This is accepted best-effort, and the ONLY
+	//     guaranteed backstop is that every hit is logged to sentinel.log (HIT
+	//     line) BEFORE Submit. Recovery is partial, not guaranteed: the RT
+	//     poller re-feeds recent events on the next start (sysmon_rt_windows.go),
+	//     but (a) a rule whose dedup entry is still fresh (15 min, persisted,
+	//     stamped at Evaluate time — before Submit) replays as suppressed, and
+	//     (b) a baseline hit Submit-ACCEPTED into the buffer and then dropped
+	//     here still latches Option-A marking, permanently silencing that entry
+	//     until a re-snapshot (engine bypasses dedup for baseline events, but
+	//     BaselineAlerted(key) short-circuits the replay). Both windows are
+	//     milliseconds wide; the sentinel.log HIT line is the forensic record.
+	//     Do NOT "fix" by draining on cancel — that would delay interrupt
+	//     handling.
+	//
+	// Close() afterwards is a no-op for the workers (already exited) but still
+	// blocks late Submits.
+	if disp != nil {
+		disp.Close()
+	}
+	if snap != nil {
+		snap.Close()
+	}
+	<-dispDone
+	<-snapDone
+	stop() // restore signal handling; cancel for anything still watching
 	logger.Info("sentinel exited cleanly")
 	return nil
 }
@@ -598,10 +646,17 @@ func buildEngine(fl *flags, st *state.State, logger *slog.Logger) (*rules.Engine
 		al = nil
 	}
 	// Inject the Tier-2 (hash_gated_path) signature verifier. On Windows this is
-	// native WinVerifyTrust; on non-Windows (CI/dev) the stub fails closed. Must
-	// be set before the first Evaluate so the lazy cache sees the verifier.
+	// native WinVerifyTrust run under ONE pinning open (Pinned: rename/replace/
+	// content-write blocked for the duration, closing the by-name reopen swap
+	// window); on non-Windows (CI/dev) the stub fails closed. Must be set before
+	// the first Evaluate so the lazy cache sees the verifier.
 	if al != nil {
-		al.SetSigVerifier(sigverify.IsSignedBy)
+		al.SetSigVerifier(sigverify.Pinned{})
+		// Tier-2 degradation warnings must reach sentinel.log: the allowlist's
+		// default sink (slog.Default -> stderr) is a dead handle under the
+		// windowsgui production build, which would make the once-only warning
+		// invisible exactly where it matters.
+		al.SetLogger(logger)
 	}
 	eng, err := rules.New(compiled, al, st)
 	if err != nil {

@@ -216,9 +216,15 @@ func (s *sysmonRT) Start(ctx context.Context) (<-chan event.Event, error) {
 
 func (s *sysmonRT) pollLoop(ctx context.Context, out chan<- event.Event) {
 	defer close(out)
-	// highWater tracks the max RecordId we've already emitted; -1 = emit the
-	// most recent batch on first poll (good for smoke-test visibility), then go
-	// forward incrementally.
+	// highWater tracks the max RecordId we've already emitted. Seeded at -1
+	// so the first poll fetches the newest batch REGARDLESS of persisted state —
+	// this is a DELIBERATE design decision (owner-approved), not an oversight:
+	// after a restart the daemon re-evaluates recent events so anything that
+	// fired while it was down is still alerted (fail open to duplicates, never
+	// to silence). Per-rule dedup windows are persisted in state.db, so the
+	// re-fed events only re-fire rules whose dedup entry has expired. Do NOT
+	// seed this from state.MaxRecordID — that would silently skip everything
+	// that happened while the daemon was not running.
 	highWater := int64(-1)
 	t := time.NewTicker(s.interval)
 	defer t.Stop()

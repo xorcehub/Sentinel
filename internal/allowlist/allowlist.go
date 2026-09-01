@@ -55,6 +55,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"regexp"
@@ -70,7 +71,19 @@ import (
 // type so the allowlist policy + lazy cache are unit-testable without Windows,
 // and so a nil verifier cleanly means "Tier-2 never auto-trusts" (fail closed).
 // The implementation must be safe for concurrent use.
+//
+// If the injected value also implements PinnedVerifier (sigverify.VerifyAndHash
+// does on Windows), it is preferred: verify + hash then happen under one pinning
+// file open, closing the rename-swap TOCTOU between the two observations.
 type SigVerifier func(imagePath string, allowedSigners []string) bool
+
+// PinnedVerifier is the optional stronger contract: one call returns BOTH the
+// trust decision and the SHA256 of exactly the bytes that were judged, taken
+// under a single open that blocks concurrent modification. sha256hex is "" when
+// trusted is false and no hash could be computed.
+type PinnedVerifier interface {
+	VerifyAndHash(imagePath string, allowedSigners []string) (trusted bool, sha256hex string)
+}
 
 // Allowlist is the compiled, read-optimized form. All methods are safe for
 // concurrent use: the compiled structures (paths/cidrs/filters) are immutable
@@ -89,9 +102,22 @@ type Allowlist struct {
 	logFilter      []*logFilterEntry // event_log_filter: suppresses the per-event DEBUG dump only
 	capPatterns    []*regexp.Regexp  // file_capture: path patterns matched on EID 11/23 TargetFile
 
-	sigVerify SigVerifier // injected; nil = Tier-2 never auto-trusts (fail closed)
+	sigVerify any // SigVerifier func, optionally also implementing PinnedVerifier; nil = Tier-2 never auto-trusts (fail closed)
 	mu        sync.RWMutex
 	verified  map[string]bool // Tier-2 lazy cache: lowercased sha256 -> sigVerify(path) result
+
+	// log receives once-only operational warnings (the Tier-2 no-SHA256
+	// degradation). Injected via SetLogger; nil falls back to slog.Default().
+	// The daemon injects its FILE-backed logger: stdlib log and the default
+	// slog write to stderr, which is a dead handle under the windowsgui
+	// production build — the warning would be invisible exactly where it matters.
+	log *slog.Logger
+
+	// tier2NoHashWarn fires once if a Tier-2 path pattern matches an event with
+	// no SHA256 hash — the silent wholesale-Tier-2-loss condition (Sysmon config
+	// drift, forwarded events from a differently-configured box). Fail-closed,
+	// but invisible without this signal.
+	tier2NoHashWarn sync.Once
 	// ponytail: `verified` is unbounded. Ceiling = number of distinct SHA256s ever
 	// seen at a Tier-2 path, which is tiny in practice (a handful of dev-tool
 	// exes per box). It never grows from attacker traffic: an attacker plant at
@@ -263,19 +289,59 @@ func (a *Allowlist) ImageTrusted(e *event.Event) bool {
 		return true
 	}
 	// Tier-2: user-writable path -> require provenance (sig by allowed vendor).
-	if sha != "" && a.pathMatchesHashGated(e.Image) && a.sigVerifiedCached(sha, e.Image) {
-		return true
+	if a.pathMatchesHashGated(e.Image) {
+		if sha == "" {
+			a.tier2NoHashWarn.Do(func() {
+				a.logger().Warn("allowlist: tier-2 path matched but event carries no SHA256 — "+
+					"Tier-2 trust disabled until hashes return (check Sysmon <HashAlgorithms>)", "image", e.Image)
+			})
+		} else if a.sigVerifiedCached(sha, e.Image) {
+			return true
+		}
 	}
 	return false
 }
 
-// SetSigVerifier injects the Tier-2 signature verifier. Call once after Load,
-// before the first Evaluate. nil (the default) means Tier-2 paths never
-// auto-trust — safe (fail closed), just noisier for legit dev tools. The cache
-// is guarded by mu; the verifier itself must be safe for concurrent use.
-func (a *Allowlist) SetSigVerifier(v SigVerifier) {
-	if a == nil {
+// SetLogger injects the operational logger for once-only degradation warnings
+// (e.g. the Tier-2 no-SHA256 signal). Call once after Load, before the first
+// Evaluate (same contract as SetSigVerifier); nil is ignored so an accidental
+// nil injection can't silence the fallback.
+func (a *Allowlist) SetLogger(l *slog.Logger) {
+	if a == nil || l == nil {
 		return
+	}
+	a.mu.Lock()
+	a.log = l
+	a.mu.Unlock()
+}
+
+// logger returns the injected operational logger, or slog.Default() when none
+// was injected (tests / library-style use). Read under RLock so a concurrent
+// SetLogger can't tear the field.
+func (a *Allowlist) logger() *slog.Logger {
+	a.mu.RLock()
+	l := a.log
+	a.mu.RUnlock()
+	if l == nil {
+		return slog.Default()
+	}
+	return l
+}
+
+// SetSigVerifier injects the Tier-2 signature verifier: either a plain
+// SigVerifier func or a PinnedVerifier implementation (production injects
+// sigverify.Pinned{}). Call once after Load, before the first Evaluate.
+// nil (the default) means Tier-2 paths never auto-trust — safe (fail closed),
+// just noisier for legit dev tools. A typed-nil SigVerifier is also rejected
+// here so the documented nil-means-fail-closed contract can't be bypassed by a
+// non-nil interface holding a nil func (which would panic at call time).
+// The cache is guarded by mu; the verifier itself must be safe for concurrent use.
+func (a *Allowlist) SetSigVerifier(v any) {
+	if a == nil || v == nil {
+		return
+	}
+	if fn, ok := v.(SigVerifier); ok && fn == nil {
+		return // typed-nil func: same as no verifier (fail closed)
 	}
 	a.mu.Lock()
 	a.sigVerify = v
@@ -296,21 +362,24 @@ func (a *Allowlist) pathMatchesHashGated(image string) bool {
 	return false
 }
 
-// sigVerifiedCached returns the Tier-2 signature result for sha, verifying
-// on first sight (outside the read lock, so concurrent first-sight checks of
-// different hashes don't serialize) and caching both positive and negative
-// results by hash.
+// sigVerifiedCached returns the Tier-2 signature result for sha, verifying on
+// first sight and caching POSITIVE results by hash. Negative results are
+// deliberately NOT cached: verification failures conflate "verifiably unsigned"
+// with "couldn't verify right now" (AV/updater lock), so caching false would pin
+// a transient failure for process lifetime — a legit dev tool stays distrusted
+// until restart with zero diagnostics. Cost: an actually-unsigned plant re-runs
+// WinVerifyTrust per sighting; acceptable at Tier-2 volumes.
 //
-// TOCTOU guard (re-hash on success): the cache key is `sha` = Sysmon's
-// e.Hashes["SHA256"] computed at EVENT time, but sigVerify reads the file at
-// VERIFY time. Those are two separate observations of the bytes. Without a
-// guard, an attacker could swap a planted malware file to genuine signed bytes
-// inside the verify window, letting winverify pass on the good bytes and poison
-// cache[sha-of-the-malware]=true. So on a PASSING verify we re-hash the file and
-// only cache true if that hash == sha; a mismatch (bytes changed between event
-// and verify) leaves the entry uncached and returns false (fail closed, and the
-// next sighting re-verifies). A file deleted between event and verify likewise
-// fails closed (hashFile errors -> no cache write -> false).
+// Two verifier shapes:
+//   - PinnedVerifier (production, Windows): verify + hash under ONE pinning open;
+//     the returned hash is authoritative for the bytes that were judged, closing
+//     the rename-swap attack end to end.
+//   - plain SigVerifier (tests / non-Windows stub): separate opens, guarded by a
+//     re-hash after a passing verify (the original TOCTOU guard).
+//
+// Invariant in both shapes: cache true ONLY if the verified bytes hash to `sha`
+// (Sysmon's event-time observation). A mismatch returns false uncached — fail
+// closed, next sighting re-verifies.
 func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 	a.mu.RLock()
 	if v, ok := a.verified[sha]; ok {
@@ -322,16 +391,23 @@ func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 	if vf == nil {
 		return false
 	}
-	result := vf(imagePath, a.allowedSigners)
-	// TOCTOU guard: a passing verify proves the CURRENT on-disk bytes are signed
-	// by an allowed vendor, but `sha` was computed from the bytes at event time.
-	// Only trust the verify if those are the same bytes: re-hash now and require a
-	// match. Any divergence (swap-to-signed attack, file replaced mid-window) and
-	// we do NOT cache true — return false so the caller fails closed.
-	if result {
-		if got, err := hashFile(imagePath); err != nil || got != sha {
+	switch v := vf.(type) {
+	case PinnedVerifier:
+		trusted, got := v.VerifyAndHash(imagePath, a.allowedSigners)
+		if !trusted || got != sha {
+			return false // unsigned, unreadable, or bytes changed since event time
+		}
+	case SigVerifier:
+		if !a.legacyVerifyAndGuard(v, imagePath, sha) {
 			return false
 		}
+	case func(string, []string) bool:
+		// Unnamed func literal (e.g. test fakes): same contract as SigVerifier.
+		if !a.legacyVerifyAndGuard(v, imagePath, sha) {
+			return false
+		}
+	default:
+		return false // unknown/nil verifier shape: fail closed
 	}
 	a.mu.Lock()
 	// Re-check: another goroutine may have populated the same hash meanwhile.
@@ -339,9 +415,20 @@ func (a *Allowlist) sigVerifiedCached(sha, imagePath string) bool {
 		a.mu.Unlock()
 		return v
 	}
-	a.verified[sha] = result
+	a.verified[sha] = true
 	a.mu.Unlock()
-	return result
+	return true
+}
+
+// legacyVerifyAndGuard runs the plain SigVerifier shape: verify by path, then
+// the TOCTOU guard — re-hash and require a match with the event-time observation
+// before allowing a true cache write. Returns whether trust may proceed.
+func (a *Allowlist) legacyVerifyAndGuard(fn func(string, []string) bool, imagePath, sha string) bool {
+	if !fn(imagePath, a.allowedSigners) {
+		return false // negative results are never cached (see sigVerifiedCached doc)
+	}
+	got, err := hashFile(imagePath)
+	return err == nil && got == sha
 }
 
 // hashFile returns the lowercased hex SHA256 of the file at path, mirroring how

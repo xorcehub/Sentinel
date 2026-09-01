@@ -97,16 +97,36 @@ func (d *Dispatcher) Delivered() uint64 { return d.delivered.Load() }
 // Run drives dispatch until ctx is cancelled. Spawns the popup worker.
 // NOTE: on ctx cancellation it returns immediately — buffered inbound hits are
 // dropped, not drained (shutdown is best-effort; everything already dispatched
-// is in ALERTS.log/the event log). The deferred close(d.popupCh) lets the
-// popup worker finish queued boxes before Run's callers proceed.
+// is in ALERTS.log/the event log). The popup worker likewise drops QUEUED boxes
+// on cancel: a blocking MessageBox waits for a human click, so joining it would
+// stall interrupt shutdown (and the single-instance mutex release) for
+// unbounded wall-clock. At most ONE already-on-screen box can still delay exit —
+// a shown MessageBox cannot be interrupted. On the clean path (Close, no
+// cancel) the deferred close(d.popupCh) lets the popup worker finish every
+// queued box before Run's callers proceed.
 func (d *Dispatcher) Run(ctx context.Context) {
 	// popup worker: serializes blocking MessageBoxes (one at a time) so we never
 	// paint two at once, and overflow is counted not infinite-buffered.
 	popupDone := make(chan struct{})
 	go func() {
 		defer close(popupDone)
-		for h := range d.popupCh {
-			d.callAlerter("popup", h)
+		for {
+			// Pre-check BEFORE the select: once ctx is cancelled, do not take on
+			// another queued box even if one is ready — after a blocking box is
+			// dismissed, a bare select would race ctx.Done vs a queued popup and
+			// show one more box ~half the time. Bounded exit beats that.
+			if ctx.Err() != nil {
+				return // queued popups drop on cancel — §9 best-effort shutdown
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case h, ok := <-d.popupCh:
+				if !ok {
+					return
+				}
+				d.callAlerter("popup", h)
+			}
 		}
 	}()
 

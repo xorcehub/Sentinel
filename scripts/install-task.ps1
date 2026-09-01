@@ -42,8 +42,9 @@ param(
     # -AsSystem: run the task as NT AUTHORITY\SYSTEM instead of the current
     # user. REQUIRED to read Sysmon's FileDelete archive (C:\SentinelArchive),
     # which Sysmon locks to SYSTEM-only so hard that even admins get access-
-    # denied. Tradeoff: a SYSTEM task runs in Session 0 and CANNOT show desktop
-    # popups/toast — only log + eventlog alerts reach the user. Use -AsSystem
+    # denied. Tradeoff: a SYSTEM task runs in Session 0 — toasts must relay via
+    # sentinel-tray (pipe), popups are disabled (-popup=false, see below) and
+    # criticals escalate to a loud looping toast. Use -AsSystem
     # when the snapshot vault (file capture) matters more than popups.
     [switch]$AsSystem,
     # Vault + archive dirs. Only used with -AsSystem (the archive is
@@ -62,8 +63,9 @@ if ($AsSystem) {
     if (-not $SnapshotDir) {
         $SnapshotDir = Join-Path (Split-Path $ExePath -Parent) "forensics\sentinel-vault"
     }
-    # -popup=false: Session 0 (SYSTEM) can't surface MessageBox popups on the desktop;
-    # disabling it escalates criticals to a loud looping-alarm toast (relayed by sentinel-tray).
+    # -popup=false: an unattended SYSTEM daemon shouldn't block on a MessageBox
+    # waiting for a human click; disabling it escalates criticals to a loud
+    # looping-alarm toast (relayed by sentinel-tray).
     $actionArg = "-popup=false -snapshot-dir `"$SnapshotDir`" -sysmon-archive-dir `"$ArchiveDir`""
 }
 $action    = New-ScheduledTaskAction -Execute $ExePath -Argument $actionArg -WorkingDirectory (Split-Path $ExePath -Parent)

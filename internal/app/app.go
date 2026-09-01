@@ -119,6 +119,12 @@ type App struct {
 	// healthAlerted latches the alert-once-per-stale-episode semantics: HEALTH-001
 	// fires once when flow goes stale, and re-arms only when flow resumes.
 	healthAlerted atomic.Bool
+	// hbMu serializes writeHeartbeat: on the clean feed-close path Run calls it
+	// from the drain loop while the ticker goroutine may still be mid-write, and
+	// two unsynchronized os.WriteFile(O_TRUNC) calls on the same path can
+	// transiently present an empty file to tailing monitors. One mutex, no torn
+	// writes, deterministic final line.
+	hbMu sync.Mutex
 	// idGen mints conforming hit IDs for synthetic hits (HEALTH-001) — same
 	// format as every rule hit, so correlation tooling sees one shape.
 	idGen *rules.HitIDGen
@@ -149,6 +155,13 @@ func (a *App) PanicsContained() uint64 { return a.stats.panicsContained.Load() }
 // Run drives ingestion until the context is cancelled or the feed closes.
 // It returns nil on clean completion (channel closed) or ctx.Err() on cancel.
 func (a *App) Run(ctx context.Context) error {
+	// Derived ctx so Run's own exit (including a CLEAN ingester-channel close,
+	// which does not cancel the caller's ctx) tears down the heartbeat and
+	// baseline goroutines. Without this, the deferred <-hbDone / <-baselineDone
+	// joins below block forever on the clean-close path and Run never returns
+	// (reproduced: -mock hangs holding the single-instance mutex).
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // leak guard for early returns (e.g. Ingester.Start failure); idempotent
 	ch, err := a.opts.Ingester.Start(ctx)
 	if err != nil {
 		return fmt.Errorf("start ingester: %w", err)
@@ -181,6 +194,9 @@ func (a *App) Run(ctx context.Context) error {
 		close(baselineDone)
 	}
 	defer func() { <-baselineDone }()
+	// cancel must run BEFORE the two joins above resolve their goroutines, so it
+	// is deferred here (LIFO: cancel -> join baseline -> join heartbeat).
+	defer cancel()
 
 	for {
 		select {
@@ -218,7 +234,13 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-func (a *App) handleEvent(ev event.Event) {
+func (a *App) handleEvent(ev event.Event) (hits int, delivered bool) {
+	// No dispatcher wired ⇒ hits reach no alerter ⇒ nothing was delivered.
+	// Must default false, not true: callers that latch alert-once state
+	// (baseline Option-A marking) rely on it to avoid permanently silencing
+	// an entry whose alert never reached any channel (e.g. ALERTS.log failed
+	// to open and main degraded to a nil dispatcher).
+	delivered = a.opts.Dispatcher != nil
 	a.stats.eventsSeen.Add(1)
 	// H1 telemetry-lost tracking: only REAL Sysmon events count as flow.
 	// Baseline pseudo-events are excluded — they'd mask a dead Sysmon channel.
@@ -328,6 +350,7 @@ func (a *App) handleEvent(ev event.Event) {
 	}
 	res := a.opts.Engine.Evaluate(&ev)
 	for _, h := range res.Hits {
+		hits++
 		a.stats.hits.Add(1)
 		a.log.Info("HIT",
 			"hid", h.ID,
@@ -345,7 +368,12 @@ func (a *App) handleEvent(ev event.Event) {
 			a.opts.Snapshot.LinkHit(h.ID, h.Event.CmdLine, h.Event.TargetFile)
 		}
 		if a.opts.Dispatcher != nil {
-			a.opts.Dispatcher.Submit(h) // non-blocking; drops+counts on overflow
+			// non-blocking; drops+counts on overflow. A drop must propagate:
+			// callers that latch alert-once state (baseline Option-A) use it to
+			// avoid marking an entry alerted when its hit never reached an alerter.
+			if !a.opts.Dispatcher.Submit(h) {
+				delivered = false
+			}
 		}
 		if a.opts.OnHit != nil {
 			a.opts.OnHit(h)
@@ -371,6 +399,7 @@ func (a *App) handleEvent(ev event.Event) {
 			"reason", s.Reason,
 			"image", s.Event.Image)
 	}
+	return hits, delivered
 }
 
 func (a *App) heartbeat(ctx context.Context, interval time.Duration, done chan<- struct{}) {
@@ -394,6 +423,8 @@ func (a *App) heartbeat(ctx context.Context, interval time.Duration, done chan<-
 // handleEvent). final=true (shutdown path) skips the check — an orderly exit
 // must not manufacture a health alarm.
 func (a *App) writeHeartbeat(t time.Time, final bool) {
+	a.hbMu.Lock()
+	defer a.hbMu.Unlock()
 	// allowlist status surfaces a broken config/allowlist.json (parse error or
 	// missing file) that would otherwise silently disable forensic capture
 	// (ShouldCapture) and the log-noise filter — detection itself fails open,
@@ -426,8 +457,15 @@ func (a *App) writeHeartbeat(t time.Time, final bool) {
 		sysmon = "STALE"
 		a.fireHealth001(t, stale, threshold)
 	}
-	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d allowlist=%s sysmon=%s\n",
-		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained(), allowlist, sysmon)
+	// Dropped = dispatcher overflow counter (inbound buffer full / post-Close).
+	// The dispatcher's own doc says to surface this in the heartbeat: drops are
+	// otherwise invisible to the operator's periodic health signal.
+	dropped := uint64(0)
+	if a.opts.Dispatcher != nil {
+		dropped = a.opts.Dispatcher.Dropped()
+	}
+	line := fmt.Sprintf("[%s] alive events_total=%d hits_total=%d suppressed_total=%d panics_contained=%d allowlist=%s sysmon=%s dropped=%d\n",
+		t.Format(time.RFC3339), a.EventsSeen(), a.Hits(), a.Suppressed(), a.PanicsContained(), allowlist, sysmon, dropped)
 	if err := os.WriteFile(a.opts.HeartbeatPath, []byte(line), 0o644); err != nil {
 		a.log.Warn("heartbeat write failed", "err", err)
 		return
@@ -707,6 +745,17 @@ func (a *App) runBaselineScan(ctx context.Context) error {
 // behavior is testable without shelling out. Option A: each Entry.Key() alerts
 // ONCE; subsequent scans of the same unaddressed entry stay quiet until
 // state.ResetBaselineAlerted() (triggered by re-snapshotting the clean baseline).
+//
+// Marking is gated on DELIVERY: an entry is marked alerted only when handleEvent
+// produced hits AND the dispatcher accepted all of them. Otherwise it stays
+// unmarked and retries next scan — failing open to duplicate alerts, never
+// failing closed to permanent silence. This also covers BASE-001 missing from
+// the loaded catalog (hits==0: nothing fired, nothing marked).
+// ponytail ceiling: a PANIC inside handleEvent on this path is NOT contained —
+// the recover lives in Run's drain loop only, so it would kill the baseline
+// goroutine (entry stays unmarked = safe direction, but the loop dies). Add a
+// local recover here if a panic is ever observed on attacker-shaped baseline
+// pseudo-events.
 func (a *App) routeBaselineDiff(clean, daily baseline.Snapshot) (newN, fired int) {
 	newEntries := baseline.DiffEntries(clean, daily)
 	newN = len(newEntries)
@@ -714,11 +763,24 @@ func (a *App) routeBaselineDiff(clean, daily baseline.Snapshot) (newN, fired int
 		if a.opts.Baseline.State.BaselineAlerted(e.Key()) {
 			continue // already alerted on a prior scan → Option A: stay quiet
 		}
-		a.opts.Baseline.State.MarkBaselineAlerted(e.Key())
+		hits, delivered := 0, true
 		for _, ev := range baseline.EntriesToEvents([]baseline.Entry{e}) {
-			a.handleEvent(ev) // -> engine -> BASE-001 -> dispatcher (toast/log/eventlog)
-			fired++
+			h, d := a.handleEvent(ev) // -> engine -> BASE-001 -> dispatcher
+			hits += h
+			delivered = delivered && d
 		}
+		if !delivered {
+			a.log.Warn("baseline alert NOT delivered; entry left un-marked, will retry next scan",
+				"key", e.Key())
+			continue
+		}
+		if hits == 0 {
+			a.log.Warn("baseline entry matched no rule; left un-marked (is BASE-001 in the catalog?)",
+				"key", e.Key())
+			continue
+		}
+		a.opts.Baseline.State.MarkBaselineAlerted(e.Key())
+		fired += hits
 	}
 	return newN, fired
 }
