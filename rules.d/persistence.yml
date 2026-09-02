@@ -120,7 +120,12 @@ detection:
   selection:
     EventID: 11
     TargetFilename|contains: '\Start Menu\Programs\Startup'
-    TargetFilename|re: '(?i)\.(exe|ps1|bat|cmd|vbs|js|lnk)$'
+    # 2026-09-02b redteam F5: Startup items are ShellExecute'd at logon, so
+    # every script/handler extension outside the old exe|ps1|bat|cmd|vbs|js|lnk
+    # list persisted silently: .hta (mshta), .jse/.vbe/.wsf (wscript), .scr
+    # (scrfile association; association-dependent, kept anyway — quiet either
+    # way is the wrong outcome for a Startup-folder write of that type).
+    TargetFilename|re: '(?i)\.(exe|ps1|bat|cmd|vbs|js|jse|vbe|wsf|hta|scr|lnk)$'
   condition: selection
 level: high
 tags: [attack.persistence, attack.t1547.001]

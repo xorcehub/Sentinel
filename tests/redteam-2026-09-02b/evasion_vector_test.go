@@ -192,26 +192,8 @@ var bypassCases = []bypassCase{
 	// FIRES — PERSIST-003's unanchored '\\Userinit' token substring-matches any
 	// value NAMED Userinit*. Honest log: this hypothesis was wrong.
 
-	// F5 — PERSIST-004 extension list is exe|ps1|bat|cmd|vbs|js|lnk. Startup
-	// items are ShellExecute'd at logon, so every script/handler extension
-	// outside that list persists silently: .hta (mshta), .jse/.vbe (wscript),
-	// .wsf, .scr.
-	{
-		finding: "F5",
-		name:    "Startup\\update.hta (mshta handler, not in extension list)",
-		ev: event.Event{EID: 11, Image: `C:\Users\ju\Downloads\implant.exe`,
-			TargetFile: `C:\Users\ju\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\update.hta`},
-		wantZeroHits:  true,
-		wantQuietRule: "PERSIST-004",
-	},
-	{
-		finding: "F5",
-		name:    "Startup\\update.jse (wscript encoded handler, not in extension list)",
-		ev: event.Event{EID: 11, Image: `C:\Users\ju\Downloads\implant.exe`,
-			TargetFile: `C:\Users\ju\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\update.jse`},
-		wantZeroHits:  true,
-		wantQuietRule: "PERSIST-004",
-	},
+	// F5 FIXED (2026-09-02b, persistence.yml): extension list extended with
+	// jse|vbe|wsf|hta|scr. Rows moved to TestBypassControls (F5-fixed).
 
 	// F6 REFUTED: sigmaeval treats a value LIST under one field as OR, not AND,
 	// so 'Classes\\CLSID' alone satisfies PERSIST-006's selection — LocalServer32
@@ -380,6 +362,18 @@ var controlCases = []controlCase{
 		rule: "PERSIST-003", sev: event.SevCritical,
 		ev: event.Event{EID: 13, Image: `C:\Users\ju\Downloads\implant.exe`,
 			TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\OneDriveUpdate`},
+	},
+	{
+		name: "F5-fixed: Startup\\update.hta fires (mshta handler)",
+		rule: "PERSIST-004", sev: event.SevCritical,
+		ev: event.Event{EID: 11, Image: `C:\Users\ju\Downloads\implant.exe`,
+			TargetFile: `C:\Users\ju\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\update.hta`},
+	},
+	{
+		name: "F5-fixed: Startup\\update.jse fires (wscript encoded handler)",
+		rule: "PERSIST-004", sev: event.SevCritical,
+		ev: event.Event{EID: 11, Image: `C:\Users\ju\Downloads\implant.exe`,
+			TargetFile: `C:\Users\ju\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\update.jse`},
 	},
 	{
 		name: "C4: Startup .ps1 fires",
