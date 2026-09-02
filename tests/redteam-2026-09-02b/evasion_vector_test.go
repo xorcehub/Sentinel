@@ -201,25 +201,10 @@ var bypassCases = []bypassCase{
 	// remaining quiet shape (machine-hive CLSID write, admin-owned payload)
 	// needs an admin writer = out of scope per THREAT-MODEL.
 
-	// F7 — INJECT-002 keys ImageLoaded on (Temp|AppData|ProgramData|Downloads).
-	// An unsigned DLL loaded from Desktop, Documents, or this repo's own tree
-	// is quiet (the regex has no other anchor).
-	{
-		finding: "F7",
-		name:    "unsigned DLL loaded from Desktop",
-		ev: event.Event{EID: 7, Image: `C:\Users\ju\Desktop\loader.exe`,
-			ImageLoaded: `C:\Users\ju\Desktop\payload.dll`, Signed: "false"},
-		wantZeroHits:  true,
-		wantQuietRule: "INJECT-002",
-	},
-	{
-		finding: "F7",
-		name:    "unsigned DLL loaded from the repo tree (Documents\\GitHub\\...)",
-		ev: event.Event{EID: 7, Image: `C:\Users\ju\Documents\GitHub\leave-my-shit-alone\tests\redteam-2026-09-02b\bin\loader.exe`,
-			ImageLoaded: `C:\Users\ju\Documents\GitHub\leave-my-shit-alone\tests\redteam-2026-09-02b\bin\payload.dll`, Signed: "false"},
-		wantZeroHits:  true,
-		wantQuietRule: "INJECT-002",
-	},
+	// F7 FIXED (2026-09-02b, inject.yml): Desktop|Documents added to
+	// INJECT-002's ImageLoaded list. Both rows moved to TestBypassControls
+	// (F7-fixed; the repo-tree row closes via Documents). Residual: any OTHER
+	// user-writable dir — durable fix = user-writable-path helper.
 
 	// F8a — fully silent PUBLIC beacon: NET-002/003 except dst 1.1.1.1/1.0.0.1
 	// (allowed_destinations, the Cloudflare-DoH entries); NET-004 keys the
@@ -387,6 +372,18 @@ var controlCases = []controlCase{
 		ev: event.Event{EID: 13, Image: `C:\Users\ju\Downloads\implant.exe`,
 			TargetRegKey: `HKEY_USERS\S-1-5-21-999\Software\Classes\CLSID\{B5F8E7C9-1A2B-4C3D-9E8F-001122334455}\InprocServer32\(Default)`,
 			Details:      `C:\Users\ju\Downloads\implant.exe`},
+	},
+	{
+		name: "F7-fixed: unsigned DLL loaded from Desktop fires",
+		rule: "INJECT-002", sev: event.SevSuspicious,
+		ev: event.Event{EID: 7, Image: `C:\Users\ju\Desktop\loader.exe`,
+			ImageLoaded: `C:\Users\ju\Desktop\payload.dll`, Signed: "false"},
+	},
+	{
+		name: "F7-fixed: unsigned DLL loaded from the repo tree (Documents\\GitHub\\...) fires",
+		rule: "INJECT-002", sev: event.SevSuspicious,
+		ev: event.Event{EID: 7, Image: `C:\Users\ju\Documents\GitHub\leave-my-shit-alone\tests\redteam-2026-09-02b\bin\loader.exe`,
+			ImageLoaded: `C:\Users\ju\Documents\GitHub\leave-my-shit-alone\tests\redteam-2026-09-02b\bin\payload.dll`, Signed: "false"},
 	},
 	{
 		name: "C6: unsigned Temp DLL fires",
