@@ -165,19 +165,10 @@ var bypassCases = []bypassCase{
 	// token list is still whack-a-mole against PS prefix matching — the durable
 	// fix is a PS-args-parsing engine helper.
 
-	// F2 — EXEC-001's except: cmdline_in_dev_scripts matches the bare filename
-	// 'pe-triage-docker\.ps1' ANYWHERE in the cmdline. Full '-ExecutionPolicy
-	// Bypass' launch + a payload named like the dev script = allowlist
-	// suppression of the exact rule that exists for this shape. (Evasion note
-	// in internal/allowlist documents the class; this pins its impact.)
-	{
-		finding: "F2",
-		name:    "dev_scripts filename anchor: full bypass flags, payload named pe-triage-docker.ps1",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-			CmdLine: `powershell.exe -ExecutionPolicy Bypass -File C:\Users\ju\evil\pe-triage-docker.ps1`},
-		wantZeroHits:  true,
-		wantQuietRule: "EXEC-001",
-	},
+	// F2 FIXED (2026-09-02b, allowlist.json): pe-triage-docker entry is now
+	// path-anchored on the pe_triage repo's scripts dir. Row moved to
+	// TestBypassControls (F2-fixed). See also internal/allowlist
+	// TestCmdLineInDevScripts / TestProductionAllowlistDevTuning.
 
 	// F3 — PERSIST-001 selection_path keys on literal path tokens
 	// (ProgramData/AppData/\Temp\/\Users\Public\) in the schtasks cmdline.
@@ -362,6 +353,12 @@ var controlCases = []controlCase{
 		rule: "EXEC-001", sev: event.SevCritical,
 		ev: event.Event{EID: 1, Image: `C:\Windows\System32\conhost.exe`,
 			CmdLine: `conhost.exe powershell -ep b -c Get-Date`},
+	},
+	{
+		name: "F2-fixed: same-named payload outside the pe_triage repo fires (dev_scripts path-anchored)",
+		rule: "EXEC-001", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			CmdLine: `powershell.exe -ExecutionPolicy Bypass -File C:\Users\ju\evil\pe-triage-docker.ps1`},
 	},
 	{
 		name: "C1: -ep bypass spelled out fires",

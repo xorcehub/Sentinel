@@ -234,9 +234,13 @@ func TestDevToolPathRegexCompiles(t *testing.T) {
 // -File invocations of the trusted script, and must NOT match a hostile script
 // of a different name.
 func TestCmdLineInDevScripts(t *testing.T) {
+	// 2026-09-02b redteam F2: entries are path-anchored — a payload that merely
+	// NAMES ITSELF pe-triage-docker.ps1 outside the pe_triage repo must NOT
+	// match; a relative invocation has no repo component, so it (safely)
+	// alerts, same doctrine as install.ps1.
 	a, err := Compile([]byte(`{
   "dev_scripts": [
-    "pe-triage-docker\\.ps1"
+    "pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1"
   ]
 }`))
 	if err != nil {
@@ -247,8 +251,17 @@ func TestCmdLineInDevScripts(t *testing.T) {
 	if !a.CmdLineInDevScripts(abs) {
 		t.Error("absolute -File invocation of dev script must match")
 	}
-	if !a.CmdLineInDevScripts(rel) {
-		t.Error("relative -File invocation of dev script must match")
+	if a.CmdLineInDevScripts(rel) {
+		t.Error("relative -File invocation must NOT match a path-anchored entry (safe alert, install.ps1 doctrine)")
+	}
+	// Hostile script of a different name must NOT match (EXEC-001 stays armed).
+	if a.CmdLineInDevScripts(`powershell -ep bypass -File C:\ProgramData\evil.ps1`) {
+		t.Error("unrelated hostile script must NOT match dev_scripts")
+	}
+	// Hostile script of the SAME name outside the repo must NOT match (the F2
+	// hole this anchoring closes).
+	if a.CmdLineInDevScripts(`powershell.exe -ExecutionPolicy Bypass -File C:\Users\ju\evil\pe-triage-docker.ps1`) {
+		t.Error("same-named payload outside the pe_triage repo must NOT match dev_scripts (F2)")
 	}
 	// Hostile script of a different name must NOT match (EXEC-001 stays armed).
 	if a.CmdLineInDevScripts(`powershell -ep bypass -File C:\ProgramData\evil.ps1`) {
@@ -380,12 +393,20 @@ func TestProductionAllowlistDevTuning(t *testing.T) {
 		t.Error("pi-lite dev_tool_paths entry over-matches an unrelated tool")
 	}
 
-	// pe-triage-docker.ps1 (EXEC-001 FP): both invocation forms match dev_scripts,
-	// but a hostile ProgramData script must NOT (EXEC-001 stays armed).
+	// pe-triage-docker.ps1 (EXEC-001 FP): absolute invocation from the pe_triage
+	// repo matches dev_scripts; relative + same-name-elsewhere must NOT
+	// (path-anchored, 2026-09-02b redteam F2 — EXEC-001 stays armed for a
+	// payload that merely names itself like the dev script).
 	abs := `powershell -ExecutionPolicy Bypass -File C:\Users\user01\Documents\Github\pe_triage\scripts\pe-triage-docker.ps1`
 	rel := `powershell -ExecutionPolicy Bypass -File ./scripts/pe-triage-docker.ps1`
-	if !a.CmdLineInDevScripts(abs) || !a.CmdLineInDevScripts(rel) {
-		t.Error("pe-triage-docker.ps1 (both abs + rel -File forms) should be in dev_scripts (EXEC-001 FP tuning)")
+	if !a.CmdLineInDevScripts(abs) {
+		t.Error("pe-triage-docker.ps1 absolute -File form should be in dev_scripts (EXEC-001 FP tuning)")
+	}
+	if a.CmdLineInDevScripts(rel) {
+		t.Error("relative form must NOT match a path-anchored dev_scripts entry (safe alert)")
+	}
+	if a.CmdLineInDevScripts(`powershell -ExecutionPolicy Bypass -File C:\Users\ju\evil\pe-triage-docker.ps1`) {
+		t.Error("dev_scripts must NOT match a same-named payload outside the pe_triage repo (F2)")
 	}
 	if a.CmdLineInDevScripts(`powershell -ep bypass -File C:\ProgramData\evil.ps1`) {
 		t.Error("dev_scripts must NOT match a hostile ProgramData script (EXEC-001 would be blinded)")

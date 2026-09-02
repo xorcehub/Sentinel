@@ -147,10 +147,15 @@
   // dev_scripts: CmdLine-anchored exceptions for EXEC-001 (see allowlist doc).
   // The operator's own dev scripts run via `powershell -ep bypass -File <x>`;
   // anchoring on the script filename keeps EXEC-001 armed for everything else.
-  // Filename anchor covers BOTH absolute (-File C:\\...\\pe-triage-docker.ps1)
-  // and relative (-File ./scripts/pe-triage-docker.ps1) invocations.
+  // Every entry is PATH-anchored (2026-09-02b redteam F2): a bare-filename
+  // anchor suppressed EXEC-001 for ANY payload that named itself like the
+  // dev script, from ANY folder, with full bypass flags. Like install.ps1
+  // below, relative invocations (-File .\scripts\pe-triage-docker.ps1) no
+  // longer match and (safely) alert.
   "dev_scripts": [
-    "pe-triage-docker\\.ps1",
+    // pe-triage-docker helper (dockerized PE triage). Anchored on the
+    // pe_triage repo's scripts dir; separator tolerated both ways.
+    "pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
     // operator install/uninstall scripts. Path-anchored on the repo dir so a
     // same-named dropper (install.ps1 is a top-tier dropper name) can't evade
     // EXEC-001. Requires absolute-path invocation
