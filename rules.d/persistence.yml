@@ -88,7 +88,15 @@ logsource: { product: windows, service: sysmon }
 detection:
   selection:
     EventID: 13
-    TargetObject|contains: ['\CurrentVersion\Run', '\RunOnce', '\Winlogon', '\AppInit_DLLs', '\Userinit']
+    # 2026-09-02b redteam F4: \Windows\Load and StubPath added — user-writable
+    # logon autostarts OUTSIDE the Run/RunOnce/Winlogon/AppInit/Userinit
+    # family. Windows\Load is the legacy Winlogon-loaded value
+    # (HKCU\...Windows NT\CurrentVersion\Windows\Load); anchored on
+    # \Windows\Load (not the whole CurrentVersion\Windows key) so per-user
+    # Device/printer churn in the same key family stays quiet. StubPath =
+    # per-user Active Setup execution (HKCU\...Active Setup\Installed
+    # Components\{guid}\StubPath).
+    TargetObject|contains: ['\CurrentVersion\Run', '\RunOnce', '\Winlogon', '\AppInit_DLLs', '\Userinit', '\Windows\Load', 'StubPath']
   filter_trustedinstaller_notify:
     # TrustedInstaller registering its Winlogon session notification during
     # Windows servicing (CreateSession event). Pure OS churn; fires on every

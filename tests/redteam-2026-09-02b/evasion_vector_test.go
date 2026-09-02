@@ -184,30 +184,13 @@ var bypassCases = []bypassCase{
 		wantQuietRule: "PERSIST-001",
 	},
 
-	// F4 — PERSIST-003 covers \CurrentVersion\Run / \RunOnce / \Winlogon /
-	// \AppInit_DLLs / \Userinit only. User-writable autostart values outside
-	// that family are quiet.
-	{
-		finding: "F4",
-		name:    "HKCU ...Windows NT\\CurrentVersion\\Windows\\Load (logon-loaded value, user-writable)",
-		ev: event.Event{EID: 13, Image: `C:\Users\ju\Downloads\implant.exe`,
-			TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\Windows\Load`,
-			Details:      `C:\Users\ju\Downloads\implant.exe`},
-		wantZeroHits:  true,
-		wantQuietRule: "PERSIST-003",
-	},
-	// REFUTED (moved to control CU1): \\Environment\\UserInitMprLogonScript
+	// F4 FIXED (2026-09-02b, persistence.yml): \Windows\Load + StubPath
+	// tokens added to PERSIST-003. Both rows moved to TestBypassControls
+	// (F4-fixed). Anchored on \Windows\Load rather than the whole
+	// CurrentVersion\Windows key to keep per-user Device/printer churn quiet.
+	// REFUTED (kept as control CU1): \\Environment\\UserInitMprLogonScript
 	// FIRES — PERSIST-003's unanchored '\\Userinit' token substring-matches any
 	// value NAMED Userinit*. Honest log: this hypothesis was wrong.
-	{
-		finding: "F4",
-		name:    "Active Setup \\Installed Components\\{guid}\\StubPath (HKCU variant, user-writable)",
-		ev: event.Event{EID: 13, Image: `C:\Users\ju\Downloads\implant.exe`,
-			TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Active Setup\Installed Components\{B5F8E7C9-1A2B-4C3D-9E8F-001122334455}\StubPath`,
-			Details:      `C:\Users\ju\Downloads\implant.exe`},
-		wantZeroHits:  true,
-		wantQuietRule: "PERSIST-003",
-	},
 
 	// F5 — PERSIST-004 extension list is exe|ps1|bat|cmd|vbs|js|lnk. Startup
 	// items are ShellExecute'd at logon, so every script/handler extension
@@ -379,6 +362,20 @@ var controlCases = []controlCase{
 			CmdLine: `schtasks.exe /create /tn OneDriveUpd /tr C:\ProgramData\upd.exe /sc onlogon /f`},
 	},
 	{
+		name: "F4-fixed: HKCU ...Windows NT\\CurrentVersion\\Windows\\Load fires",
+		rule: "PERSIST-003", sev: event.SevCritical,
+		ev: event.Event{EID: 13, Image: `C:\Users\ju\Downloads\implant.exe`,
+			TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\Windows\Load`,
+			Details:      `C:\Users\ju\Downloads\implant.exe`},
+	},
+	{
+		name: "F4-fixed: Active Setup \\Installed Components\\{guid}\\StubPath fires",
+		rule: "PERSIST-003", sev: event.SevCritical,
+		ev: event.Event{EID: 13, Image: `C:\Users\ju\Downloads\implant.exe`,
+			TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Active Setup\Installed Components\{B5F8E7C9-1A2B-4C3D-9E8F-001122334455}\StubPath`,
+			Details:      `C:\Users\ju\Downloads\implant.exe`},
+	},
+	{
 		name: "C3: Run-key write fires",
 		rule: "PERSIST-003", sev: event.SevCritical,
 		ev: event.Event{EID: 13, Image: `C:\Users\ju\Downloads\implant.exe`,
@@ -472,4 +469,17 @@ func suppIDs(res *rules.Evaluation) []string {
 		out = append(out, s.RuleID+"("+s.Reason+")")
 	}
 	return out
+}
+
+// TestF4AnchorKeepsDeviceChurnQuiet: the F4 fix anchors on \Windows\Load
+// (not the whole CurrentVersion\Windows key) precisely so per-user Device /
+// printer churn in the same key family stays quiet. If PERSIST-003 ever fires
+// here, the anchor was widened past the autostart value.
+func TestF4AnchorKeepsDeviceChurnQuiet(t *testing.T) {
+	ev := event.Event{EID: 13, Image: `C:\Windows\System32\spoolsv.exe`,
+		TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\Windows\Device`,
+		Details:      `HP LaserJet 4,LPT1:`}
+	if ids := hitIDs(freshEngine(t).Evaluate(&ev)); hasRule(ids, "PERSIST-003") {
+		t.Errorf("per-user Device churn must stay quiet after the F4 anchor; got %v", ids)
+	}
 }
