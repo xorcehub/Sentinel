@@ -160,34 +160,10 @@ type bypassCase struct {
 }
 
 var bypassCases = []bypassCase{
-	// F1 — EXEC-001 keyword gap: powershell.exe accepts abbreviated parameter
-	// names and abbreviated enum VALUES. `-ep b` = -ExecutionPolicy Bypass.
-	// None of selection_cli's tokens is a prefix of it ('-ep bypass' is longer
-	// than '-ep b', so contains('-ep bypass') never matches).
-	{
-		finding: "F1",
-		name:    "powershell -ep b (enum-prefix Bypass)",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-			CmdLine: `powershell.exe -nop -ep b -c Get-Date`},
-		wantZeroHits:  true,
-		wantQuietRule: "EXEC-001",
-	},
-	{
-		finding: "F1",
-		name:    "powershell -ExecutionPolicy B -w h (alias + value prefix + WindowStyle prefix)",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-			CmdLine: `powershell.exe -ExecutionPolicy B -w h -c Get-Date`},
-		wantZeroHits:  true,
-		wantQuietRule: "EXEC-001",
-	},
-	{
-		finding: "F1",
-		name:    "conhost broker powershell -ep b (no --headless so EXEC-002 n/a too)",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\conhost.exe`,
-			CmdLine: `conhost.exe powershell -ep b -c Get-Date`},
-		wantZeroHits:  true,
-		wantQuietRule: "EXEC-001",
-	},
+	// F1 FIXED (2026-09-02b, exec.yml): abbreviated PS flags now fire EXEC-001.
+	// Rows moved to TestBypassControls (F1-fixed:*). Residual, documented: the
+	// token list is still whack-a-mole against PS prefix matching — the durable
+	// fix is a PS-args-parsing engine helper.
 
 	// F2 — EXEC-001's except: cmdline_in_dev_scripts matches the bare filename
 	// 'pe-triage-docker\.ps1' ANYWHERE in the cmdline. Full '-ExecutionPolicy
@@ -369,6 +345,24 @@ type controlCase struct {
 }
 
 var controlCases = []controlCase{
+	{
+		name: "F1-fixed: powershell -ep b (enum-prefix Bypass) fires",
+		rule: "EXEC-001", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			CmdLine: `powershell.exe -nop -ep b -c Get-Date`},
+	},
+	{
+		name: "F1-fixed: powershell -ExecutionPolicy B -w h fires",
+		rule: "EXEC-001", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			CmdLine: `powershell.exe -ExecutionPolicy B -w h -c Get-Date`},
+	},
+	{
+		name: "F1-fixed: conhost broker powershell -ep b fires (broker scope, no --headless)",
+		rule: "EXEC-001", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\conhost.exe`,
+			CmdLine: `conhost.exe powershell -ep b -c Get-Date`},
+	},
 	{
 		name: "C1: -ep bypass spelled out fires",
 		rule: "EXEC-001", sev: event.SevCritical,
