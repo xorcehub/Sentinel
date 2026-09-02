@@ -57,6 +57,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"os"
 	"regexp"
 	"strings"
@@ -513,13 +514,39 @@ func (a *Allowlist) DstInCIDR(ip string) bool {
 }
 
 // DstIsKnownLoopback reports whether (ip, port) is a known-good loopback server
-// in known_loopback_listeners (host:port set).
+// in known_loopback_listeners (host:port set). The event IP is canonicalized
+// via net.ParseIP first: Sysmon renders IPv6 loopback as the EXPANDED form
+// (0:0:0:0:0:0:0:1), so an entry spelled "::1:9080" would otherwise never
+// match it (observed live 2026-09-01). Config entries are canonicalized with
+// the same function, so either spelling works on both sides.
 func (a *Allowlist) DstIsKnownLoopback(ip string, port int) bool {
 	if a == nil || port == 0 {
 		return false
 	}
-	key := strings.ToLower(fmt.Sprintf("%s:%d", strings.TrimSpace(ip), port))
-	return a.loopback[key]
+	want := canonicalIP(strings.TrimSpace(ip))
+	for k := range a.loopback {
+		// Split on the LAST colon: config entries are written unbracketed
+		// ("::1:9080"), which net.SplitHostPort rejects as ambiguous.
+		last := strings.LastIndex(k, ":")
+		if last < 0 || k[last+1:] != strconv.Itoa(port) {
+			continue
+		}
+		if canonicalIP(strings.Trim(strings.TrimSpace(k[:last]), "[]")) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalIP returns the net.ParseIP canonical spelling of ip (e.g.
+// 0:0:0:0:0:0:0:1 -> ::1), or the trimmed input unchanged when unparseable
+// (fail-closed direction: an unparseable event IP simply never matches an
+// entry that does parse, so the rule stays armed).
+func canonicalIP(ip string) string {
+	if parsed := net.ParseIP(ip); parsed != nil {
+		return parsed.String()
+	}
+	return strings.TrimSpace(strings.ToLower(ip))
 }
 
 // IsLogNoise reports whether ev matches any event_log_filter entry. It is used

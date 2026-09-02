@@ -21,9 +21,18 @@ detection:
       - '-exec bypass'
       - '-EncodedCommand'
       - '-enc '
+      - '-enc:'
       - '-e '
       - '-Hidden'
       - '-w hidden'
+      # Colon-separated parameter forms (PowerShell accepts BOTH '-ep bypass'
+      # and '-ep:bypass'). Found by adversarial review 2026-09-01: the colon
+      # forms evaded every keyword above while still executing.
+      - '-ExecutionPolicy:Bypass'
+      - '-ep:Bypass'
+      - '-exec:Bypass'
+      - '-w:Hidden'
+      - '-WindowStyle:Hidden'
       - 'FromBase64String'
       - 'DownloadString'
       - 'DownloadFile'
@@ -35,7 +44,28 @@ detection:
       - 'WriteProcessMemory'
       - 'amsi.dll'
       - 'AmsiUtils'
-  condition: selection_cli and (selection_image or selection_broker)
+  filter_cursor_agent:
+    # Cursor IDE's agent shell bridge: cursor.exe writes <Temp>\ps-script-<GUID>.ps1
+    # and immediately runs `powershell -ExecutionPolicy Bypass -NonInteractive
+    # -File <that path>` (then deletes it; file_capture.patterns snapshots it first,
+    # so suppressed launches stay forensically inspectable in the vault). This
+    # shape was the single largest recurring noise source (~33 EXEC-001 + ~33
+    # PERSIST-001 alerts / 2wk; the Aug-10 self-test storm reuses it too but is
+    # sentinel-tray-parented and stays armed). Suppression requires ALL of:
+    # the AppData install-path parent (a directory merely NAMED cursor no
+    # longer qualifies), the cmdline left-anchored at the powershell.exe
+    # token with the exact flag sequence (any prefix arg re-arms), and a
+    # GUID-named ps-script under the USER's AppData\Local\Temp with
+    # nothing after it (any trailing arg, non-GUID name, or a Temp dir
+    # elsewhere re-arms). Residual, deliberately kept and pinned by
+    # TestCursorPathMimicResidualIsBounded: a binary planted AT the real
+    # install path (path-only parent trust - EID 1 carries no parent SHA256
+    # for Tier-2 gating) running this exact shape is quiet for THIS rule,
+    # while its follow-on behavior (NET-002/005, PERSIST-003/004, CRED,
+    # INJECT) still fires and file_capture snapshots the script.
+    ParentImage|re: '(?i)\\appdata\\local\\programs\\cursor\\(?:_\\)?cursor\.exe$'
+    CommandLine|re: '(?i)^\s*"?[^\s"]*powershell\.exe"?\s+-ExecutionPolicy Bypass -NonInteractive -File "?[^\s"]*\\AppData\\Local\\Temp\\ps-script-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ps1"?\s*$'
+  condition: selection_cli and (selection_image or selection_broker) and not filter_cursor_agent
 level: high
 tags: [attack.execution, attack.t1059.001, attack.defense_evasion]
 x-sentinel:
@@ -74,7 +104,15 @@ detection:
     Image|endswith: ['\mshta.exe','\certutil.exe','\bitsadmin.exe','\msiexec.exe','\regsvr32.exe','\rundll32.exe','\wscript.exe','\cscript.exe','\forfiles.exe','\msdt.exe','\dpi.exe']
   selection_cli:
     CommandLine|contains: ['http://', 'https://', '.ps1', '.bat', '.vbs', 'script', 'url']
-  condition: selection_image and selection_cli
+  filter_bare_image:
+    # Sysmon sometimes reports the bare image name as the entire command line
+    # (observed: Docker Desktop's cscript helper, CmdLine == "cscript.exe"). The
+    # hit is then just the keyword 'script' matching inside the IMAGE NAME — a
+    # broker launched with no arguments carries no script/http payload, so
+    # there is nothing to detect. Any real argument (path, URL, token) keeps
+    # selection_cli armed. Covers bare-name and full-path bare invocations.
+    CommandLine|re: '(?i)^\s*"?(?:[a-z]:\\[^\s]*\\)?(?:cscript|wscript)\.exe"?\s*$'
+  condition: selection_image and selection_cli and not filter_bare_image
 level: medium
 tags: [attack.execution, attack.t1218]
 x-sentinel:

@@ -98,13 +98,36 @@
       // pi-lite (operator's dev AI agent) — quiets NET-002/003. Scoped to the
       // built binary path, NOT the whole tree. Its API endpoints (128.14.69.x)
       // rotate, so trust the image rather than chasing each IP. NET-004
-      // (Temp/AppData/ProgramData outbound) + NET-005 (loopback) still apply.
+      // (Temp/AppData/ProgramData outbound) + NET-005 (loopback) still apply
+      // (NET-005 only after the 2026-09-01 X1/X2 redeploy - see docs/found_noise.md).
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pi-lite\\\\dist\\\\pi-lite\\.exe$",
       // bun runtime - operator JS toolchain. Trust image so NET-002/003
-      // quiet down; NET-005 (loopback) still applies.
+      // quiet down; NET-005 (loopback) still applies (after the 2026-09-01
+      // X1/X2 redeploy - see docs/found_noise.md).
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.bun\\\\bin\\\\.*\\.exe$",
       // uv-installed CPython (appdata/roaming/uv/python/<ver>/python.exe).
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\uv\\\\python\\\\.*\\\\python\\.exe$",
+      // Adoptium JDK (program files = admin-owned, but this is the NET-only
+      // quiet set - java is a real malware host, so deliberately NOT in
+      // trusted_binaries: no behavioral trust, NET-002/003/004 quiet only).
+      // Killed 19+18 hits/2wk (Gradle/Maven fetching from GCP/Fastly).
+      "^[a-z]:\\\\program files\\\\eclipse adoptium\\\\.*\\\\bin\\\\java(w)?\\.exe$",
+      // uv.exe under the hermes tool dir - operator Python toolchain
+      // manager (jsdelivr CDN fetches). Same NET-only scope as above.
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\hermes\\\\bin\\\\.*\\.exe$",
+      // Nahimic (OEM audio stack) notification service, AppData-resident -
+      // its AWS telemetry hit NET-002/003/004. NET-only quiet; NOT Tier-2
+      // trusted (no hash_gated_path entry, no behavioral trust).
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\nhnotifsys\\\\nahimic\\\\.*\\.exe$",
+      // `go test ./...` temp binaries (Temp/go-build<digits>/bNNN/*.test.exe).
+      // Temp is user-writable, so an aware attacker could self-name into
+      // this pattern to quiet NET-002/003/004 - accepted for the same reason
+      // as the other user-writable dev_tool_paths (documented Bypass-B class:
+      // NET-005 loopback-C2 and every behavioral rule stay armed; NET-005 only
+      // after the 2026-09-01 X1/X2 redeploy - see docs/found_noise.md). Anchored
+      // on the digits-only go-build dir + .test.exe suffix to keep the
+      // pattern useless for anything but go test binaries.
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\temp\\\\go-build[0-9]+\\\\.*\\\\.*\\.test\\.exe$",
       // Reclassified from trusted_binaries (interim Bypass-B hardening). These are
       // DUPLICATED in trusted_binaries.hash_gated_path (above) — edit both
       // together or they drift (see that section's comment). Here they serve

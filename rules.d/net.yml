@@ -82,7 +82,9 @@ x-sentinel:
   # let a planted mimic suppress this rule. NET-004 keys on Image|contains
   # AppData, which fires on every legit Cursor outbound, so without this except
   # the move would toast-flood. NET-005 (loopback C2) has no image except and
-  # stays armed regardless.
+  # stays armed - but only once the 2026-09-01 X1/X2 fixes are DEPLOYED
+  # (docs/found_noise.md: NET-005 was source-blind to 127.0.0.1 and regex-blind
+  # to Sysmon's expanded 0:0:0:0:0:0:0:1 form for its entire life before that).
   except:
     image_in_allowlist: trusted_binaries
     image_in_dev_tools: dev_tool_paths
@@ -94,7 +96,10 @@ logsource: { product: windows, service: sysmon }
 detection:
   selection:
     EventID: 3
-    DestinationIp|re: '^(127\.|::1)'
+    # 0:0:0:0:0:0:0:1 = Sysmon's EXPANDED rendering of ::1 (observed live
+    # 2026-09-01: an ::1 connect arrived as 0:0:0:0:0:0:0:1 and missed the
+    # old '^(127\.|::1)' anchor entirely).
+    DestinationIp|re: '^(127\.|::1|0:0:0:0:0:0:0:1)'
   condition: selection
 level: high
 tags: [attack.command_and_control, attack.t1571]

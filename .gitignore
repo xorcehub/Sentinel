@@ -20,4 +20,5 @@ forensics/sentinel-vault/*
 
 # superseded diagnostic scripts (kept locally for reference, not shipped)
 scripts/archive/
+scripts/analysis/
 

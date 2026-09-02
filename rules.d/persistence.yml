@@ -9,10 +9,24 @@ detection:
   selection_launch:
     EventID: 1
     Image|endswith: ['\schtasks.exe', '\powershell.exe', '\pwsh.exe', '\conhost.exe', '\cmd.exe']
-    CommandLine|contains: ['/create', '-ExecutionPolicy Bypass', '--headless', '-Enc']
+    CommandLine|contains: ['/create', '-ExecutionPolicy Bypass', '--headless', '-Enc', '-ExecutionPolicy:Bypass', '-ep:Bypass', '-enc:']
   selection_path:
     CommandLine|contains: ['ProgramData', 'AppData', '\Temp\', '\Users\Public\']
-  condition: selection_launch and selection_path
+  filter_cursor_agent:
+    # Same filter as EXEC-001's (see rules.d/exec.yml): cursor.exe's agent
+    # shell bridge runs powershell -ExecutionPolicy Bypass -NonInteractive
+    # -File <Temp>\ps-script-<GUID>.ps1 (~33 hits/2wk here). Requires
+    # the AppData install-path parent AND the exact bridge cmdline (see
+    # rules.d/exec.yml for the full tightened semantics: left-anchored flags,
+    # GUID-named script, user-profile Temp, nothing after the path). Unlike a
+    # dev_scripts entry, this cannot suppress the XblGameCachesTask vector
+    # below (conhost parent, -file lowercase, payload in ProgramData) nor any
+    # install.ps1-style scheduled task - only the Cursor-parented bridge shape.
+    # Pinned by TestCursorAgentScriptBridgeSuppressed and
+    # TestCursorPathMimicResidualIsBounded (mimic/plant rows).
+    ParentImage|re: '(?i)\\appdata\\local\\programs\\cursor\\(?:_\\)?cursor\.exe$'
+    CommandLine|re: '(?i)^\s*"?[^\s"]*powershell\.exe"?\s+-ExecutionPolicy Bypass -NonInteractive -File "?[^\s"]*\\AppData\\Local\\Temp\\ps-script-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ps1"?\s*$'
+  condition: selection_launch and selection_path and not filter_cursor_agent
 level: high
 tags: [attack.persistence, attack.t1053.005]
 falsepositives: [legitimate installers running from temp]
@@ -104,6 +118,7 @@ detection:
     TargetObject|contains:
       - '\bam\State\UserSettings'      # Background Activity Moderator per-user tracking
       - '\vmsmp\parameters\NicList'    # Hyper-V virtual switch NIC list
+      - '\vmsmp\parameters\SwitchList' # Hyper-V virtual switch vNIC FriendlyName (same churn family as NicList; svchost/kernel writers)
       - '\WmiApRpl\Performance'         # WMI perf-counter config
       - '\BTHPORT\Parameters'           # bluetooth paired-device FriendlyName
       - '\swenum\Devices'              # software device enumerator names
@@ -111,14 +126,31 @@ detection:
     # A service's \Start DWORD (start-type) is never an ImagePath; the rule
     # targets ImagePath-in-writable-dir. Safe to drop start-type churn.
     TargetObject|endswith: '\Start'
-  condition: selection and not filter_benign_subkeys and not filter_start_type
+  filter_admin_dir_imagepath:
+    # services.exe registering OS/app services whose ImagePath points INTO an
+    # admin-owned tree: WpnUserService_* per-user svchost services (every
+    # logon), MSI Afterburner RTCore64, Edge elevation service. This is the
+    # condition-level slice of the engine_helper below - the rule's target is
+    # an ImagePath in a USER-WRITABLE dir, and planting into Windows/Program
+    # Files already requires admin (out of this rule's threat model). Dropped
+    # shapes, all end-anchored: (a) exactly c:\\windows\\system32\\svchost.exe,
+    # optionally with one ' -k <group>' token; (b) \\\\?? kernel-driver paths under
+    # windows\\system32 or Program Files, spaces allowed; (c) the same trees quoted.
+    # Path bodies use a no-double-dot construction ((?:[^.]|.[^.])+), so ANY
+    # '..' traversal (string says c:\\windows but resolves to Users\\Public) fails to
+    # match; c:\\windows\\temp (Users-writable) is not in the trees. An ImagePath
+    # with any other argument (cmd.exe /c style arg-injection), any traversal,
+    # or pointing into AppData/Temp/ProgramData/Users/Public still fires.
+    TargetObject|endswith: '\ImagePath'
+    Details|re: '(?i)^(?:c:\\windows\\system32\\svchost\.exe(?: -k [a-z0-9]+)?|\\\?\?\\c:\\(?:windows\\system32|program files(?: \(x86\))?)\\(?:[^\.]|\.[^\.])+\.(?:exe|sys|dll)|"c:\\(?:windows\\system32|program files(?: \(x86\))?)\\(?:[^\.]|\.[^\.])+\.(?:exe|sys|dll)")$'
+  condition: selection and not filter_benign_subkeys and not filter_start_type and not filter_admin_dir_imagepath
 level: medium
 tags: [attack.persistence, attack.t1543.003]
 x-sentinel:
   id: PERSIST-005
   severity: suspicious
   alert: [toast, log, eventlog]
-  engine_helper: "On hit, resolve service ImagePath from registry; mark suspicious only if it resolves to AppData/Temp/ProgramData/Users/Public (else drop)."
+  engine_helper: "On hit, resolve service ImagePath from registry; mark suspicious only if it resolves to AppData/Temp/ProgramData/Users/Public (else drop). Partially implemented at condition level by filter_admin_dir_imagepath (admin-tree ImagePaths); the registry read would additionally catch user-writable ImagePaths only visible via the Services API."
   note: "Needs engine helper to read service ImagePath from registry on hit."
 ---
 title: COM hijack - HKCU CLSID InprocServer32
@@ -129,7 +161,29 @@ detection:
   selection:
     EventID: 13
     TargetObject|contains: ['Classes\CLSID', 'InprocServer32']
-  condition: selection
+  selection_user_hive:
+    # engine_helper, implemented at condition level: the T1546.015 hijack
+    # works by shadowing a machine CLSID from the USER hive
+    # (HKU\<SID>\Software\Classes or HKU\<SID>_Classes;
+    # \REGISTRY\A = app-key hives). Verified live 2026-09-01 with a
+    # real hijack-shaped write: Sysmon renders it HKU\<SID>_Classes\... -
+    # NOT HKCR (that spelling comes from admin-context writers).
+    TargetObject|re: '(?i)^(?:hku|hkey_users|\\registry\\user|\\registry\\a)\\'
+  selection_writable_payload:
+    # Machine-hive registration (HKCR/HKLM = admin writer) stays ARMED when
+    # the InprocServer32 payload itself sits in a user-writable tree: that is
+    # the dangerous shape - weak-ACL CLSID abuse by a NON-admin, or an admin
+    # staging a DLL a non-admin can swap later (SYSTEM loads it on COM
+    # activation). Quiet only when the payload lives in admin-owned trees
+    # (observed 51/51 churn: nahimic system32 DLL, Firefox AccessibleMarshal
+    # in Program Files, DriverStore). Separator- and env-tolerant on purpose
+    # (adversarial review 2026-09-01: 'C:/Users/Public/x.dll' and
+    # '%PUBLIC%\\x.dll' evaded the backslash-only form; LoadLibrary accepts
+    # forward slashes, REG_EXPAND_SZ delivers the raw %VAR% form). Caveat: a
+    # machine-hive write whose Details Sysmon did not capture stays quiet
+    # (Field-absent = no match).
+    Details|re: '(?i)appdata|[/\\]temp[/\\]|programdata|[/\\]users[/\\]public|%temp%|%public%'
+  condition: selection and (selection_user_hive or selection_writable_payload)
 level: medium
 tags: [attack.persistence, attack.t1546.015]
 x-sentinel:
@@ -137,4 +191,4 @@ x-sentinel:
   severity: suspicious
   alert: [toast, log, eventlog]
   except: { image_in_allowlist: trusted_binaries }
-  engine_helper: "Refine to HKCU hive only; Sysmon reports HKCU as \\REGISTRY\\USER\\<sid>\\... — adjust matcher during tuning."
+  engine_helper: "Implemented at condition level: user-hive prefix (the T1546.015 form) OR a machine-hive registration whose payload sits in a user-writable tree. Machine-hive + admin-tree payload (admin-vs-admin) is out of scope; NOTE no other real-time rule sees CLSID writes (PERSIST-003/005 cover Run-keys/Services, not COM)."

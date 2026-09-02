@@ -46,6 +46,36 @@ const sampleJSONC = `{
   }
 }`
 
+// TestDstIsKnownLoopbackCanonicalizesIPv6 pins the 2026-09-01 fix: Sysmon
+// delivers IPv6 loopback in EXPANDED form (0:0:0:0:0:0:0:1), so an entry
+// spelled "::1:9080" must still match an event carrying the expanded form
+// (and vice versa). Before the fix the comparison was a raw string key and
+// both spellings silently missed each other.
+func TestDstIsKnownLoopbackCanonicalizesIPv6(t *testing.T) {
+	a, err := Compile([]byte(`{
+  "known_loopback_listeners": ["::1:9080", "127.0.0.1:9080"]
+}`))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	cases := []struct {
+		ip   string
+		port int
+		want bool
+	}{
+		{"0:0:0:0:0:0:0:1", 9080, true},  // expanded form vs ::1 entry
+		{"::1", 9080, true},              // canonical vs canonical
+		{"127.0.0.1", 9080, true},        // v4 exact
+		{"0:0:0:0:0:0:0:1", 9081, false}, // wrong port
+		{"127.0.0.2", 9080, false},       // wrong ip
+	}
+	for _, c := range cases {
+		if got := a.DstIsKnownLoopback(c.ip, c.port); got != c.want {
+			t.Errorf("DstIsKnownLoopback(%q,%d)=%v want %v", c.ip, c.port, got, c.want)
+		}
+	}
+}
+
 func TestLoadAndChecks(t *testing.T) {
 	a, err := Load(writeTempJSONC(t, sampleJSONC))
 	if err != nil {
