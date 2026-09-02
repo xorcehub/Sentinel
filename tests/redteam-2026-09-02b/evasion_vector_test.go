@@ -206,34 +206,20 @@ var bypassCases = []bypassCase{
 	// (F7-fixed; the repo-tree row closes via Documents). Residual: any OTHER
 	// user-writable dir — durable fix = user-writable-path helper.
 
-	// F8a — fully silent PUBLIC beacon: NET-002/003 except dst 1.1.1.1/1.0.0.1
-	// (allowed_destinations, the Cloudflare-DoH entries); NET-004 keys the
-	// image on Temp|AppData|ProgramData only — C:\Users\Public is none of
-	// those. Net result: zero rules see a public-IP connection.
-	{
-		finding: "F8a",
-		name:    "public-IP beacon from C:\\Users\\Public to 1.1.1.1:443 (DoH) — zero hits",
-		ev: event.Event{EID: 3, Image: `C:\Users\Public\payload.exe`,
-			DstIP: "1.1.1.1", DstPort: 443},
-		wantZeroHits:  true,
-		wantQuietRule: "*",
-	},
-	{
-		finding: "F8a",
-		name:    "public-IP beacon from C:\\Users\\Public to 1.0.0.1:443 — zero hits",
-		ev: event.Event{EID: 3, Image: `C:\Users\Public\payload.exe`,
-			DstIP: "1.0.0.1", DstPort: 443},
-		wantZeroHits:  true,
-		wantQuietRule: "*",
-	},
+	// F8a FIXED (2026-09-02b, net.yml): Users\Public added to NET-004's image
+	// list. Both rows moved to TestBypassControls (F8a-fixed). DoH CIDRs kept
+	// (system resolver); residual = other user-writable dirs outside the list.
 
 	// F8b — fully silent LOOPBACK C2: known_loopback_listeners excepts
 	// 127.0.0.1:9080 from NET-005; loopback dst is also inside
-	// allowed_destinations for NET-002/003; NET-004 skips non-Temp images.
+	// allowed_destinations for NET-002/003. Image deliberately in Downloads
+	// (NOT one of NET-004's Temp/AppData/ProgramData/Users\Public dirs) so this
+	// row isolates the NET-005 except — after the F8a fix, a Users\Public image
+	// would fire NET-004 for a different reason.
 	{
 		finding: "F8b",
-		name:    "loopback C2 on the allowlisted port: 127.0.0.1:9080 from a Public-dir image — zero hits",
-		ev: event.Event{EID: 3, Image: `C:\Users\Public\payload.exe`,
+		name:    "loopback C2 on the allowlisted port: 127.0.0.1:9080 from a Downloads image — zero hits",
+		ev: event.Event{EID: 3, Image: `C:\Users\ju\Downloads\payload.exe`,
 			DstIP: "127.0.0.1", DstPort: 9080},
 		wantZeroHits:  true,
 		wantQuietRule: "*",
@@ -390,6 +376,18 @@ var controlCases = []controlCase{
 		rule: "INJECT-002", sev: event.SevSuspicious,
 		ev: event.Event{EID: 7, Image: `C:\Users\ju\AppData\Local\Temp\loader.exe`,
 			ImageLoaded: `C:\Users\ju\AppData\Local\Temp\payload.dll`, Signed: "false"},
+	},
+	{
+		name: "F8a-fixed: public-IP beacon from C:\\Users\\Public to 1.1.1.1:443 (DoH) fires NET-004",
+		rule: "NET-004", sev: event.SevCritical,
+		ev: event.Event{EID: 3, Image: `C:\Users\Public\payload.exe`,
+			DstIP: "1.1.1.1", DstPort: 443},
+	},
+	{
+		name: "F8a-fixed: public-IP beacon from C:\\Users\\Public to 1.0.0.1:443 fires NET-004",
+		rule: "NET-004", sev: event.SevCritical,
+		ev: event.Event{EID: 3, Image: `C:\Users\Public\payload.exe`,
+			DstIP: "1.0.0.1", DstPort: 443},
 	},
 	{
 		name: "C7: public beacon from Public dir to a NORMAL public IP fires (NET-002)",
