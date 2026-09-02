@@ -8,7 +8,7 @@
 //	image_in_dev_tools: dev_tool_paths     -> ImageInDevTools(path)
 //	cmdline_in_dev_scripts: dev_scripts    -> CmdLineInDevScripts(cmdline)
 //	dst_in_allowlist: allowed_destinations -> DstInCIDR(ip)
-//	dst_in_allowlist: known_loopback_listeners -> DstIsKnownLoopback(ip, port)
+//	dst_in_allowlist: known_loopback_listeners -> DstIsKnownLoopback(image, ip, port)
 //
 // trusted_binaries splits into two TIERS (see ImageTrusted):
 //   - Tier-1 (`path`): admin-owned install dirs (system32, Program Files).
@@ -57,9 +57,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strconv"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -99,9 +99,9 @@ type Allowlist struct {
 	devPath        []*regexp.Regexp
 	devScript      []*regexp.Regexp // commandline anchors (dev scripts run via a LOLBin)
 	cidrs          []*net.IPNet
-	loopback       map[string]bool   // "host:port" lowercased
-	logFilter      []*logFilterEntry // event_log_filter: suppresses the per-event DEBUG dump only
-	capPatterns    []*regexp.Regexp  // file_capture: path patterns matched on EID 11/23 TargetFile
+	loopback       map[string]*lbEntry // "host:port" lowercased -> optional expected-image gate
+	logFilter      []*logFilterEntry   // event_log_filter: suppresses the per-event DEBUG dump only
+	capPatterns    []*regexp.Regexp    // file_capture: path patterns matched on EID 11/23 TargetFile
 
 	sigVerify any // SigVerifier func, optionally also implementing PinnedVerifier; nil = Tier-2 never auto-trusts (fail closed)
 	mu        sync.RWMutex
@@ -157,7 +157,7 @@ func Compile(jsonBytes []byte) (*Allowlist, error) {
 	}
 	a := &Allowlist{
 		tbSHA:    map[string]bool{},
-		loopback: map[string]bool{},
+		loopback: map[string]*lbEntry{},
 		verified: map[string]bool{},
 	}
 	for _, h := range doc.TrustedBinaries.SHA256 {
@@ -208,7 +208,21 @@ func Compile(jsonBytes []byte) (*Allowlist, error) {
 		a.cidrs = append(a.cidrs, n)
 	}
 	for _, e := range doc.KnownLoopbackListeners {
-		a.loopback[strings.ToLower(strings.TrimSpace(e))] = true
+		// 2026-09-02b redteam F8b: an entry may carry an optional "image"
+		// regex. A bare string entry (or an object without "image") excepts
+		// ANY connecting image; a scoped entry excepts only images matching the
+		// regex — NET-005's dst_in_allowlist except had no image constraint, so
+		// ANY process chatting on an excepted loopback port was silent (the
+		// exact broker-C2 shape the rule exists for).
+		ent := &lbEntry{}
+		if img := strings.TrimSpace(e.Image); img != "" {
+			re, err := regexp.Compile("(?i)" + img)
+			if err != nil {
+				return nil, fmt.Errorf("bad known_loopback_listeners image regex %q: %w", img, err)
+			}
+			ent.image = re
+		}
+		a.loopback[strings.ToLower(strings.TrimSpace(e.Addr))] = ent
 	}
 	for _, f := range doc.EventLogFilter {
 		ent, err := compileFilter(f)
@@ -513,18 +527,56 @@ func (a *Allowlist) DstInCIDR(ip string) bool {
 	return false
 }
 
+// loopbackDocEntry is one known_loopback_listeners entry: either a bare
+// "host:port" string or an object {"addr": "host:port", "image": "<regex>"}.
+// A non-empty Image scopes the exception to connecting images whose path
+// matches the regex (case-insensitive, unanchored — match a name fragment
+// like "nahimic"). This is the 2026-09-02b F8b fix: without it, an excepted
+// loopback port silenced NET-005 for EVERY image.
+type loopbackDocEntry struct {
+	Addr  string
+	Image string
+}
+
+func (l *loopbackDocEntry) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		*l = loopbackDocEntry{Addr: s}
+		return nil
+	}
+	var o struct {
+		Addr  string `json:"addr"`
+		Image string `json:"image"`
+	}
+	if err := json.Unmarshal(b, &o); err != nil {
+		return fmt.Errorf("known_loopback_listeners entry must be \"host:port\" or {\"addr\":..., \"image\":...}: %w", err)
+	}
+	if strings.TrimSpace(o.Addr) == "" {
+		return fmt.Errorf("known_loopback_listeners entry needs a non-empty addr")
+	}
+	*l = loopbackDocEntry{Addr: o.Addr, Image: o.Image}
+	return nil
+}
+
+// lbEntry is the compiled form: an optional expected-image regex. A nil image
+// means the entry excepts any connecting image (the legacy bare-string form).
+type lbEntry struct {
+	image *regexp.Regexp
+}
+
 // DstIsKnownLoopback reports whether (ip, port) is a known-good loopback server
-// in known_loopback_listeners (host:port set). The event IP is canonicalized
+// in known_loopback_listeners (host:port set), optionally scoped to an expected
+// connecting image. The event IP is canonicalized
 // via net.ParseIP first: Sysmon renders IPv6 loopback as the EXPANDED form
 // (0:0:0:0:0:0:0:1), so an entry spelled "::1:9080" would otherwise never
 // match it (observed live 2026-09-01). Config entries are canonicalized with
 // the same function, so either spelling works on both sides.
-func (a *Allowlist) DstIsKnownLoopback(ip string, port int) bool {
+func (a *Allowlist) DstIsKnownLoopback(imagePath, ip string, port int) bool {
 	if a == nil || port == 0 {
 		return false
 	}
 	want := canonicalIP(strings.TrimSpace(ip))
-	for k := range a.loopback {
+	for k, ent := range a.loopback {
 		// Split on the LAST colon: config entries are written unbracketed
 		// ("::1:9080"), which net.SplitHostPort rejects as ambiguous.
 		last := strings.LastIndex(k, ":")
@@ -532,6 +584,11 @@ func (a *Allowlist) DstIsKnownLoopback(ip string, port int) bool {
 			continue
 		}
 		if canonicalIP(strings.Trim(strings.TrimSpace(k[:last]), "[]")) == want {
+			// F8b image gate: a scoped entry excepts ONLY the expected image;
+			// any other connecting image stays armed (rule fires).
+			if ent.image != nil && !ent.image.MatchString(imagePath) {
+				continue
+			}
 			return true
 		}
 	}
@@ -621,7 +678,7 @@ type rawDoc struct {
 	AllowedDestinations struct {
 		CIDR []string `json:"cidr"`
 	} `json:"allowed_destinations"`
-	KnownLoopbackListeners []string `json:"known_loopback_listeners"`
+	KnownLoopbackListeners []loopbackDocEntry `json:"known_loopback_listeners"`
 	DevToolPaths           struct {
 		Path []string `json:"path"`
 	} `json:"dev_tool_paths"`

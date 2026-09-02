@@ -70,7 +70,7 @@ func TestDstIsKnownLoopbackCanonicalizesIPv6(t *testing.T) {
 		{"127.0.0.2", 9080, false},       // wrong ip
 	}
 	for _, c := range cases {
-		if got := a.DstIsKnownLoopback(c.ip, c.port); got != c.want {
+		if got := a.DstIsKnownLoopback("", c.ip, c.port); got != c.want {
 			t.Errorf("DstIsKnownLoopback(%q,%d)=%v want %v", c.ip, c.port, got, c.want)
 		}
 	}
@@ -123,12 +123,49 @@ func TestLoadAndChecks(t *testing.T) {
 		t.Error("garbage ip should not match")
 	}
 
-	// known loopback
-	if !a.DstIsKnownLoopback("127.0.0.1", 9080) {
+	// known loopback (this fixture uses bare string entries: any image)
+	if !a.DstIsKnownLoopback("c:\\anything.exe", "127.0.0.1", 9080) {
 		t.Error("127.0.0.1:9080 is a known loopback")
 	}
-	if a.DstIsKnownLoopback("127.0.0.1", 58172) {
+	if a.DstIsKnownLoopback("c:\\anything.exe", "127.0.0.1", 58172) {
 		t.Error("127.0.0.1:58172 should NOT be known (that's the broker)")
+	}
+}
+
+// TestKnownLoopbackImageScoping pins the 2026-09-02b F8b fix: a
+// known_loopback_listeners entry may be an object {"addr":..., "image":...}
+// that excepts ONLY the expected connecting image. A bare string entry keeps
+// the legacy any-image semantics.
+func TestKnownLoopbackImageScoping(t *testing.T) {
+	a, err := Compile([]byte(`{
+  "known_loopback_listeners": [
+    "127.0.0.1:5173",
+    { "addr": "127.0.0.1:9080", "image": "nahimic" }
+  ]
+}`))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	nahimic := `C:\Windows\System32\NahimicService.exe`
+	appdataNahimic := `c:\users\user01\appdata\local\nhnotifsys\nahimic\module.exe`
+	implant := `C:\Users\user01\Downloads\payload.exe`
+	// scoped entry: matching images are excepted, anything else stays armed
+	if !a.DstIsKnownLoopback(nahimic, "127.0.0.1", 9080) {
+		t.Error("scoped entry must except the expected image (system32 nahimic)")
+	}
+	if !a.DstIsKnownLoopback(appdataNahimic, "127.0.0.1", 9080) {
+		t.Error("scoped entry must except the expected image (appdata nahimic, case-insensitive)")
+	}
+	if a.DstIsKnownLoopback(implant, "127.0.0.1", 9080) {
+		t.Error("scoped entry must NOT except an unrelated image (the F8b hole: broker C2 on the excepted port)")
+	}
+	// bare string entry: legacy any-image semantics
+	if !a.DstIsKnownLoopback(implant, "127.0.0.1", 5173) {
+		t.Error("bare string entry keeps any-image semantics")
+	}
+	// scoping never widens the port match
+	if a.DstIsKnownLoopback(nahimic, "127.0.0.1", 9081) {
+		t.Error("wrong port must never match")
 	}
 }
 

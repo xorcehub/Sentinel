@@ -118,7 +118,7 @@ func (a *fakeAL) DstInCIDR(ip string) bool {
 	}
 	return false
 }
-func (a *fakeAL) DstIsKnownLoopback(ip string, port int) bool {
+func (a *fakeAL) DstIsKnownLoopback(imagePath, ip string, port int) bool {
 	return a.loopback[strings.ToLower(ip)+":"+strconv.Itoa(port)]
 }
 

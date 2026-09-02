@@ -58,16 +58,15 @@ spots where a slightly-different spelling makes Sentinel see **nothing**:
   CIDRs.
 - **F8b — the magic port.** `127.0.0.1:9080` is excepted from NET-005, so two
   programs chatting over that port (the exact broker-C2 shape the rule exists
-  for) are silent; :9081 fires CRITICAL. Fix: drop the entry if unused, or
-  scope exceptions to an expected image.
+  for) are silent; :9081 fires CRITICAL. **FIXED** by scoping: docs pin 9080 as
+  NahimicService (not unused — deletion was not an option), so the entry is now
+  `{ "addr": "127.0.0.1:9080", "image": "nahimic" }` via a small engine extension.
 
-None of these fixes have been applied — rules.d/config edits are the operator's
-call. Total fix is ~15 lines of rule/allowlist text, then restart the Sentinel
-task (rules load at startup); CU1/CU2 + the existing suite confirm no breakage.
+All fixes in this document are APPLIED on branch `fix/redteam-round2` (one commit per finding). After merging: restart the Sentinel scheduled task (rules load at startup). Residuals, documented above: F1 token whack-a-mole, F3 `/xml`, F7/F8a other user-writable dirs, F8b string-form entries stay any-image.
 
-## Findings (all live-verified quiet, engine-level)
+## Findings (verified against the real engine at authoring time; status per row)
 
-| ID | Rule | Bypass | Fix direction |
+| ID | Rule | Bypass | Status / fix |
 |----|------|--------|---------------|
 | F1 | EXEC-001 | `powershell -ep b` / `-ExecutionPolicy B` / `-w h` — PS resolves abbreviated param names AND abbreviated enum values, so Bypass policy with zero keyword matches (`'-ep bypass'` is longer than `'-ep b'`, contains() can't catch any prefix form). Conhost broker variant too (EXEC-002 needs `--headless`). | **FIXED** (branch `fix/redteam-round2`): first-letter + colon-prefix tokens added to selection_cli (`-ep b`, `-ep u`, `-ep:B`, `-ExecutionPolicy B`, `-w h`, ...). Rows flipped to controls. Residual: token list is whack-a-mole vs PS prefix matching — durable fix is an engine helper that parses PS argv. |
 | F2 | EXEC-001 | `dev_scripts` except matches the bare filename `pe-triage-docker\.ps1` ANYWHERE in the cmdline: full `-ExecutionPolicy Bypass -File C:\<anywhere>\pe-triage-docker.ps1` = allowlist-suppressed, zero hits. (Evasion note in `internal/allowlist` documents the class; this pins the impact.) | **FIXED**: entry path-anchored to `pe_triage[\\/]scripts[\\/]pe-triage-docker\.ps1` (the operator's real repo dir, seen in allowlist_test.go). Relative invocations now (safely) alert — same doctrine as install.ps1. Row flipped to control. |
@@ -76,7 +75,7 @@ task (rules load at startup); CU1/CU2 + the existing suite confirm no breakage.
 | F5 | PERSIST-004 | Startup extension list `exe|ps1|bat|cmd|vbs|js|lnk` misses executable-on-logon handlers: `.hta` (mshta), `.jse`, `.vbe`, `.wsf`, `.scr`. | **FIXED**: alternation extended to `(exe|ps1|bat|cmd|vbs|js|jse|vbe|wsf|hta|scr|lnk)$`. Rows flipped to controls. Note: `.scr` execution at logon is association-dependent (scrfile open verb) — kept anyway; a Startup-folder `.scr` write firing is the right outcome. |
 | F7 | INJECT-002 | `ImageLoaded` scoped to `(Temp|AppData|ProgramData|Downloads)` substrings — unsigned DLL loads from **Desktop**, **Documents**, or this repo tree are invisible. Desktop is a top staging dir per CRED-001's own note. | **FIXED**: `Desktop|Documents` added (the repo-tree row closes via Documents). Rows flipped to controls. Residual: any OTHER user-writable dir — durable fix is an unsigned-AND-user-writable helper. Still confirm the Sysmon config subscribes EID 7 for those paths. |
 | F8a | NET-002/003/004 | **Fully silent public beacon**: dst `1.1.1.1`/`1.0.0.1` is in `allowed_destinations` (DoH entries) AND image at `C:/Users/Public/` misses NET-004's `Temp|AppData|ProgramData` list → zero rules see it. DoH over 443 gives DNS-tunnel exfil. | **FIXED**: `Users/Public` (path separator-insensitive `contains`) added to NET-004's image list; DoH CIDRs kept (the system resolver uses them). Rows flipped to controls. Residual: other user-writable dirs outside NET-004's list + an allowlisted DoH dst (e.g. `Downloads/payload.exe` → 1.1.1.1) — durable fix is a DoH-from-non-resolver-image helper. |
-| F8b | NET-005 | **Fully silent loopback C2** on `127.0.0.1:9080` (the `known_loopback_listeners` entry) from any non-Temp/AppData/ProgramData image. Control :9081 fires CRITICAL. | The except has no image constraint. Either delete the :9080 entry if nothing uses it, or scope exceptions with an expected image (needs engine support for per-entry image matching). |
+| F8b | NET-005 | **Fully silent loopback C2** on `127.0.0.1:9080` (the `known_loopback_listeners` entry) from any non-Temp/AppData/ProgramData image. Control :9081 fires CRITICAL. | **FIXED**: entries may now be `{ "addr": "host:port", "image": "<regex>" }` (engine: `DstIsKnownLoopback(image, ip, port)`); the 9080 entry is scoped to `nahimic` (docs pin it as NahimicService - NOT unused, so deletion was not an option). Row flipped to control + TestF8bScopedExceptionStillQuietsNahimic pins that the legit image stays excepted. |
 
 Documented-accepted (confirmed, pinned, not a new finding): `%USERPROFILE%\go\bin\evil.exe`
 beacons a public IP with **zero hits** — dev_tool_paths path-trust (Bypass-B),
@@ -113,9 +112,9 @@ re-proves ingestion. If wanted:
 
 ```powershell
 go build -o tests/redteam-2026-09-02b/bin/probe.exe tests/redteam-2026-09-02b/probe-bin.go
-tests\redteam-2026-09-02b\bin\probe.exe bypassps        # expect QUIET (F1)
+tests\redteam-2026-09-02b\bin\probe.exe bypassps        # expect EXEC-001 CRITICAL toast (F1-fixed; was QUIET)
 tests\redteam-2026-09-02b\bin\probe.exe bypassps-full   # expect EXEC-001 CRITICAL toast (C1)
-tests\redteam-2026-09-02b\bin\probe.exe loopctl 9080    # expect QUIET (F8b)
+tests\redteam-2026-09-02b\bin\probe.exe loopctl 9080    # expect NET-005 CRITICAL toast (F8b-fixed; was QUIET - probe.exe is not nahimic)
 tests\redteam-2026-09-02b\bin\probe.exe loopctl 9081    # expect NET-005 CRITICAL toast (C8)
 ```
 

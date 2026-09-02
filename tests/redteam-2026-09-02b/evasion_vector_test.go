@@ -210,20 +210,9 @@ var bypassCases = []bypassCase{
 	// list. Both rows moved to TestBypassControls (F8a-fixed). DoH CIDRs kept
 	// (system resolver); residual = other user-writable dirs outside the list.
 
-	// F8b — fully silent LOOPBACK C2: known_loopback_listeners excepts
-	// 127.0.0.1:9080 from NET-005; loopback dst is also inside
-	// allowed_destinations for NET-002/003. Image deliberately in Downloads
-	// (NOT one of NET-004's Temp/AppData/ProgramData/Users\Public dirs) so this
-	// row isolates the NET-005 except — after the F8a fix, a Users\Public image
-	// would fire NET-004 for a different reason.
-	{
-		finding: "F8b",
-		name:    "loopback C2 on the allowlisted port: 127.0.0.1:9080 from a Downloads image — zero hits",
-		ev: event.Event{EID: 3, Image: `C:\Users\ju\Downloads\payload.exe`,
-			DstIP: "127.0.0.1", DstPort: 9080},
-		wantZeroHits:  true,
-		wantQuietRule: "*",
-	},
+	// F8b FIXED (2026-09-02b, allowlist.json + engine): known_loopback_listeners
+	// entries may now be scoped to an expected image; the 9080 entry is scoped
+	// to nahimic-named images. Row moved to TestBypassControls (F8b-fixed).
 
 	// Documented-accepted residual (confirmed, not new): dev_tool_paths grants
 	// NET-002/003/004 quiet to anything self-named under %USERPROFILE%\go\bin
@@ -402,6 +391,12 @@ var controlCases = []controlCase{
 			DstIP: "1.1.1.1", DstPort: 443},
 	},
 	{
+		name: "F8b-fixed: loopback C2 on the scoped 9080 entry fires NET-005 (non-nahimic image)",
+		rule: "NET-005", sev: event.SevCritical,
+		ev: event.Event{EID: 3, Image: `C:\Users\ju\Downloads\payload.exe`,
+			DstIP: "127.0.0.1", DstPort: 9080},
+	},
+	{
 		name: "C8: loopback 9081 (not allowlisted) fires NET-005",
 		rule: "NET-005", sev: event.SevCritical,
 		ev: event.Event{EID: 3, Image: `C:\Users\Public\payload.exe`,
@@ -470,5 +465,27 @@ func TestF4AnchorKeepsDeviceChurnQuiet(t *testing.T) {
 		Details:      `HP LaserJet 4,LPT1:`}
 	if ids := hitIDs(freshEngine(t).Evaluate(&ev)); hasRule(ids, "PERSIST-003") {
 		t.Errorf("per-user Device churn must stay quiet after the F4 anchor; got %v", ids)
+	}
+}
+
+// TestF8bScopedExceptionStillQuietsNahimic: the F8b fix must not break the
+// exception's purpose — the expected (nahimic-named) image on the scoped
+// 9080 entry stays excepted from NET-005, i.e. suppressed-by-allowlist, not
+// a hit. Any other image on that port fires (pinned in the controls table).
+func TestF8bScopedExceptionStillQuietsNahimic(t *testing.T) {
+	ev := event.Event{EID: 3, Image: `C:\Windows\System32\NahimicService.exe`,
+		DstIP: "127.0.0.1", DstPort: 9080}
+	res := freshEngine(t).Evaluate(&ev)
+	if hasRule(hitIDs(res), "NET-005") {
+		t.Errorf("nahimic image on the scoped 9080 entry must stay excepted; got hits %v", hitIDs(res))
+	}
+	found := false
+	for _, s := range res.Suppressed {
+		if s.RuleID == "NET-005" && s.Reason == "allowlist" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected NET-005 suppressed(allowlist) for the scoped image; got %v", suppIDs(res))
 	}
 }
