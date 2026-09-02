@@ -1,4 +1,4 @@
-# scripts/enable-filecreate-telemetry.ps1
+﻿# scripts/enable-filecreate-telemetry.ps1
 #
 # SwiftOnSecurity's sysmon-config (deployed by install-sysmon.ps1) does NOT
 # include a FileCreate (EID 11) rule group, so EID 11 never fires. This blinds:
@@ -183,6 +183,8 @@ if (-not $xml.DocumentElement -or $xml.DocumentElement.Name -ne 'Sysmon') {
 }
 
 # --- 4. idempotency: check BOTH FileCreate and FileDelete markers ---
+# Marker survives a merge into an existing group via the imported XML comment,
+# so this also matches previously-patched configs (idempotency relies on it).
 $hasFC = $xml.OuterXml -match [regex]::Escape($FileCreateMarker)
 $hasFD = $xml.OuterXml -match [regex]::Escape($FileDeleteMarker)
 $hasAD = $null -ne $xml.SelectSingleNode("//ArchiveDirectory")
@@ -283,12 +285,15 @@ if ($apply.ExitCode -ne 0) {
 Write-Host "Config applied successfully."
 
 # --- 8. verify ---
+# Read from the DOM sysmon just accepted (exit 0 above). Scraping `sysmon -c`
+# display output was dropped: none of it matches FileCreate/FileDelete/Archive,
+# so the old check printed nothing and verified nothing.
 Write-Host ""
-Write-Host "Current Sysmon config summary (FileCreate + FileDelete should now be active):"
-$conf = Invoke-Native -Binary $sysmon -ArgString "-c"
-$confText = $conf.StdOut
-if ($conf.StdErr) { $confText = $confText + "`r`n" + $conf.StdErr }
-$confText -split "`n" | Select-String -Pattern "FileCreate|FileDelete|Archive" | Select-Object -First 5
+Write-Host "Config summary (parsed from the config sysmon just accepted):"
+Write-Host ("  FileCreate include entries: " + $xml.SelectNodes("//FileCreate[@onmatch='include']/TargetFilename").Count)
+Write-Host ("  FileDelete include entries: " + $xml.SelectNodes("//FileDelete[@onmatch='include']/TargetFilename").Count)
+$adNode = $xml.SelectSingleNode("//ArchiveDirectory")
+Write-Host ("  ArchiveDirectory: " + $(if ($adNode) { "C:\" + $adNode.InnerText + "\" } else { "MISSING" }))
 
 Write-Host ""
 Write-Host "Done. EID 11 (FileCreate) + EID 23 (FileDelete) are now monitored for:"
@@ -296,8 +301,8 @@ Write-Host "  - \Temp\ps-script-          (snapshot vault capture)"
 Write-Host "  - ...\Start Menu\Programs\Startup  (PERSIST-004)"
 Write-Host "  - sentinel config files     (CONFIG-001)"
 Write-Host ""
-Write-Host "Archived FileDelete copies are in: C:\" + $ArchiveDirName + "\"
-Write-Host "Pass this path to sentinel: -sysmon-archive-dir C:\" + $ArchiveDirName
+Write-Host "Archived FileDelete copies are in: C:\$ArchiveDirName\"
+Write-Host "Pass this path to sentinel: -sysmon-archive-dir C:\$ArchiveDirName"
 Write-Host ""
 Write-Host "To verify live: open a Cursor window (creates+deletes Temp\ps-script-*.ps1),"
 Write-Host "then check the vault for captured content."

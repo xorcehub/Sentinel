@@ -1,4 +1,4 @@
-
+﻿
       <!-- Sentinel-FileDelete-Telemetry entries (merged into a FileDelete
            include RuleGroup by enable-filecreate-telemetry.ps1).
            These match the SAME patterns as sysmon-filecreate.xml so every

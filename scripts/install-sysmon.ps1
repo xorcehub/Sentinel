@@ -1,4 +1,4 @@
-# scripts/install-sysmon.ps1
+﻿# scripts/install-sysmon.ps1
 # Ensures Sysmon64 is installed with a config that emits the EIDs the Sentinel
 # rules need (Phase 0 acceptance, 07-BUILD-PHASES.md). Idempotent: detects an
 # existing install and updates the config rather than reinstalling.

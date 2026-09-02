@@ -1,4 +1,4 @@
-
+﻿
       <!-- Sentinel-FileCreate-Telemetry entries (merged into existing FileCreate
            group by enable-filecreate-telemetry.ps1). 'contains' only — universally
            supported. Do NOT add a second FileCreate RuleGroup — sysmon 15.21
