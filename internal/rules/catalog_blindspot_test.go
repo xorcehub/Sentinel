@@ -433,6 +433,62 @@ func TestCursorPathMimicResidualIsBounded(t *testing.T) {
 			t.Errorf("cursor-named dir plant (%s) must fire both rules; got %v", fakeParent, ids2)
 		}
 	}
+	// 2026-09-02 redteam: the anchors used to be SUFFIX-only ($ end-anchored,
+	// no start anchor), so ANY tree ending in the install path got the same
+	// trust - live-confirmed quiet for a repo-subfolder mimic. The filters now
+	// require a real ^<drive>:\users\<profile> prefix on BOTH the parent and
+	// the script path; every suffix-tree mimic must fire both rules.
+	for _, fakeSuffixParent := range []string{
+		`D:\stuff\appdata\local\programs\cursor\cursor.exe`,
+		`C:\Users\jurij\Documents\Github\leave-my-shit-alone\tests\samples\lab\appdata\local\programs\cursor\cursor.exe`,
+	} {
+		suffix := bridge
+		suffix.RecordID = 45
+		suffix.ParentImage = fakeSuffixParent
+		ids3 := hitRuleIDs(realEngine(t).Evaluate(&suffix))
+		if !containsRule(ids3, "EXEC-001") || !containsRule(ids3, "PERSIST-001") {
+			t.Errorf("suffix-tree mimic parent (%s) must fire both rules; got %v", fakeSuffixParent, ids3)
+		}
+	}
+	suffixScript := bridge
+	suffixScript.RecordID = 46
+	suffixScript.CmdLine = `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -NonInteractive -File D:\stuff\appdata\local\temp\ps-script-deadbeef-0000-4000-8000-000000000000.ps1`
+	if !containsRule(hitRuleIDs(realEngine(t).Evaluate(&suffixScript)), "EXEC-001") {
+		t.Errorf("script in a non-profile AppData-suffixed Temp must re-arm EXEC-001")
+	}
+	// 2026-09-02 review round 2: the ^[a-z]: prefix still trusted (a) the
+	// world-writable c:\users\public pseudo-profile (also \default, \all
+	// users) and (b) a \users tree at the root of any other drive (removable
+	// included). Anchors now pin the system drive; a condition-level filter
+	// rejects the pseudo-profile trees (RE2 has no lookahead).
+	psx := `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`
+	for _, tt := range []struct {
+		name   string
+		parent string
+		script string
+	}{
+		{"public pseudo-profile parent", `C:\Users\Public\appdata\local\programs\cursor\cursor.exe`,
+			`C:\Users\Public\appdata\local\temp\ps-script-deadbeef-0000-4000-8000-000000000000.ps1`},
+		{"public pseudo-profile, UPPER spelling", `C:\USERS\PUBLIC\appdata\local\programs\cursor\cursor.exe`,
+			`C:\Users\Public\appdata\local\temp\ps-script-deadbeef-0000-4000-8000-000000000000.ps1`},
+		{"removable-drive users tree parent", `E:\users\mal\appdata\local\programs\cursor\cursor.exe`,
+			`E:\users\mal\appdata\local\temp\ps-script-deadbeef-0000-4000-8000-000000000000.ps1`},
+	} {
+		evx := bridge
+		evx.RecordID = 50
+		evx.ParentImage = tt.parent
+		evx.CmdLine = psx + ` -ExecutionPolicy Bypass -NonInteractive -File ` + tt.script
+		ids4 := hitRuleIDs(realEngine(t).Evaluate(&evx))
+		if !containsRule(ids4, "EXEC-001") || !containsRule(ids4, "PERSIST-001") {
+			t.Errorf("%s must fire both rules; got %v", tt.name, ids4)
+		}
+	}
+	foreignDriveScript := bridge
+	foreignDriveScript.RecordID = 51
+	foreignDriveScript.CmdLine = psx + ` -ExecutionPolicy Bypass -NonInteractive -File D:\users\x\appdata\local\temp\ps-script-deadbeef-0000-4000-8000-000000000000.ps1`
+	if ids5 := hitRuleIDs(realEngine(t).Evaluate(&foreignDriveScript)); !containsRule(ids5, "EXEC-001") || !containsRule(ids5, "PERSIST-001") {
+		t.Errorf("script on a non-system drive must fire both rules; got %v", ids5)
+	}
 	// DOCUMENTED PRE-EXISTING hole (not introduced by the tuning): the planted
 	// parent's OWN outbound to a public IP is NET-quiet via dev_tool_paths
 	// (path-only, no signature - Bypass-B). If this assert ever fails because

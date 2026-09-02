@@ -24,9 +24,20 @@ detection:
     # install.ps1-style scheduled task - only the Cursor-parented bridge shape.
     # Pinned by TestCursorAgentScriptBridgeSuppressed and
     # TestCursorPathMimicResidualIsBounded (mimic/plant rows).
-    ParentImage|re: '(?i)\\appdata\\local\\programs\\cursor\\(?:_\\)?cursor\.exe$'
-    CommandLine|re: '(?i)^\s*"?[^\s"]*powershell\.exe"?\s+-ExecutionPolicy Bypass -NonInteractive -File "?[^\s"]*\\AppData\\Local\\Temp\\ps-script-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ps1"?\s*$'
-  condition: selection_launch and selection_path and not filter_cursor_agent
+    # 2026-09-02 redteam: these anchors were SUFFIX-only ($ end-anchored, no
+    # start anchor), so ANY tree ending in the install path (repo subfolder,
+    # USB, D:\stuff\appdata\) got the same trust - live-confirmed quiet.
+    # Both sides now require a real ^<drive>:\users\<profile> prefix.
+    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\cursor\\(?:_\\)?cursor\.exe$'
+    CommandLine|re: '(?i)^\s*"?[^\s"]*powershell\.exe"?\s+-ExecutionPolicy Bypass -NonInteractive -File "?c:\\users\\[^\\]+\\AppData\\Local\\Temp\\ps-script-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ps1"?\s*$'
+  filter_untrusted_profile_tree:
+    # 2026-09-02 review: \users\public (WORLD-WRITABLE), \default
+    # and \all users are not per-user profiles - a plant there must not
+    # inherit bridge trust. RE2 has no lookahead, so this is a separate
+    # filter the condition ANDs into the trust decision. ParentImage is
+    # pathnorm'd (resolved) - Win32 trailing-dot spellings do not survive.
+    ParentImage|startswith: ['c:\users\public\', 'c:\users\default\', 'c:\users\all users\']
+  condition: selection_launch and selection_path and not (filter_cursor_agent and not filter_untrusted_profile_tree)
 level: high
 tags: [attack.persistence, attack.t1053.005]
 falsepositives: [legitimate installers running from temp]

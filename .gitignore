@@ -22,3 +22,6 @@ forensics/sentinel-vault/*
 scripts/archive/
 scripts/analysis/
 
+
+# live redteam launchers (local only - benign but replicate attack shapes)
+scripts/redteam/
