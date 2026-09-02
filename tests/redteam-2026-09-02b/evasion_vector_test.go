@@ -170,17 +170,11 @@ var bypassCases = []bypassCase{
 	// TestBypassControls (F2-fixed). See also internal/allowlist
 	// TestCmdLineInDevScripts / TestProductionAllowlistDevTuning.
 
-	// F3 — PERSIST-001 selection_path keys on literal path tokens
-	// (ProgramData/AppData/\Temp\/\Users\Public\) in the schtasks cmdline.
-	// An env-var reference or the /xml form carries none.
-	{
-		finding: "F3",
-		name:    "schtasks /create /tr %TEMP%\\upd.exe (env-var hides the path token)",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\schtasks.exe`,
-			CmdLine: `schtasks.exe /create /tn OneDriveUpd /tr "%TEMP%\upd.exe" /sc onlogon /f`},
-		wantZeroHits:  true,
-		wantQuietRule: "PERSIST-001",
-	},
+	// F3 PARTIALLY FIXED (2026-09-02b, persistence.yml): %temp%/%appdata%
+	// env-var tokens added to selection_path — the env-var row moved to
+	// TestBypassControls (F3a-fixed). REMAINING bypass: /xml keeps the action
+	// out of the cmdline entirely; needs an engine helper resolving the XML.
+	// Backstop: BASE-001 daily autoruns diff (task appears, <=24h delay).
 	{
 		finding: "F3",
 		name:    "schtasks /create /xml (task definition carries the action, not the cmdline)",
@@ -371,6 +365,12 @@ var controlCases = []controlCase{
 		rule: "EXEC-002", sev: event.SevCritical,
 		ev: event.Event{EID: 1, Image: `C:\Windows\System32\conhost.exe`,
 			CmdLine: `conhost.exe --headless powershell -ep b -c Get-Date`},
+	},
+	{
+		name: "F3a-fixed: schtasks /tr %TEMP%\\upd.exe fires (env-var token)",
+		rule: "PERSIST-001", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\schtasks.exe`,
+			CmdLine: `schtasks.exe /create /tn OneDriveUpd /tr "%TEMP%\upd.exe" /sc onlogon /f`},
 	},
 	{
 		name: "C2: schtasks /tr with literal ProgramData path fires",
