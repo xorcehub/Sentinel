@@ -26,10 +26,12 @@ detection:
     EventID: 7
     # 2026-09-02b redteam F7: Desktop|Documents added — top user-writable
     # staging dirs (CRED-001's own note names Desktop) were invisible to the
-    # old Temp|AppData|ProgramData|Downloads list. Residual: any OTHER
-    # user-writable dir — durable fix is an unsigned-AND-user-writable helper
-    # (needs a user-writable-path predicate in the engine).
-    ImageLoaded|re: '(?i)(Temp|AppData|ProgramData|Downloads|Desktop|Documents).*\.dll$'
+    # old Temp|AppData|ProgramData|Downloads list. 2026-09-02c redteam F13:
+    # Users\Public added — world-writable, same gap F8a closed in NET-004.
+    # Residual: any OTHER user-writable dir — durable fix is an
+    # unsigned-AND-user-writable helper (needs a user-writable-path predicate
+    # in the engine).
+    ImageLoaded|re: '(?i)(Temp|AppData|ProgramData|Downloads|Desktop|Documents|Users\\Public).*\.dll$'
     Signed: 'false'
   condition: selection
 level: medium

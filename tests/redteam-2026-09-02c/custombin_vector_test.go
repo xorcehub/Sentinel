@@ -224,27 +224,8 @@ var bypassCases = []bypassCase{
 		wantQuietRule: "*",
 	},
 
-	// F13: the F8a fix added Users\Public to NET-004's dir list only. The
-	// sibling rules with the same dir-list class kept their old lists:
-	// EXEC-004 still knows only (Temp|AppData|ProgramData), INJECT-002 only
-	// (...|Downloads|Desktop|Documents). C:\Users\Public is world-writable —
-	// the exact dir F8a called out — and custom binaries choose their own
-	// name/dir freely. (Downloads and repo trees miss EXEC-004 the same way.)
-	{
-		finding: "F13",
-		name:    "hex-named custom binary runs from C:\\Users\\Public — EXEC-004 silent (Public not in its dir list)",
-		ev: event.Event{EID: 1, Image: `C:\Users\Public\deadbeefcafe.exe`, CmdLine: `"C:\Users\Public\deadbeefcafe.exe" `},
-		wantZeroHits:  true,
-		wantQuietRule: "EXEC-004",
-	},
-	{
-		finding: "F13",
-		name:    "unsigned DLL sideloaded from C:\\Users\\Public — INJECT-002 silent (Public not in its dir list)",
-		ev: event.Event{EID: 7, Image: `C:\Users\ju\Documents\host.exe`,
-			ImageLoaded: `C:\Users\Public\payload.dll`, Signed: "false"},
-		wantZeroHits:  true,
-		wantQuietRule: "INJECT-002",
-	},
+	// F13 FIXED (commit "fix(rules): EXEC-004 + INJECT-002 cover Users\Public"):
+	// both Public rows now FIRE — flipped into the controls table as C13c/C13d.
 
 	// F15 (headline): trusted_binaries Tier-1 path patterns are `^[a-z]:\\program files\\...`
 	// — the drive letter is a WILDCARD. The tier's premise is "Program Files is
@@ -373,6 +354,17 @@ var controlCases = []controlCase{
 		rule: "INJECT-002", sev: event.SevSuspicious,
 		ev: event.Event{EID: 7, Image: `C:\Users\ju\Documents\host.exe`,
 			ImageLoaded: `C:\Users\ju\Desktop\payload.dll`, Signed: "false"},
+	},
+	{
+		name: "C13c (F13 fixed): hex-named exe in C:\\Users\\Public now fires EXEC-004",
+		rule: "EXEC-004", sev: event.SevSuspicious,
+		ev: event.Event{EID: 1, Image: `C:\Users\Public\deadbeefcafe.exe`, CmdLine: `"C:\Users\Public\deadbeefcafe.exe" `},
+	},
+	{
+		name: "C13d (F13 fixed): unsigned DLL sideloaded from C:\\Users\\Public now fires INJECT-002",
+		rule: "INJECT-002", sev: event.SevSuspicious,
+		ev: event.Event{EID: 7, Image: `C:\Users\ju\Documents\host.exe`,
+			ImageLoaded: `C:\Users\Public\payload.dll`, Signed: "false"},
 	},
 	{
 		name: "C15a: the same beacon from the USER's Downloads fires NET-002 (trust is the D:\\Program Files path, nothing else)",

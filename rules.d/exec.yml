@@ -161,7 +161,9 @@ logsource: { product: windows, service: sysmon }
 detection:
   selection:
     EventID: 1
-    Image|re: '(?i)(Temp|AppData|ProgramData).*(\\|/)([0-9a-f]{6,}|[0-9a-f]{8}-[0-9a-f]{4})\.exe$'
+    # 2026-09-02c redteam F13: Users\Public added — world-writable tree, same
+    # gap F8a closed in NET-004; a hex-named exe dropped in Public was silent.
+    Image|re: '(?i)(Temp|AppData|ProgramData|Users\\Public).*(\\|/)([0-9a-f]{6,}|[0-9a-f]{8}-[0-9a-f]{4})\.exe$'
   condition: selection
 level: medium
 tags: [attack.execution, attack.t1027]
