@@ -11,7 +11,12 @@ detection:
     EventID: 11
     TargetFilename|contains: ['rules.d\', 'allowlist.json', 'baseline_clean.json', 'baseline_2', 'state.db', 'sentinel.conf']
   filter_sentinel:
-    Image|endswith: '\sentinel.exe'
+    # 2026-09-02c redteam F11: was Image|endswith '\sentinel.exe' — name-trust
+    # with no prefix anchor, so a binary RENAMED sentinel.exe in Downloads (or
+    # anywhere) could write the real config silently (Sigma filter = not even
+    # a suppressed line). Anchored to the deployed binary path
+    # (scripts/install-task.ps1 launches <repo>\sentinel.exe).
+    Image|re: '(?i)^[a-z]:\\[^\\]+\\documents\\github\\leave-my-shit-alone\\sentinel\.exe$'
   filter_temp:
     # Writes under Temp are test fixtures / staging copies, never the live
     # config dir. Real tamper targets rules.d/allowlist.json/state.db at the

@@ -214,20 +214,9 @@ var bypassCases = []bypassCase{
 		wantSuppReason: "allowlist",
 	},
 
-	// F11: CONFIG-001's filter_sentinel trusts ANY image whose path ENDS with
-	// \sentinel.exe (no prefix anchor — the round-1 cursor-suffix class), and
-	// the selection keys on TargetFilename CONTAINS 'allowlist.json' etc.
-	// anywhere on disk. A custom binary renamed sentinel.exe can tamper the
-	// real config silently — and the Sigma filter means not even a
-	// SUPPRESSED line is logged (fully invisible, unlike an except).
-	{
-		finding: "F11",
-		name:    "renamed binary sentinel.exe (Downloads) writes the real config allowlist.json — CONFIG-001 silent at Sigma-filter level (no suppressed line)",
-		ev: event.Event{EID: 11, Image: `C:\Users\ju\Downloads\sentinel.exe`,
-			TargetFile: `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\config\allowlist.json`},
-		wantZeroHits:  true,
-		wantQuietRule: "CONFIG-001",
-	},
+	// F11 FIXED (commit "fix(rules): CONFIG-001 filter_sentinel anchored"): the
+	// Downloads-renamed sentinel.exe row now FIRES — flipped into the controls
+	// table as C11b.
 
 	// F12: NET-005's dst regex anchors on ^(127\.|::1|0:0:0:0:0:0:0:1) — the
 	// IPv4-MAPPED IPv6 spelling ::ffff:127.0.0.1 starts with '::f' and misses.
@@ -359,6 +348,12 @@ var controlCases = []controlCase{
 		name: "C11: the same config write from a non-sentinel name fires CONFIG-001",
 		rule: "CONFIG-001", sev: event.SevCritical,
 		ev: event.Event{EID: 11, Image: `C:\Users\ju\Downloads\tamper.exe`,
+			TargetFile: `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\config\allowlist.json`},
+	},
+	{
+		name: "C11b (F11 fixed): renamed sentinel.exe in Downloads writing the real config now fires CONFIG-001 (name-trust is path-anchored)",
+		rule: "CONFIG-001", sev: event.SevCritical,
+		ev: event.Event{EID: 11, Image: `C:\Users\ju\Downloads\sentinel.exe`,
 			TargetFile: `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\config\allowlist.json`},
 	},
 	{
