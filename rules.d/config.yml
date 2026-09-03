@@ -16,7 +16,12 @@ detection:
     # anywhere) could write the real config silently (Sigma filter = not even
     # a suppressed line). Anchored to the deployed binary path
     # (scripts/install-task.ps1 launches <repo>\sentinel.exe).
-    Image|re: '(?i)^[a-z]:\\[^\\]+\\documents\\github\\leave-my-shit-alone\\sentinel\.exe$'
+    # 2026-09-03 residual R1: the username segment was [^\\]+ (any single
+    # segment), so a USER-CREATABLE fake repo tree
+    # C:\<anything>\documents\github\leave-my-shit-alone\sentinel.exe stayed
+    # filtered (silent, no suppressed line). Pinned to users + system drive,
+    # same posture as F15's Tier-1 anchoring.
+    Image|re: '(?i)^[c]:\\users\\[^\\]+\\documents\\github\\leave-my-shit-alone\\sentinel\.exe$'
   filter_temp:
     # Writes under Temp are test fixtures / staging copies, never the live
     # config dir. Real tamper targets rules.d/allowlist.json/state.db at the
