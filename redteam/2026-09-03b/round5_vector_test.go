@@ -32,8 +32,9 @@
 //     (SwiftOnSecurity base) EXCLUDES conhost.exe from ProcessCreate at the
 //     source, so EXEC-002 has zero alerts ever. scripts/install-sysmon.ps1
 //     now converts the blanket exclude into a Rule (Image AND CommandLine
-//     not-contains --headless); takes effect when the operator re-runs the
-//     installer as admin.
+//     excludes --headless — `not contains` is NOT a condition in Sysmon 15,
+//     it crashes the apply; postmortem in this dir's README); takes effect
+//     when the operator re-runs the installer as admin.
 //
 // Open rows (F18/F19) pin CURRENT posture; each has a control (same shape
 // minus the hole) that MUST fire, so silence is attributed to the filter,
