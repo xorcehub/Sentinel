@@ -421,4 +421,25 @@ func (eng *Engine) normalize(e *event.Event) {
 	e.SourceImage = pathnorm.NormalizePath(e.SourceImage)
 	e.TargetImage = pathnorm.NormalizePath(e.TargetImage)
 	e.TargetFile = pathnorm.NormalizePath(e.TargetFile)
+	e.CmdLine = psDashFold.Replace(e.CmdLine)
+	e.ParentCmdLine = psDashFold.Replace(e.ParentCmdLine)
 }
+
+// psDashFold replaces the Unicode dash characters PowerShell's console host
+// accepts as argument dashes with ASCII '-'. PS resolves e.g.
+// '–ep bypass –w h –c <payload>' with FULL Bypass/Hidden semantics, so token
+// rules that key on '-ep bypass' (all ASCII-prefixed) never match. Round-4
+// redteam F16 (live-confirmed 2026-09-03): such a cmdline executed its
+// payload while the daemon logged nothing. Folding here (round-1 doctrine:
+// fix it once where all consumers route through) closes the whole spelling
+// class for BOTH rule matching and allowlist (dev_scripts) matching, instead
+// of chasing per-token dash variants. Folded BEFORE dedup keying, so the
+// ASCII and unicode spellings of the same launch dedup to one alert.
+var psDashFold = strings.NewReplacer(
+	"\u2013", "-", // en dash
+	"\u2014", "-", // em dash
+	"\u2015", "-", // horizontal bar
+	"\u2212", "-", // minus sign
+	"\ufe63", "-", // small hyphen-minus
+	"\uff0d", "-", // fullwidth hyphen-minus
+)

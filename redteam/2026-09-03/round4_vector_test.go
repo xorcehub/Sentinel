@@ -443,40 +443,40 @@ type r4Case struct {
 
 // ---- the vector table ----
 
-// TestRound4VectorsAreQuiet pins the CURRENT silence of the bypass rows.
-// A failure here means a fix landed — flip the row into the controls table.
+// TestRound4Vectors pins round-4 posture: F16 rows are FLIPPED CONTROLS
+// (must fire — the engine folds unicode dashes before matching); the
+// DoH/EXEC-004 rows pin the documented-accept residuals (quiet = posture,
+// with firing controls).
 func TestRound4VectorsAreQuiet(t *testing.T) {
 	cases := []r4Case{
-		// F16 — Unicode-dash EXEC-001 bypass (live-confirmed). PS accepts the
-		// en dash U+2013 as an argument dash: the payload RUNS, every token
-		// misses. Fixed by engine folding — flip these to must-fire after the
-		// fix lands.
+		// F16 FIXED — engine folds unicode dashes to '-' before matching, so
+		// the full-bypass spelling now hits EXEC-001 exactly like the ASCII
+		// form (controls: the DoH/EXEC-004 control rows below still fire).
 		{
-			name: "F16: en-dash flags execute Bypass payload — currently silent",
+			name: "F16 fixed: en-dash flags — EXEC-001 fires (was: silent)",
 			ev: event.Event{EID: 1,
 				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 				CmdLine: "powershell.exe \u2013ep bypass \u2013w h \u2013c \"Write-Host p\""},
-			wantQuietRule: "EXEC-001",
+			wantHit: "EXEC-001",
 		},
 		{
-			name: "F16: em-dash form — currently silent",
+			name: "F16 fixed: em-dash form — EXEC-001 fires",
 			ev: event.Event{EID: 1,
 				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 				CmdLine: "powershell.exe \u2014ep bypass \u2014w h \u2014c \"Write-Host p\""},
-			wantQuietRule: "EXEC-001",
+			wantHit: "EXEC-001",
 		},
 		{
-			name: "F16: minus-sign form (U+2212) — currently silent",
+			name: "F16 fixed: minus-sign form (U+2212) — EXEC-001 fires",
 			ev: event.Event{EID: 1,
 				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 				CmdLine: "powershell.exe \u2212ep bypass \u2212w h \u2212c \"Write-Host p\""},
-			wantQuietRule: "EXEC-001",
+			wantHit: "EXEC-001",
 		},
 
 		// F16 sibling: the same spelling against the dev_scripts -File anchors
-		// — '–file <real watchdog path>' folds to the legit anchor AFTER the
-		// fix, so the real invocation must stay suppressed (legit-quiet pin
-		// lives in TestRound4LegitStaysQuiet, added with the fix).
+		// — '–file <real watchdog path>' folds to the legit anchor, so the real
+		// invocation stays suppressed (pinned in TestRound4LegitStaysQuiet).
 
 		// DoH-dst beacon — F8a residual, live-confirmed. Documented-accept
 		// posture: pinned here so any posture change flips this row loudly.
@@ -530,5 +530,22 @@ func TestRound4VectorsAreQuiet(t *testing.T) {
 				t.Fatalf("expected zero hits, hits=%v supp=%v", hits, suppIDs(res))
 			}
 		})
+	}
+}
+
+// TestRound4LegitStaysQuiet pins that the F16 folding did not over-tighten:
+// a legit dev-script invocation spelled with a unicode dash still matches its
+// dev_scripts anchor (the fold makes it IDENTICAL to the ASCII form, by
+// design — PS saw the same argv either way).
+func TestRound4LegitStaysQuiet(t *testing.T) {
+	ev := event.Event{EID: 1,
+		Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		CmdLine: "powershell.exe \u2013WindowStyle Hidden \u2013ep bypass \u2013File C:\\Users\\jurij\\Documents\\GitHub\\leave-my-shit-alone\\scripts\\gcubridge-watchdog.ps1"}
+	res := freshEngine(t).Evaluate(&ev)
+	if len(res.Hits) != 0 {
+		t.Fatalf("legit -File watchdog (unicode dash) must stay quiet, hits=%v", hitIDs(res))
+	}
+	if !hasSupp(res, "EXEC-001", "allowlist") {
+		t.Fatalf("expected EXEC-001 suppressed(allowlist); suppressed=%v", suppIDs(res))
 	}
 }
