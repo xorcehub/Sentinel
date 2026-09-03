@@ -24,12 +24,12 @@ func TestResidualProbes(t *testing.T) {
 		// silently, not even a suppressed line.)
 		{"R1 (R1-fixed)", "fake-repo sentinel.exe writes the real allowlist.json — CONFIG-001 fires",
 			"CONFIG-001", event.Event{EID: 11,
-				Image:     `C:\evil\documents\github\leave-my-shit-alone\sentinel.exe`,
+				Image:      `C:\evil\documents\github\leave-my-shit-alone\sentinel.exe`,
 				TargetFile: `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\config\allowlist.json`}},
 		// R1-control — same write from a normal name must FIRE CONFIG-001.
 		{"R1c", "control: same write from non-sentinel name",
 			"CONFIG-001", event.Event{EID: 11,
-				Image:     `C:\evil\documents\github\leave-my-shit-alone\probe.exe`,
+				Image:      `C:\evil\documents\github\leave-my-shit-alone\probe.exe`,
 				TargetFile: `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\config\allowlist.json`}},
 
 		// R2 FIXED (repo-dir group now mandatory, [c]:-pinned): the attacker
@@ -116,7 +116,7 @@ func TestResidualLegitStaysQuiet(t *testing.T) {
 			// for OTHER images, the daemon's own config writes are expected).
 			name: "R1 legit: the real repo sentinel.exe writing its config stays filtered",
 			ev: event.Event{EID: 11,
-				Image:     `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\sentinel.exe`,
+				Image:      `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\sentinel.exe`,
 				TargetFile: `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\config\allowlist.json`},
 		},
 	}

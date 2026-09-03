@@ -483,8 +483,8 @@ func TestRound4VectorsAreQuiet(t *testing.T) {
 		{
 			name: "DoH residual: custom repo binary beacons 1.1.1.1:443 — fully silent (dst allowlist + NET-004 dir-list miss)",
 			ev: event.Event{EID: 3,
-				Image:   `C:\Users\jurij\Documents\Github\leave-my-shit-alone\redteam\lab\evil.exe`,
-				DstIP:   "1.1.1.1", DstPort: 443},
+				Image: `C:\Users\jurij\Documents\Github\leave-my-shit-alone\redteam\lab\evil.exe`,
+				DstIP: "1.1.1.1", DstPort: 443},
 			wantQuietRule: "NET-002",
 			wantZeroHits:  true,
 		},
@@ -492,8 +492,8 @@ func TestRound4VectorsAreQuiet(t *testing.T) {
 		{
 			name: "DoH control: same binary beacons 8.8.8.8:53 — NET-002 fires",
 			ev: event.Event{EID: 3,
-				Image:   `C:\Users\jurij\Documents\Github\leave-my-shit-alone\redteam\lab\evil.exe`,
-				DstIP:   "8.8.8.8", DstPort: 53},
+				Image: `C:\Users\jurij\Documents\Github\leave-my-shit-alone\redteam\lab\evil.exe`,
+				DstIP: "8.8.8.8", DstPort: 53},
 			wantHit: "NET-002",
 		},
 
