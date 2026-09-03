@@ -1,7 +1,7 @@
 // Package redteam — round-2 evasion vectors against the REAL catalog
 // (rules.d/*.yml) + REAL allowlist (config/allowlist.json) + the REAL engine.
 //
-// Round 1 (docs/redteam-plan-2026-09-02.md) found the suffix-trust hole in
+// Round 1 (../plan-2026-09-02.md) found the suffix-trust hole in
 // filter_cursor_agent; it is fixed. This round probes NEW holes, found by
 // reading the rules/allowlist semantics (sigmaeval: contains/endswith
 // case-insensitive; re always (?i) unanchored unless anchored; selections AND
@@ -43,7 +43,7 @@ func repoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	// file = .../tests/redteam-2026-09-02b/evasion_vector_test.go -> root 2 up
+	// file = .../redteam/2026-09-02b/evasion_vector_test.go -> root 2 up
 	return filepath.Join(filepath.Dir(file), "..", "..")
 }
 

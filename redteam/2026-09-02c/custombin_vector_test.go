@@ -37,7 +37,7 @@ import (
 	"sentinel/internal/sigmaeval"
 )
 
-// ---- harness (mirrors tests/redteam-2026-09-02b/evasion_vector_test.go) ----
+// ---- harness (mirrors redteam/2026-09-02b/evasion_vector_test.go) ----
 
 func repoRoot(t *testing.T) string {
 	t.Helper()

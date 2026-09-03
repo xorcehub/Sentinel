@@ -20,7 +20,7 @@ one vector whose live plant would land outside the repo (F15, a data-drive
 ## Run
 
 ```
-go test ./tests/redteam-2026-09-02c/ -v
+go test ./redteam/2026-09-02c/ -v
 ```
 
 `TestCustomBinVectorsAreQuiet` — every finding row asserts **silence**

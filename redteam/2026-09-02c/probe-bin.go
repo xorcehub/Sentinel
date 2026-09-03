@@ -6,11 +6,11 @@
 // custombin_vector_test.go against the RUNNING daemon. Every mode is inert:
 // a powershell Write-Host, a loopback 1-byte round trip, or a file write in
 // THIS directory that is deleted again. Nothing persists, nothing leaves the
-// machine, no file lands outside tests/redteam-2026-09-02c/.
+// machine, no file lands outside redteam/2026-09-02c/.
 //
 // Build (output stays inside this dir):
 //
-//	go build -o tests/redteam-2026-09-02c/bin/probe.exe tests/redteam-2026-09-02c/probe-bin.go
+//	go build -o redteam/2026-09-02c/bin/probe.exe redteam/2026-09-02c/probe-bin.go
 //
 // Modes (EXPECTED column = per the round-3 findings):
 //

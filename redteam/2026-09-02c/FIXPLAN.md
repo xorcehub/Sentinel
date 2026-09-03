@@ -4,7 +4,7 @@ ONE branch: `fix/redteam-round3` (cut from `fix/redteam-round2`). The round-3
 findings land there as the baseline commit, then ONE COMMIT PER FIX, in the
 order below (highest value first). Every commit: rule/allowlist change + the
 corresponding test-row flip (quiet row → controls) + green
-`go test ./tests/redteam-2026-09-02c/ -count=1` and `go test ./...`.
+`go test ./redteam/2026-09-02c/ -count=1` and `go test ./...`.
 
 Per-round doctrine: when a fix lands, its quiet row in
 `TestCustomBinVectorsAreQuiet` starts failing → move that row into
@@ -109,7 +109,7 @@ hash_gated_path is the ONLY route to behavioral trust off C:.
 
 ### 8. docs
 
-- `tests/redteam-2026-09-02c/readme.md`: findings table statuses OPEN →
+- `redteam/2026-09-02c/readme.md`: findings table statuses OPEN →
   FIXED (branch commit), live-fire log annotated.
 - This plan: mark commits done.
 

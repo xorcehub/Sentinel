@@ -24,5 +24,4 @@ scripts/analysis/
 
 
 # live redteam launchers (local only - benign but replicate attack shapes)
-scripts/redteam/
-tests/redteam-*/bin/
+redteam/runners/
