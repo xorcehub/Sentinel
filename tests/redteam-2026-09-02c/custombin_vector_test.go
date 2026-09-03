@@ -187,22 +187,11 @@ var bypassCases = []bypassCase{
 	// Downloads-renamed sentinel.exe row now FIRES — flipped into the controls
 	// table as C11b.
 
-	// F12: NET-005's dst regex anchors on ^(127\.|::1|0:0:0:0:0:0:0:1) — the
-	// IPv4-MAPPED IPv6 spelling ::ffff:127.0.0.1 starts with '::f' and misses.
-	// NET-002/003 DO see it, but allowed_destinations' 127.0.0.0/8 excepts it:
-	// net.IPNet.Contains calls To4(), and ::ffff:127.0.0.1 IS 127.0.0.1 there.
-	// Only a custom binary produces this dst spelling (dial AF_INET6 with a
-	// v4-mapped loopback address). Whether Sysmon RENDERS that spelling is the
-	// live probe's job (probe-bin.go loop6); this row pins the engine
-	// semantics: IF such an event arrives, the catalog is fully silent.
-	{
-		finding: "F12",
-		name:    "loopback connect to ::ffff:127.0.0.1:7777 (v4-mapped IPv6 spelling) — NET-005 regex misses, NET-002/003 dst-allowlisted: zero hits",
-		ev: event.Event{EID: 3, Image: `C:\Users\ju\Downloads\probe.exe`,
-			DstIP: "::ffff:127.0.0.1", DstPort: 7777},
-		wantZeroHits:  true,
-		wantQuietRule: "*",
-	},
+	// F12 FIXED (commit "fix(rules): NET-005 recognizes ::ffff:127.x loopback
+	// spelling"): the mapped-spelling row now FIRES NET-005 — flipped into the
+	// controls table as C12c. Still unreachable live on current Winsock
+	// (v4-mapped connect → WSAEADDRNOTAVAIL, probe-verified round 3); the row
+	// pins the spelling class is closed at the engine level.
 
 	// F13 FIXED (commit "fix(rules): EXEC-004 + INJECT-002 cover Users\Public"):
 	// both Public rows now FIRE — flipped into the controls table as C13c/C13d.
@@ -311,6 +300,12 @@ var controlCases = []controlCase{
 		rule: "NET-002", sev: event.SevSuspicious,
 		ev: event.Event{EID: 3, Image: `C:\Users\ju\Downloads\probe.exe`,
 			DstIP: "2001:db8::1", DstPort: 443},
+	},
+	{
+		name: "C12c (F12 fixed): ::ffff:127.0.0.1:7777 (v4-mapped loopback spelling) now fires NET-005",
+		rule: "NET-005", sev: event.SevCritical,
+		ev: event.Event{EID: 3, Image: `C:\Users\ju\Downloads\probe.exe`,
+			DstIP: "::ffff:127.0.0.1", DstPort: 7777},
 	},
 	{
 		name: "C13a: the same hex-named exe in Temp fires EXEC-004 (dir list, not name, is the hole)",
