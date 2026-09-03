@@ -90,7 +90,14 @@
     // system32 service and the AppData-resident components (case-insensitive
     // name fragment). An entry is either "host:port" (any image) or
     // { "addr": "host:port", "image": "<regex>" }.
-    { "addr": "127.0.0.1:9080", "image": "nahimic" }
+    // 2026-09-02c redteam F9: the image gate was the bare name fragment
+    // "nahimic" — compiled UNANCHORED, so any binary with "nahimic" anywhere
+    // in its path (Downloads\evil-nahimic-updater.exe) inherited the :9080
+    // exception. Image gates are ANCHORED PATHS from here on, not name
+    // fragments. Start-anchored only: system32\nahimic still matches
+    // NahimicService.exe, and the AppData alternative still matches the
+    // nhnotifsys component tree (pinned by internal/allowlist/allowlist_test.go).
+    { "addr": "127.0.0.1:9080", "image": "^[a-z]:\\\\(windows\\\\system32\\\\nahimic|users\\\\[^\\\\]+\\\\appdata\\\\local\\\\nhnotifsys\\\\nahimic)" }
     // Add: vite :5173, Cursor/Docker desktop ports, your app's dev ports.
   ],
   "dev_tool_paths": {

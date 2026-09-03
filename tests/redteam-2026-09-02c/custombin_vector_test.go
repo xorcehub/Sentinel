@@ -172,20 +172,9 @@ type bypassCase struct {
 }
 
 var bypassCases = []bypassCase{
-	// F9: the F8b fix scoped the :9080 loopback exception with an image regex,
-	// but DstIsKnownLoopback compiles it UNANCHORED ((?i) + "nahimic"), so any
-	// image whose full path CONTAINS "nahimic" anywhere inherits the exception.
-	// A custom binary needs no special path: name it *nahimic*.exe in Downloads.
-	{
-		finding: "F9",
-		name:    "custom binary with nahimic in its NAME (Downloads) chats on the scoped 9080 entry — NET-005 allowlist-suppressed",
-		ev: event.Event{EID: 3, Image: `C:\Users\ju\Downloads\evil-nahimic-updater.exe`,
-			DstIP: "127.0.0.1", DstPort: 9080},
-		wantZeroHits:   true,
-		wantQuietRule:  "NET-005",
-		wantSuppRule:   "NET-005",
-		wantSuppReason: "allowlist",
-	},
+	// F9 FIXED (commit "fix(allowlist): anchor known_loopback_listeners image
+	// gate"): the Downloads evil-nahimic-updater row now FIRES — flipped into
+	// the controls table as C9c; legit usage pinned in TestCustomBinLegitStaysQuiet.
 
 	// F10: dev_scripts entries compile to UNANCHORED (?i) substrings of the raw
 	// cmdline. 'Get-Service -Name 'GCUBridge'' matches ANYWHERE in a cmdline,
@@ -339,6 +328,12 @@ var controlCases = []controlCase{
 			DstIP: "127.0.0.1", DstPort: 9081},
 	},
 	{
+		name: "C9c (F9 fixed): nahimic-named binary OUTSIDE the install roots chats on :9080 — NET-005 fires (image gate is path-anchored)",
+		rule: "NET-005", sev: event.SevCritical,
+		ev: event.Event{EID: 3, Image: `C:\Users\ju\Downloads\evil-nahimic-updater.exe`,
+			DstIP: "127.0.0.1", DstPort: 9080},
+	},
+	{
 		name: "C10: the same piggyback cmdline minus the GCUBridge marker fires EXEC-001 (telemetry path intact)",
 		rule: "EXEC-001", sev: event.SevCritical,
 		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
@@ -465,4 +460,32 @@ func hasSupp(res *rules.Evaluation, ruleID, reason string) bool {
 		}
 	}
 	return false
+}
+
+// TestCustomBinLegitStaysQuiet pins that each fix did NOT over-tighten: the
+// legitimate usage the eased/anchored entry was written for still suppresses.
+func TestCustomBinLegitStaysQuiet(t *testing.T) {
+	legitCases := []struct {
+		name string
+		ev   event.Event
+		supp string // rule that must appear suppressed(allowlist)
+	}{
+		{
+			name: "F9 legit: the real AppData nhnotifsys nahimic component on :9080 stays suppressed",
+			ev: event.Event{EID: 3, Image: `c:\users\ju\appdata\local\nhnotifsys\nahimic\module.exe`,
+				DstIP: "127.0.0.1", DstPort: 9080},
+			supp: "NET-005",
+		},
+	}
+	for _, lc := range legitCases {
+		t.Run(lc.name, func(t *testing.T) {
+			res := freshEngine(t).Evaluate(&lc.ev)
+			if len(res.Hits) != 0 {
+				t.Errorf("legit usage must stay quiet, got hits %v (suppressed %v)", hitIDs(res), suppIDs(res))
+			}
+			if !hasSupp(res, lc.supp, "allowlist") {
+				t.Errorf("expected %s suppressed(allowlist); suppressed %v", lc.supp, suppIDs(res))
+			}
+		})
+	}
 }
