@@ -109,12 +109,12 @@ starts failing: flip it into the controls table, like rounds 1-2 did.
 
 | ID | Rule/entry | Bypass | Status |
 |----|------------|--------|--------|
-| F9 | allowlist `known_loopback_listeners` (NET-005 except) | `*nahimic*.exe` anywhere on the unanchored image regex → loopback C2 on :9080 quiet | **OPEN** (live-confirmed). Fix: anchored image regex (above) |
-| F10 | allowlist `dev_scripts` (EXEC-001 except) | piggyback payload after the unanchored `GCUBridge` / pe-triage cmdline markers | **OPEN** (live-confirmed). Fix: `-File`/path-anchored entries |
-| F11 | rules.d/config.yml CONFIG-001 `filter_sentinel` | renamed `sentinel.exe` writes any `allowlist.json`/`state.db`/… anywhere → silent (no suppressed line) | **OPEN** (live-confirmed). Fix: path-anchored filter |
-| F12 | NET-005 regex + allowed_destinations | `::ffff:127.0.0.1` loopback fully silent at engine level | **ENGINE-ONLY — not reachable live** (Winsock refuses v4-mapped connect; probe verdict reproduced). Hardening: add `::ffff:` token |
-| F13 | EXEC-004, INJECT-002 | dir lists miss `C:\Users\Public` (EXEC-004 also misses Downloads/repo trees) | **OPEN**. Fix: same one-token change as F8a |
-| F15 | allowlist `trusted_binaries.path` Tier-1 | `^[a-z]:\\program files\\…` matches user-creatable trees on non-system drives → full behavioral trust for a custom binary | **OPEN** (engine-pinned; live plant out of repo scope). Fix: system-drive anchor / volume helper |
+| F9 | allowlist `known_loopback_listeners` (NET-005 except) | `*nahimic*.exe` anywhere on the unanchored image regex → loopback C2 on :9080 quiet | **FIXED** (2026-09-03, fix/redteam-round3): image gate anchored to install roots |
+| F10 | allowlist `dev_scripts` (EXEC-001 except) | piggyback payload after the unanchored `GCUBridge` / pe-triage cmdline markers | **FIXED** (2026-09-03): entries anchored to `-File` script paths; task re-registration to `-File` = operator step |
+| F11 | rules.d/config.yml CONFIG-001 `filter_sentinel` | renamed `sentinel.exe` writes any `allowlist.json`/`state.db`/… anywhere → silent (no suppressed line) | **FIXED** (2026-09-03): filter anchored to deployed repo path |
+| F12 | NET-005 regex + allowed_destinations | `::ffff:127.0.0.1` loopback fully silent at engine level | **ENGINE-ONLY — not reachable live** (Winsock refuses v4-mapped connect; probe verdict reproduced). **FIXED** (2026-09-03, hardening): `::ffff:` token added to NET-005 |
+| F13 | EXEC-004, INJECT-002 | dir lists miss `C:\Users\Public` (EXEC-004 also misses Downloads/repo trees) | **FIXED** (2026-09-03): Users\Public added to both dir lists |
+| F15 | allowlist `trusted_binaries.path` Tier-1 | `^[a-z]:\\program files\\…` matches user-creatable trees on non-system drives → full behavioral trust for a custom binary | **FIXED** (2026-09-03): Tier-1 anchored to ^[c]: (system drive); D:-drive installs now attacker cases |
 | — | Tier-2 hash_gated_path + sigverify | custom binary planted at a Tier-2 path, unsigned | **CLOSED (pinned)**: fail-closed without vendor signature; WinVerifyTrustEx chain validation rejects spoofed-subject self-signed certs before subject match. TestTier2GateBlocksCustomBinary |
 
 Documented-accepted, unchanged: the F0-accepted round-2 posture

@@ -14,7 +14,7 @@ quiet" case wherever the fix could over-tighten (TestCustomBinLegitStaysQuiet).
 Deploy note (once, after the branch merges): restart the Sentinel scheduled
 task — rules + allowlist load at daemon start.
 
-## Commit order
+## Commit order — ALL EXECUTED 2026-09-03 on fix/redteam-round3
 
 1. `test(redteam): round-3 custom-binary evasion vectors (F9-F15)` — the dir
    as-is (readme, custombin_vector_test.go, probe-bin.go, this plan).
