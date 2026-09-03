@@ -42,11 +42,10 @@ func TestResidualProbes(t *testing.T) {
 				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 				CmdLine: `powershell.exe -ep bypass -File C:\pe_triage\scripts\totally-normal.ps1`}},
 
-		// R3 — dev_scripts install/uninstall entries have no -File anchor:
-		// any cmdline MENTIONING sentinel\install.ps1 (inert-string IEX form)
-		// suppresses EXEC-001.
-		{"R3", "bypass -c IEX(gc ...\\sentinel\\install.ps1) mention form",
-			"", event.Event{EID: 1,
+		// R3 FIXED (entries require -File + real repo path): the inert-string
+		// mention no longer matches — EXEC-001 fires.
+		{"R3 (R3-fixed)", "bypass -c IEX(gc ...\\sentinel\\install.ps1) mention form — EXEC-001 fires",
+			"EXEC-001", event.Event{EID: 1,
 				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 				CmdLine: `powershell.exe -ep bypass -c "IEX(gc C:\x\sentinel\install.ps1); Write-Host p"`}},
 
@@ -100,6 +99,14 @@ func TestResidualLegitStaysQuiet(t *testing.T) {
 		name string
 		ev   event.Event
 	}{
+		{
+			// R3 legit: the real absolute -File install.ps1 invocation stays
+			// suppressed.
+			name: "R3 legit: real -File install.ps1 from the repo stays suppressed",
+			ev: event.Event{EID: 1,
+				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+				CmdLine: `powershell.exe -ExecutionPolicy Bypass -File C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\install.ps1`},
+		},
 		{
 			// R1 legit: the REAL deployed sentinel.exe writing its own config
 			// stays filtered (silent by design — CONFIG-001 is a tamper rule
