@@ -177,8 +177,14 @@
   // longer match and (safely) alert.
   "dev_scripts": [
     // pe-triage-docker helper (dockerized PE triage). Anchored on the
-    // pe_triage repo's scripts dir; separator tolerated both ways.
-    "pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
+    // -File invocation + the pe_triage repo's scripts dir; separator
+    // tolerated both ways. 2026-09-02c redteam F10: the old bare path
+    // substring matched ANY cmdline that MENTIONED the path (e.g.
+    // `IEX(gc C:\pe_triage\scripts\pe-triage-docker.ps1)` — inert string,
+    // hostile payload), suppressing EXEC-001 for the whole launch. The
+    // -File context is now part of the anchor; relative invocations
+    // (-File .\scripts\...) still safely alert.
+    "-file\\s+[a-z]:\\\\(users\\\\[^\\\\]+\\\\documents\\\\github\\\\)?pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
     // operator install/uninstall scripts. Path-anchored on the repo dir so a
     // same-named dropper (install.ps1 is a top-tier dropper name) can't evade
     // EXEC-001. Requires absolute-path invocation
@@ -199,12 +205,16 @@
     // admin = game over, so the path anchor is safe. One pattern covers both the
     // direct powershell and the cmd /c variants (same path substring).
     "aistoneservice[\\\\/]+mycontrolcenter[\\\\/]+command[\\\\/]+logonusername\\.ps1",
-    // GCUBridge service-watchdog. A scheduled task runs
-    // `powershell -WindowStyle Hidden -ep bypass -Command "Get-Service -Name 'GCUBridge';
-    // if not running, Start-Service"` at every logon. Anchored on the GCUBridge
-    // Get-Service probe (regex compiled (?i) case-insensitive); a real attacker won't
-    // name their service GCUBridge AND use this exact watchdog form.
-    "Get-Service -Name 'GCUBridge'"
+    // GCUBridge service-watchdog (2026-09-02c redteam F10). A scheduled task
+    // runs scripts\gcubridge-watchdog.ps1 at every logon:
+    // `powershell -WindowStyle Hidden -ep bypass -File <repo>\scripts\gcubridge-watchdog.ps1`.
+    // The old entry anchored on the bare marker string
+    // `Get-Service -Name 'GCUBridge'` — ANY bypass-flagged powershell whose
+    // cmdline contained it (piggybacked payload after the marker) suppressed
+    // EXEC-001 for the whole launch (live-confirmed: 'gcupiggy'). Now anchored
+    // on the script path; OPERATOR STEP: re-register the task to the -File
+    // form above (until then the task safely alerts at logon).
+    "leave-my-shit-alone[\\\\/]+scripts[\\\\/]+gcubridge-watchdog\\.ps1"
   ],
 
   // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the

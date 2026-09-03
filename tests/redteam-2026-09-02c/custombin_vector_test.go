@@ -176,32 +176,12 @@ var bypassCases = []bypassCase{
 	// gate"): the Downloads evil-nahimic-updater row now FIRES — flipped into
 	// the controls table as C9c; legit usage pinned in TestCustomBinLegitStaysQuiet.
 
-	// F10: dev_scripts entries compile to UNANCHORED (?i) substrings of the raw
-	// cmdline. 'Get-Service -Name 'GCUBridge'' matches ANYWHERE in a cmdline,
-	// so appending arbitrary payload after the marker (or mentioning a
-	// dev-script path as an argument) suppresses EXEC-001 for the whole
-	// bypass-flagged launch. The scheduled task this was written for uses the
-	// marker as the ENTIRE -Command payload; the except cannot tell.
-	{
-		finding: "F10",
-		name:    "powershell -ep bypass -w h piggybacks payload after the GCUBridge dev_scripts marker — EXEC-001 suppressed",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-			CmdLine: `powershell.exe -ep bypass -w h -c "Get-Service -Name 'GCUBridge'; Write-Host probe-ok"`},
-		wantZeroHits:   true,
-		wantQuietRule:  "EXEC-001",
-		wantSuppRule:   "EXEC-001",
-		wantSuppReason: "allowlist",
-	},
-	{
-		finding: "F10",
-		name:    "same class via the pe-triage path anchor: mention the trusted dev-script path as a string, run IEX — EXEC-001 suppressed",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-			CmdLine: `powershell.exe -ep bypass -c "IEX(gc C:\pe_triage\scripts\pe-triage-docker.ps1)"`},
-		wantZeroHits:   true,
-		wantQuietRule:  "EXEC-001",
-		wantSuppRule:   "EXEC-001",
-		wantSuppReason: "allowlist",
-	},
+	// F10 FIXED (commit "fix(allowlist): dev_scripts anchored to -File script
+	// paths"): both rows now FIRE — flipped into the controls table as
+	// C10b/C10c; the legit -File invocations are pinned in
+	// TestCustomBinLegitStaysQuiet. The GCUBridge task now runs
+	// scripts\gcubridge-watchdog.ps1 via -File (operator re-registration
+	// pending: until then the task safely alerts).
 
 	// F11 FIXED (commit "fix(rules): CONFIG-001 filter_sentinel anchored"): the
 	// Downloads-renamed sentinel.exe row now FIRES — flipped into the controls
@@ -295,6 +275,18 @@ var controlCases = []controlCase{
 		rule: "EXEC-001", sev: event.SevCritical,
 		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 			CmdLine: `powershell.exe -ep bypass -w h -c "Write-Host probe-ok"`},
+	},
+	{
+		name: "C10b (F10 fixed): piggyback payload after the GCUBridge marker now fires EXEC-001 (marker no longer a dev_scripts anchor)",
+		rule: "EXEC-001", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			CmdLine: `powershell.exe -ep bypass -w h -c "Get-Service -Name 'GCUBridge'; Write-Host probe-ok"`},
+	},
+	{
+		name: "C10c (F10 fixed): mentioning the pe-triage path as an inert string (IEX) now fires EXEC-001 (anchor requires -File)",
+		rule: "EXEC-001", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			CmdLine: `powershell.exe -ep bypass -c "IEX(gc C:\pe_triage\scripts\pe-triage-docker.ps1)"`},
 	},
 	{
 		name: "C11: the same config write from a non-sentinel name fires CONFIG-001",
@@ -461,6 +453,18 @@ func TestCustomBinLegitStaysQuiet(t *testing.T) {
 			ev: event.Event{EID: 3, Image: `C:\Program Files\Mozilla Firefox\firefox.exe`,
 				DstIP: "203.0.113.9", DstPort: 443},
 			supp: "NET-002",
+		},
+		{
+			name: "F10 legit: the GCUBridge watchdog run via -File from the repo stays suppressed",
+			ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+				CmdLine: `powershell.exe -WindowStyle Hidden -ep bypass -File C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\scripts\gcubridge-watchdog.ps1`},
+			supp: "EXEC-001",
+		},
+		{
+			name: "F10 legit: the real -File pe-triage-docker invocation stays suppressed (repo-nested form)",
+			ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+				CmdLine: `powershell.exe -ExecutionPolicy Bypass -File C:\Users\user01\Documents\Github\pe_triage\scripts\pe-triage-docker.ps1`},
+			supp: "EXEC-001",
 		},
 	}
 	for _, lc := range legitCases {
