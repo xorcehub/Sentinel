@@ -1,8 +1,10 @@
 package redteam
 
-// AD-HOC residual probe for the round-3 fixes (2026-09-03) — NOT part of the
-// pinned suite. R1-R5 assert SUSPECTED residual holes (quiet = hole exists);
-// R6-R7 assert fail-closed behavior (must FIRE). Delete or pin after review.
+// Residual sweep of the round-3 fixes (2026-09-03, round 3.1): re-attacked
+// the fixes themselves. R1-R4 were CONFIRMED holes (quiet = hole), fixed in
+// follow-up commits and flipped to must-fire rows here. R5 is a CONFIRMED,
+// OPEN residual (operator decision pending). R6-R7 pin fail-closed behavior
+// of the F15 fix (extended-length/UNC spellings get no Tier-1 trust).
 
 import (
 	"testing"

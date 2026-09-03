@@ -149,3 +149,28 @@ ports/cmdlines avoided the 5-min dedup.
 After merging fixes: restart the Sentinel scheduled task (rules + allowlist
 load at daemon start), then flip each fixed quiet row into
 `TestCustomBinControls`, like rounds 1-2 did.
+
+## Round 3.1 — residual sweep of the round-3 fixes (2026-09-03)
+
+Re-attacked the fixes themselves (method: engine probes against the real
+catalog+allowlist in `residual_probe_test.go`, then live-fire with
+same-second control twins per round-1 attribution doctrine). Five
+residuals found in the same classes the rounds fixed:
+
+| ID | Class | Status |
+|----|-------|--------|
+| R1 | F11 incomplete: filter_sentinel's username segment was `[^\]+` (any single segment) → user-creatable `C:\<x>\documents\github\leave-my-shit-alone\sentinel.exe` wrote the real config with ZERO log lines (Sigma filter). **FIXED**: pinned to `^[c]:\users\`. Engine-confirmed. | FIXED (45e491f) |
+| R2 | F10/F2 incomplete: pe-triage entry's repo-dir group was OPTIONAL → `-File C:\pe_triage\scripts\...` from an attacker tree suppressed EXEC-001. **FIXED**: group mandatory, `^[c]:`-pinned. Engine-confirmed. | FIXED (739288a) |
+| R3 | install/uninstall entries had NO -File anchor → inert-string mention form (`IEX(gc C:\x\sentinel\install.ps1)`) suppressed EXEC-001. **FIXED**: `-File` + real repo path. Engine- AND LIVE-confirmed (12:20 window: suppressed summary, control twin fired CRITICAL rec=220979). | FIXED (0f1427d) |
+| R4 | gcubridge entry likewise had no -File anchor → attacker-tree `-File` invocation suppressed EXEC-001. **FIXED**: `-File` + system-drive repo anchor. Engine- AND LIVE-confirmed (control twin fired rec=220980). | FIXED (7e20de4) |
+| R5 | Same class as F15, pre-existing: `dev_tool_paths` trusts `^[a-z]:\users\...\nhnotifsys\nahimic\*.exe` — a USER-WRITABLE tree, so a planted binary gets NET-002/003/004 **and** :9080 quiet (full network blind spot). Engine-confirmed. **OPEN** — operator decision: hash-gate it (Tier-2 style) or documented-accept. | OPEN |
+
+Fail-closed pins added (must fire): `\?\C:\Program Files\...` and
+`\localhost\c$\...` spellings get NO Tier-1 trust (R6/R7 in
+`TestResidualProbes`). Legit-quiet pins added: real repo sentinel.exe
+stays filtered, real `-File` install.ps1 stays suppressed (R1/R3 legit
+rows in `TestResidualLegitStaysQuiet`); pe-triage/gcubridge legit rows
+were already pinned in `TestCustomBinLegitStaysQuiet`.
+
+Deploy note: restart the Sentinel scheduled task — rules + allowlist load
+at daemon start. Until then the live daemon still runs the pre-3.1 set.
