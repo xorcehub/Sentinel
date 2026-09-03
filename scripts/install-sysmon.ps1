@@ -64,11 +64,16 @@ Write-Host "Patched + verified: 127.0.0.1 NetworkConnect exclusion removed (NET-
 # redteam round 5 F21 (both the '--headless powershell' control AND the
 # '--headless cmd' vector were silent; engine-level rule passes). Replace
 # the blanket exclude with a Rule that keeps ordinary conhost churn
-# excluded but lets --headless launches through. Sysmon semantics: direct
-# condition children of an event tag are OR-combined (that is how this
-# exclude union works), so the Image+CommandLine pair MUST be wrapped in a
-# <Rule> element to AND - a bare sibling <CommandLine> would
-# exclude nearly EVERY process-create.
+# excluded but lets --headless launches through. Sysmon semantics, learned
+# the hard way (live 2026-09-03 16:0x, twice):
+#   1. direct condition children of an event tag are OR-combined (that is
+#      how this exclude union works) - a bare sibling <CommandLine> would
+#      exclude nearly EVERY process-create.
+#   2. a <Rule> element WITHOUT its own groupRelation ALSO combines its
+#      conditions with OR (inherited) - deploying patch 2 that way silently
+#      starved the box of ALL EID1 (FileCreate kept flowing, so the daemon
+#      looked alive; a textbook -ep bypass control went quiet). The AND must
+#      be EXPLICIT: <Rule groupRelation="and">.
 # CONDITION SPELLING MATTERS: the negative contains is `excludes`, NOT
 # `not contains` - the deployed Sysmon64 15.21 has no such condition (its
 # embedded DTD/usage strings list is/is not/contains/contains any/contains
@@ -83,7 +88,7 @@ if (Select-String -Path $configPath -Pattern 'conhost except headless' -Quiet) {
 } else {
     $before = Get-Content $configPath -Raw
     $after = $before -replace '(?m)^(\s*)(<Image condition="is">C:\\Windows\\system32\\conhost\.exe</Image>)(\s*<!--.*-->)?\s*$',
-        ('$1<Rule name="Sentinel F21: conhost except headless">' + '$2' + '$3' + "`r`n" +
+        ('$1<Rule name="Sentinel F21: conhost except headless" groupRelation="and">' + '$2' + '$3' + "`r`n" +
          '$1  <CommandLine condition="excludes">--headless</CommandLine>' + "`r`n" + '$1</Rule>')
     if ($after -eq $before) {
         # FAIL the install, same doctrine as patch 1: this exact blindness
@@ -122,6 +127,20 @@ if ($installed) {
 if ($LASTEXITCODE -ne 0) {
     throw "sysmon64 rejected the config (exit $LASTEXITCODE) - config NOT applied; inspect $configPath"
 }
+
+# --- 3b. EID1 flow guard ---
+# The over-exclusion incident (2026-09-03): a syntactically-accepted config
+# can still starve ProcessCreate (FileCreate keeps flowing, so everything
+# looks alive). sysmon64 accepting the config proves NOTHING about semantics.
+# Fail the install if Sysmon's operational log shows no EID 1 in the last
+# 200 Sysmon events - a live Windows session always has process creates.
+Start-Sleep -Seconds 2
+$recent = Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational' -MaxEvents 200 -ErrorAction SilentlyContinue
+$eid1 = @($recent | Where-Object { $_.Id -eq 1 }).Count
+if ($eid1 -eq 0) {
+    throw "EID1 FLOW GUARD: no ProcessCreate in the last 200 Sysmon events - config is over-excluding (see F21 postmortem, redteam/2026-09-03b). NOT leaving the box blind."
+}
+Write-Host "EID1 flow guard OK ($eid1 ProcessCreate in last 200 Sysmon events)"
 
 # --- 4. verify flow (Phase 0 acceptance) ---
 Write-Host "`nVerifying Sysmon event flow (expect a spread of EIDs, not just 1/3):"
