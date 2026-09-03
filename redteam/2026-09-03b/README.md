@@ -58,3 +58,29 @@ fired (F17/F18/F20), an execution proof artifact, and — for F20 — the
 suppressed-hit summary proving the event reached rule evaluation. F19's
 live silence is fully explained by F21 (source-level exclusion), pinned
 separately at engine level.
+
+## Post-fix live re-fire (round 5b, 16:13:10–16:13:36)
+
+After the fixes were deployed (daemon rebuilt 15:56→redeployed via
+install.ps1 16:12, Sysmon config headless-aware with the corrected
+`groupRelation="and"` Rule, EID1 flow guard OK):
+
+| probe | expected | verdict (ALERTS.log, run2.ps1 markers r5b-*) |
+|-------|----------|--------------------------------------------|
+| F17 vec (double-space) | FIRE | **FIRED** EXEC-001 hid=R-…-001888 — foldCmdLine live ✓ |
+| F17 ctl | FIRE | **FIRED** EXEC-001 hid=R-…-001874 ✓ |
+| F18 vec (Unrestricted full-name) | QUIET (open) | **QUIET** — still a live bypass |
+| F19 vec (headless conhost + cmd) | QUIET (open) | **QUIET** — still a live bypass |
+| F19 ctl (headless conhost + powershell) | FIRE | **FIRED EXEC-002** hid=R-…-001864 — **the first EXEC-002 alert ever**; F21 telemetry fix + and-Rule confirmed working end-to-end ✓ |
+| F20 vec (AiStone repo mimic) | FIRE | **FIRED** EXEC-001 hid=R-…-001830 (ALERTS cmdline display truncates at ~120 chars, marker beyond `…` — grep the hid, not the marker) ✓ |
+
+Interim incident (for the record): between the first F21 deploy (~15:57)
+and the corrected one (16:12), the box was EID1-BLIND — the attribute-less
+`<Rule>` OR-combined its conditions under the section's `groupRelation="or"`,
+excluding nearly every process create. Detected by round-5b controls going
+quiet while FileCreate kept flowing; fixed by explicit `groupRelation="and"`
+plus the installer's new EID1 flow guard (commit 276b7e6).
+
+**Remaining circumvention: F18 and F19 only** (both engine-side, pinned in
+round5_vector_test.go as open rows; durable fix = the PS argv-parser helper
+noted in rules.d/exec.yml, or the 2-line interim token widening).
