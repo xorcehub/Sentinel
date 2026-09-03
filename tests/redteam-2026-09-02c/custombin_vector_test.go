@@ -227,34 +227,10 @@ var bypassCases = []bypassCase{
 	// F13 FIXED (commit "fix(rules): EXEC-004 + INJECT-002 cover Users\Public"):
 	// both Public rows now FIRE — flipped into the controls table as C13c/C13d.
 
-	// F15 (headline): trusted_binaries Tier-1 path patterns are `^[a-z]:\\program files\\...`
-	// — the drive letter is a WILDCARD. The tier's premise is "Program Files is
-	// admin-owned"; that is only true on the system drive. On any second data
-	// drive (this box has D:) a USER creates D:\Program Files\Mozilla Firefox\
-	// unprivileged, plants a custom exe, and inherits FULL behavioral trust:
-	// every rule with `except: image_in_allowlist` goes quiet for it. Same
-	// class: D:\ProgramData\Microsoft\Windows Defender\...\msmpeng.exe on a
-	// data volume is a user-created tree matching the Defender pattern.
-	{
-		finding: "F15",
-		name:    "custom binary planted at D:\\Program Files\\Mozilla Firefox\\ (user-creatable on a data drive) beacons a public IP — Tier-1 trusted, NET-002/003 suppressed",
-		ev: event.Event{EID: 3, Image: `D:\Program Files\Mozilla Firefox\ffupdate.exe`,
-			DstIP: "203.0.113.9", DstPort: 443},
-		wantZeroHits:   true,
-		wantQuietRule:  "*",
-		wantSuppRule:   "NET-002",
-		wantSuppReason: "allowlist",
-	},
-	{
-		finding: "F15",
-		name:    "same D:\\ plant writes an HKCU Run key — PERSIST-003 suppressed(allowlist): persistence invisible",
-		ev: event.Event{EID: 13, Image: `D:\Program Files\Mozilla Firefox\ffupdate.exe`,
-			TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\OneDriveUpdate`},
-		wantZeroHits:   true,
-		wantQuietRule:  "*",
-		wantSuppRule:   "PERSIST-003",
-		wantSuppReason: "allowlist",
-	},
+	// F15 FIXED (commit "fix(allowlist): Tier-1 trust pinned to the system
+	// drive"): both D:\ plant rows now FIRE — flipped into the controls table
+	// as C15c/C15d; legit C:\Program Files usage pinned in
+	// TestCustomBinLegitStaysQuiet.
 }
 
 // TestCustomBinVectorsAreQuiet pins the CURRENT silence of every bypass row.
@@ -378,6 +354,18 @@ var controlCases = []controlCase{
 		ev: event.Event{EID: 13, Image: `C:\Users\ju\Downloads\implant.exe`,
 			TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\OneDriveUpdate`},
 	},
+	{
+		name: "C15c (F15 fixed): D:\\Program Files plant (user-creatable on a data drive) beacons a public IP — Tier-1 no longer trusts non-system volumes, NET-002 fires",
+		rule: "NET-002", sev: event.SevSuspicious,
+		ev: event.Event{EID: 3, Image: `D:\Program Files\Mozilla Firefox\ffupdate.exe`,
+			DstIP: "203.0.113.9", DstPort: 443},
+	},
+	{
+		name: "C15d (F15 fixed): the same D:\\ plant writes an HKCU Run key — PERSIST-003 fires",
+		rule: "PERSIST-003", sev: event.SevCritical,
+		ev: event.Event{EID: 13, Image: `D:\Program Files\Mozilla Firefox\ffupdate.exe`,
+			TargetRegKey: `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\OneDriveUpdate`},
+	},
 }
 
 func TestCustomBinControls(t *testing.T) {
@@ -467,6 +455,12 @@ func TestCustomBinLegitStaysQuiet(t *testing.T) {
 			ev: event.Event{EID: 3, Image: `c:\users\ju\appdata\local\nhnotifsys\nahimic\module.exe`,
 				DstIP: "127.0.0.1", DstPort: 9080},
 			supp: "NET-005",
+		},
+		{
+			name: "F15 legit: the real C:\\Program Files Firefox beacons a public IP — Tier-1 trust on the system drive unchanged",
+			ev: event.Event{EID: 3, Image: `C:\Program Files\Mozilla Firefox\firefox.exe`,
+				DstIP: "203.0.113.9", DstPort: 443},
+			supp: "NET-002",
 		},
 	}
 	for _, lc := range legitCases {

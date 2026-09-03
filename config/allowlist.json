@@ -11,12 +11,21 @@
       // now; path patterns below carry coverage.
     ],
     "path": [
-      "^[a-z]:\\\\program files\\\\mozilla firefox\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\microsoft\\\\edge(?:update|webview)?\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\steam\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|wc|git.*)\\.exe$",
-      "^[a-z]:\\\\program files\\\\7-zip\\\\.*\\.exe$",
+      // 2026-09-02c redteam F15: every pattern in this tier is anchored to the
+      // SYSTEM DRIVE (^[c]:, still case-insensitive). The old ^[a-z]: prefix
+      // made trust drive-agnostic: on any user-writable data volume (this box
+      // has D:), an UNPRIVILEGED user can create D:\Program Files\Mozilla
+      // Firefox\, D:\Windows\, D:\ProgramData\... — the tier's premise
+      // ("admin-owned install roots") only holds on the system drive. A plant
+      // on a data drive inherited FULL behavioral trust. Non-system volumes
+      // are untrusted by path, period; hash_gated_path is the only route to
+      // behavioral trust off C:.
+      "^[c]:\\\\program files\\\\mozilla firefox\\\\.*\\.exe$",
+      "^[c]:\\\\program files(?: \\(x86\\))?\\\\microsoft\\\\edge(?:update|webview)?\\\\.*\\.exe$",
+      "^[c]:\\\\program files(?: \\(x86\\))?\\\\steam\\\\.*\\.exe$",
+      "^[c]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
+      "^[c]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|wc|git.*)\\.exe$",
+      "^[c]:\\\\program files\\\\7-zip\\\\.*\\.exe$",
       // Benign Windows session/service binaries BY NAME (NOT a blanket
       // System32 glob). Trusting \windows\system32\.*\.exe was a design
       // bug: it also trusted the LOLBins (powershell, conhost, mshta,
@@ -35,10 +44,10 @@
       // older deployed build still on the eventcreate path. Kept because it is
       // harmless (eventcreate only writes eventlog entries; no rule selects on
       // it as an actor) and guards a config/binary version mismatch.
-      "^[a-z]:\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
-      "^[a-z]:\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
-      "^[a-z]:\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
-      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
+      "^[c]:\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
+      "^[c]:\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
+      "^[c]:\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
+      "^[c]:\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
     ],
     // hash_gated_path: Tier-2 user-writable dev-tool paths. A path match
     // here is NOT trust by itself (Bypass B: the per-user username wildcard
@@ -106,7 +115,7 @@
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cargo\\\\bin\\\\.*\\.exe$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:python|node)\\\\.*\\.(exe|dll)$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\npm\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
+      "^[c]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\lm studio\\\\.*\\.exe$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\pnpm\\\\.*\\.exe$",
       // pi-lite (operator's dev AI agent) — quiets NET-002/003. Scoped to the
@@ -125,7 +134,7 @@
       // quiet set - java is a real malware host, so deliberately NOT in
       // trusted_binaries: no behavioral trust, NET-002/003/004 quiet only).
       // Killed 19+18 hits/2wk (Gradle/Maven fetching from GCP/Fastly).
-      "^[a-z]:\\\\program files\\\\eclipse adoptium\\\\.*\\\\bin\\\\java(w)?\\.exe$",
+      "^[c]:\\\\program files\\\\eclipse adoptium\\\\.*\\\\bin\\\\java(w)?\\.exe$",
       // uv.exe under the hermes tool dir - operator Python toolchain
       // manager (jsdelivr CDN fetches). Same NET-only scope as above.
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\hermes\\\\bin\\\\.*\\.exe$",
