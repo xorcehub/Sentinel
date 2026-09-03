@@ -30,11 +30,10 @@ func TestResidualProbes(t *testing.T) {
 				Image:     `C:\evil\documents\github\leave-my-shit-alone\probe.exe`,
 				TargetFile: `C:\Users\jurij\Documents\GitHub\leave-my-shit-alone\config\allowlist.json`}},
 
-		// R2 — F10/F2 residual: pe-triage entry's repo-dir group is OPTIONAL
-		// ((users...github\)?), so -File <any drive>:\pe_triage\scripts\...
-		// (attacker-created tree, arbitrary script content) is excepted.
-		{"R2", "bypass -File pe-triage-docker.ps1 from ATTACKER tree at drive root",
-			"", event.Event{EID: 1,
+		// R2 FIXED (repo-dir group now mandatory, [c]:-pinned): the attacker
+		// tree no longer matches — EXEC-001 fires.
+		{"R2 (R2-fixed)", "bypass -File pe-triage-docker.ps1 from ATTACKER tree at drive root — EXEC-001 fires",
+			"EXEC-001", event.Event{EID: 1,
 				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 				CmdLine: `powershell.exe -ep bypass -File C:\pe_triage\scripts\pe-triage-docker.ps1`}},
 		// R2-control — same shape, non-dev path must FIRE EXEC-001.

@@ -184,7 +184,11 @@
     // hostile payload), suppressing EXEC-001 for the whole launch. The
     // -File context is now part of the anchor; relative invocations
     // (-File .\scripts\...) still safely alert.
-    "-file\\s+[a-z]:\\\\(users\\\\[^\\\\]+\\\\documents\\\\github\\\\)?pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
+    // 2026-09-03 residual R2: the repo-dir group was OPTIONAL ((...)?), so
+    // -File <any drive>:\pe_triage\scripts\... (attacker-created tree with
+    // arbitrary script content) still matched. Group is now MANDATORY and
+    // pinned to the system drive (F15 posture).
+    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
     // operator install/uninstall scripts. Path-anchored on the repo dir so a
     // same-named dropper (install.ps1 is a top-tier dropper name) can't evade
     // EXEC-001. Requires absolute-path invocation
