@@ -67,16 +67,24 @@ Write-Host "Patched + verified: 127.0.0.1 NetworkConnect exclusion removed (NET-
 # excluded but lets --headless launches through. Sysmon semantics: direct
 # condition children of an event tag are OR-combined (that is how this
 # exclude union works), so the Image+CommandLine pair MUST be wrapped in a
-# <Rule> element to AND - a bare sibling <CommandLine not contains> would
-# exclude nearly EVERY process-create. "not contains" needs Sysmon >= 10
-# (deployed: 15.21). Idempotent: skips if the Rule is already present.
+# <Rule> element to AND - a bare sibling <CommandLine> would
+# exclude nearly EVERY process-create.
+# CONDITION SPELLING MATTERS: the negative contains is `excludes`, NOT
+# `not contains` - the deployed Sysmon64 15.21 has no such condition (its
+# embedded DTD/usage strings list is/is not/contains/contains any/contains
+# all/excludes/excludes any/excludes all/begin with/end with/...), and an
+# unknown condition crashes the config apply with 0xC0000409 instead of
+# erroring cleanly. First attempt used `not contains` from memory and was
+# caught exactly that way (by enable-filecreate's exit-code check - install
+# step 3 used to swallow the same crash; it now checks too).
+# Idempotent: skips if the Rule is already present.
 if (Select-String -Path $configPath -Pattern 'conhost except headless' -Quiet) {
     Write-Host "conhost ProcessCreate exclude already headless-aware - skipping patch 2"
 } else {
     $before = Get-Content $configPath -Raw
     $after = $before -replace '(?m)^(\s*)(<Image condition="is">C:\\Windows\\system32\\conhost\.exe</Image>)(\s*<!--.*-->)?\s*$',
         ('$1<Rule name="Sentinel F21: conhost except headless">' + '$2' + '$3' + "`r`n" +
-         '$1  <CommandLine condition="not contains">--headless</CommandLine>' + "`r`n" + '$1</Rule>')
+         '$1  <CommandLine condition="excludes">--headless</CommandLine>' + "`r`n" + '$1</Rule>')
     if ($after -eq $before) {
         # FAIL the install, same doctrine as patch 1: this exact blindness
         # (EXEC-002 starved of conhost EID 1) persisted silently for months.
@@ -89,6 +97,9 @@ if (Select-String -Path $configPath -Pattern 'conhost except headless' -Quiet) {
     if (-not (Select-String -Path $configPath -Pattern 'conhost except headless' -Quiet)) {
         throw "post-patch assert failed: conhost exclude is not headless-aware"
     }
+    if (Select-String -Path $configPath -Pattern 'condition="not contains"' -Quiet) {
+        throw "post-patch assert failed: a 'not contains' condition survived - this Sysmon build rejects it (0xC0000409)"
+    }
     Write-Host "Patched + verified: conhost ProcessCreate exclude is now headless-aware (EXEC-002 needs conhost EID 1)"
 }
 Write-Host "Base config: $configPath"
@@ -96,6 +107,10 @@ Write-Host "NOTE: ensure the config has <HashAlgorithms>SHA256,IMPHASH</HashAlgo
 Write-Warning "This base config does NOT include the EID 11/23 FileCreate/FileDelete telemetry (file_capture, PERSIST-004, CONFIG-001, CRED-001 depend on it). Run scripts/enable-filecreate-telemetry.ps1 IMMEDIATELY after this script - never deploy this base config alone."
 
 # --- 3. install or update ---
+# Exit codes are CHECKED: sysmon64 crashes (e.g. 0xC0000409 on a condition
+# spelling it doesn't know) rather than erroring cleanly, and the 2026-09-03
+# F21 patch initially shipped one script downstream because this step used
+# to ignore $LASTEXITCODE. A failed apply must stop the install HERE.
 $installed = (Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue)
 if ($installed) {
     Write-Host "Sysmon already installed; updating config ..."
@@ -103,6 +118,9 @@ if ($installed) {
 } else {
     Write-Host "Installing Sysmon ..."
     & $sysmonExe -accepteula -i $configPath
+}
+if ($LASTEXITCODE -ne 0) {
+    throw "sysmon64 rejected the config (exit $LASTEXITCODE) - config NOT applied; inspect $configPath"
 }
 
 # --- 4. verify flow (Phase 0 acceptance) ---
