@@ -207,11 +207,17 @@
     "regedit\\\\vbs\\\\reglist\\.wsf",
     // OEM "Control Center" (AiStone) logon script. A scheduled task fires
     // `powershell -ep bypass -File ...\AiStoneService\MyControlCenter\Command\LogonUserName.ps1`
-    // at every logon (plus a `cmd /c -> powershell` wrapper variant). Path-anchored
-    // on the admin-owned Program Files\OEM subtree; planting there already requires
-    // admin = game over, so the path anchor is safe. One pattern covers both the
-    // direct powershell and the cmd /c variants (same path substring).
-    "aistoneservice[\\\\/]+mycontrolcenter[\\\\/]+command[\\\\/]+logonusername\\.ps1",
+    // at every logon (plus a `cmd /c -> powershell` wrapper variant, same
+    // -File form). 2026-07-29 known-limitations #1 + 2026-09-03 redteam F20
+    // (live-confirmed: a repo-tree mimic ran bypass-flagged and EXEC-001 was
+    // suppressed, sentinel.log 'suppressed (allowlist) rule=EXEC-001'): the
+    // old entry was an UNANCHORED substring, so those dir names ANYWHERE in
+    // the cmdline (attacker-created tree in any user-writable path) gagged
+    // EXEC-001/EXEC-003. Now anchored on -File + the admin-owned
+    // Program Files\OEM subtree on the system drive (F15 posture): planting
+    // there already requires admin = game over, and the -File anchor keeps
+    // inert-string piggybacks (IEX(gc <oem path>)) from re-opening F10.
+    "-file\\s+\"?[c]:\\\\program[ -]files\\\\oem[^\"']*aistoneservice[\\\\/]+mycontrolcenter[\\\\/]+command[\\\\/]+logonusername\\.ps1",
     // GCUBridge service-watchdog (2026-09-02c redteam F10). A scheduled task
     // runs scripts\gcubridge-watchdog.ps1 at every logon:
     // `powershell -WindowStyle Hidden -ep bypass -File <repo>\scripts\gcubridge-watchdog.ps1`.
