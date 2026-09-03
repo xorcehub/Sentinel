@@ -56,6 +56,41 @@ if (Select-String -Path $configPath -Pattern 'DestinationIp[^>]*>\s*127\.0\.0\.1
     throw "post-patch assert failed: a 127.0.0.1 DestinationIp exclusion is still present"
 }
 Write-Host "Patched + verified: 127.0.0.1 NetworkConnect exclusion removed (NET-005 needs loopback EID 3)"
+
+# PATCH 2: SwiftOnSecurity's ProcessCreate EXCLUDE list drops
+# C:\Windows\system32\conhost.exe at the SOURCE, so conhost EID 1 never
+# reaches Sentinel and EXEC-002 (conhost --headless, the incident vector)
+# has been inert its whole life - zero alerts ever, live-verified 2026-09-03
+# redteam round 5 F21 (both the '--headless powershell' control AND the
+# '--headless cmd' vector were silent; engine-level rule passes). Replace
+# the blanket exclude with a Rule that keeps ordinary conhost churn
+# excluded but lets --headless launches through. Sysmon semantics: direct
+# condition children of an event tag are OR-combined (that is how this
+# exclude union works), so the Image+CommandLine pair MUST be wrapped in a
+# <Rule> element to AND - a bare sibling <CommandLine not contains> would
+# exclude nearly EVERY process-create. "not contains" needs Sysmon >= 10
+# (deployed: 15.21). Idempotent: skips if the Rule is already present.
+if (Select-String -Path $configPath -Pattern 'conhost except headless' -Quiet) {
+    Write-Host "conhost ProcessCreate exclude already headless-aware - skipping patch 2"
+} else {
+    $before = Get-Content $configPath -Raw
+    $after = $before -replace '(?m)^(\s*)(<Image condition="is">C:\\Windows\\system32\\conhost\.exe</Image>)(\s*<!--.*-->)?\s*$',
+        ('$1<Rule name="Sentinel F21: conhost except headless">' + '$2' + '$3' + "`r`n" +
+         '$1  <CommandLine condition="not contains">--headless</CommandLine>' + "`r`n" + '$1</Rule>')
+    if ($after -eq $before) {
+        # FAIL the install, same doctrine as patch 1: this exact blindness
+        # (EXEC-002 starved of conhost EID 1) persisted silently for months.
+        throw "conhost ProcessCreate exclude not found in upstream config - refusing to install blind (EXEC-002 would stay dead telemetry)"
+    }
+    # the replacement must yield well-formed XML (Rule wrapper inside the
+    # ProcessCreate exclude group) - parse before writing anything.
+    try { [void][xml]$after } catch { throw "patch 2 produced malformed XML: $_" }
+    Set-Content -Path $configPath -Value $after -NoNewline
+    if (-not (Select-String -Path $configPath -Pattern 'conhost except headless' -Quiet)) {
+        throw "post-patch assert failed: conhost exclude is not headless-aware"
+    }
+    Write-Host "Patched + verified: conhost ProcessCreate exclude is now headless-aware (EXEC-002 needs conhost EID 1)"
+}
 Write-Host "Base config: $configPath"
 Write-Host "NOTE: ensure the config has <HashAlgorithms>SHA256,IMPHASH</HashAlgorithms> and EID 7/8/10/11/12/13/19/20/21/22/23/25 enabled (see 04-TELEMETRY.md §1). SwiftOnSecurity covers most; verify ProcessAccess targets lsass."
 Write-Warning "This base config does NOT include the EID 11/23 FileCreate/FileDelete telemetry (file_capture, PERSIST-004, CONFIG-001, CRED-001 depend on it). Run scripts/enable-filecreate-telemetry.ps1 IMMEDIATELY after this script - never deploy this base config alone."
