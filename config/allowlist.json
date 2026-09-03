@@ -221,7 +221,10 @@
     // EXEC-001 for the whole launch (live-confirmed: 'gcupiggy'). Now anchored
     // on the script path; OPERATOR STEP: re-register the task to the -File
     // form above (until then the task safely alerts at logon).
-    "leave-my-shit-alone[\\\\/]+scripts[\\\\/]+gcubridge-watchdog\\.ps1"
+    // 2026-09-03 residual R4: the old entry had no -File anchor — ANY cmdline
+    // mentioning the path (-File or IEX from an attacker tree) suppressed
+    // EXEC-001 (engine-confirmed). Now -File + system-drive repo anchor.
+    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone[\\\\/]+scripts[\\\\/]+gcubridge-watchdog\\.ps1"
   ],
 
   // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the

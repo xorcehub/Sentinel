@@ -49,9 +49,10 @@ func TestResidualProbes(t *testing.T) {
 				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 				CmdLine: `powershell.exe -ep bypass -c "IEX(gc C:\x\sentinel\install.ps1); Write-Host p"`}},
 
-		// R4 — gcubridge-watchdog entry likewise has no -File anchor.
-		{"R4", "bypass -File mention of gcubridge-watchdog from attacker tree",
-			"", event.Event{EID: 1,
+		// R4 FIXED (entry requires -File + system-drive repo path): the
+		// attacker-tree invocation no longer matches — EXEC-001 fires.
+		{"R4 (R4-fixed)", "bypass -File mention of gcubridge-watchdog from attacker tree — EXEC-001 fires",
+			"EXEC-001", event.Event{EID: 1,
 				Image:   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
 				CmdLine: `powershell.exe -ep bypass -w h -File C:\anywhere\leave-my-shit-alone\scripts\gcubridge-watchdog.ps1`}},
 
