@@ -12,15 +12,17 @@
 //     collapses whitespace runs in Engine.normalize (same choke point as the
 //     F16 dash fold: rule eval, dev_scripts, dedup keying). Rows flipped
 //     into controls as C17b/C17c.
-//   - F18 (OPEN, pinned): full-name policy gap. The F1 fix added '-ep u'/
-//     '-ep:U'/'-ExecutionPolicy:U' but NOT the full-name space form, so
-//     `powershell -ExecutionPolicy Unrestricted -c <payload>` is quiet.
-//     Same whack-a-mole class; the argv-parser helper is the durable fix.
-//   - F19 (OPEN, pinned): EXEC-002 headless-broker gap. The rule requires
-//     ['--headless', 'powershell'] — a headless conhost running cmd (or any
-//     non-'powershell' child, e.g. pwsh, wscript) is fully silent, for
-//     EXEC-002 AND EXEC-001 (broker scoping needs a CLI token). Hidden
-//     execution via the exact incident broker, zero alerts.
+//   - F18 (FIXED, interim): full-name policy gap. The F1 fix added '-ep u'/
+//     '-ep:U'/'-ExecutionPolicy:U' but NOT '-exec u' nor the full-name
+//     space form '-ExecutionPolicy U' — `powershell -ExecutionPolicy
+//     Unrestricted -c <payload>` ran with zero alerts (live 15:10). Closed
+//     with the two missing first-letter tokens (same F1 doctrine); durable
+//     fix remains the argv-parser helper. Row flipped to control C18b.
+//   - F19 (FIXED): EXEC-002 headless-broker gap. The rule required
+//     ['--headless','powershell'] — a headless conhost running cmd (or any
+//     non-'powershell' child) was fully silent (live: `--headless cmd /c`
+//     wrote its proof file, zero alerts). Now keys on '--headless' alone:
+//     any headless conhost launch fires. Row flipped to control C19b.
 //   - F20 (FIXED this round): the AiStone dev_scripts entry was an UNANCHORED
 //     substring despite its comment claiming otherwise (known-limitations #1,
 //     live-confirmed: repo-tree mimic ran bypass-flagged, EXEC-001 suppressed
@@ -36,9 +38,8 @@
 //     it crashes the apply; postmortem in this dir's README); takes effect
 //     when the operator re-runs the installer as admin.
 //
-// Open rows (F18/F19) pin CURRENT posture; each has a control (same shape
-// minus the hole) that MUST fire, so silence is attributed to the filter,
-// not lost telemetry.
+// All round-5 rows are closed; every closed shape has a control (same
+// shape minus the hole) that MUST fire, so a regression can't hide.
 package redteam
 
 import (
@@ -194,20 +195,10 @@ type bypassCase struct {
 	wantSuppReason string
 }
 
-var bypassCases = []bypassCase{
-	{
-		finding: "F18", name: "full-name space form of a non-Bypass policy value (-ExecutionPolicy Unrestricted) is not a token",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-			CmdLine: `powershell.exe -NoProfile -ExecutionPolicy Unrestricted -c "Write-Host r5f18-marker"`},
-		wantZeroHits: true,
-	},
-	{
-		finding: "F19", name: "headless conhost running a non-powershell child (cmd) — EXEC-002 requires the 'powershell' substring",
-		ev: event.Event{EID: 1, Image: `C:\Windows\System32\conhost.exe`,
-			CmdLine: `conhost.exe --headless cmd /c echo r5f19-marker`},
-		wantZeroHits: true,
-	},
-}
+// All round-5 rows are now closed; the open-row table is empty and kept
+// for round 6. Closed rows live in the controls table; the F20 legit rows
+// stay pinned in TestRound5LegitStaysQuiet.
+var bypassCases = []bypassCase{}
 
 // TestRound5VectorsAreQuiet pins the CURRENT silence of every open bypass
 // row. A failure here means a fix landed — flip the row into the controls
@@ -260,16 +251,28 @@ var controlCases = []controlCase{
 			CmdLine: `powershell.exe -NoProfile -ExecutionPolicy  Bypass -c "Write-Host r5f17b-marker"`},
 	},
 	{
-		name: "C18: abbreviated non-Bypass policy value fires EXEC-001 ('-ep u' token) — only the full-name space form is missing",
+		name: "C18b (F18 fixed): full-name space form of a non-Bypass policy now fires EXEC-001 ('-ExecutionPolicy U' token)",
 		rule: "EXEC-001", sev: event.SevCritical,
 		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-			CmdLine: `powershell.exe -NoProfile -ep u -c "Write-Host r5f18ctl-marker"`},
+			CmdLine: `powershell.exe -NoProfile -ExecutionPolicy Unrestricted -c "Write-Host r5f18-marker"`},
 	},
 	{
-		name: "C19: headless conhost running powershell fires EXEC-002 (only the non-'powershell' child evades; needs F21's telemetry fix deployed)",
+		name: "C18c (F18 fixed): abbreviated -exec u form also fires",
+		rule: "EXEC-001", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			CmdLine: `powershell.exe -NoProfile -exec u -c "Write-Host r5f18c-marker"`},
+	},
+	{
+		name: "C19: headless conhost running powershell fires EXEC-002 (powershell child, classic shape)",
 		rule: "EXEC-002", sev: event.SevCritical,
 		ev: event.Event{EID: 1, Image: `C:\Windows\System32\conhost.exe`,
 			CmdLine: `conhost.exe --headless powershell -NoProfile -c "Write-Host r5f19ctl-marker"`},
+	},
+	{
+		name: "C19b (F19 fixed): headless conhost running a NON-powershell child (cmd) now fires EXEC-002 (--headless alone is the anomaly)",
+		rule: "EXEC-002", sev: event.SevCritical,
+		ev: event.Event{EID: 1, Image: `C:\Windows\System32\conhost.exe`,
+			CmdLine: `conhost.exe --headless cmd /c echo r5f19-marker`},
 	},
 	{
 		name: "C20: same bypass-flagged -File launch WITHOUT the AiStone path substring fires EXEC-001",

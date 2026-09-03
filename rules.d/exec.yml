@@ -46,8 +46,17 @@ detection:
       - '-ep:B'
       - '-ep:U'
       - '-exec b'
+      # 2026-09-03 round-5 F18: the U-VALUE forms were asymmetric — '-ep u'/
+      # '-ep:U'/'-ExecutionPolicy:U' covered but NOT '-exec u' nor the
+      # full-name space form '-ExecutionPolicy U' (live-confirmed quiet:
+      # `powershell -ExecutionPolicy Unrestricted -c <payload>` ran with
+      # zero alerts). First-letter tokens cover Unrestricted/Undefined.
+      # Whack-a-mole class acknowledged (F1 doctrine); durable fix = the
+      # PS argv-parser helper.
+      - '-exec u'
       - '-exec:B'
       - '-ExecutionPolicy B'
+      - '-ExecutionPolicy U'
       - '-ExecutionPolicy:U'
       - '-ExecutionPolicy:B'
       - '-w h'
@@ -109,7 +118,7 @@ x-sentinel:
     cmdline_in_dev_scripts: dev_scripts
   note: "Every launch of the broker tripped this. Covers AMSI-patching + reflective loading + base64. selection_broker catches the conhost --headless / cmd / wscript launch vectors where Image is the broker, not powershell.exe — the exact evasion from the incident. dev_scripts (CmdLine-anchored) quiets a developer's own `powershell -ep bypass -File <dev.ps1>` WITHOUT trusting powershell.exe (which would blind this rule to every PS-bypass attack)."
 ---
-title: conhost --headless powershell (headless PS launch vector)
+title: conhost --headless (headless execution vector)
 id: f456f516-ed43-5fb4-a7f8-e9d76fcacac1
 status: experimental
 logsource: { product: windows, service: sysmon }
@@ -117,14 +126,22 @@ detection:
   selection:
     EventID: 1
     Image|endswith: '\conhost.exe'
-    CommandLine|contains|all: ['--headless', 'powershell']
+    # 2026-09-03 round-5 F19: the old shape required ['--headless',
+    # 'powershell'] — a headless conhost running cmd (or pwsh/wscript/any
+    # binary, live-confirmed: `--headless cmd /c <payload>` executed with
+    # zero alerts) matched neither this rule nor EXEC-001 (broker arm needs
+    # a CLI token). --headless alone is the anomaly: nothing on this box
+    # legitimately launches conhost headless (it was the incident vector).
+    # EXEC-001 stays the payload-catcher for bypass/encoded children.
+    CommandLine|contains: '--headless'
   condition: selection
 level: high
-tags: [attack.execution, attack.t1059.001]
+tags: [attack.execution, attack.t1059.001, attack.defense_evasion]
 x-sentinel:
   id: EXEC-002
   severity: critical
   alert: [popup, toast, log, eventlog]
+  note: "Any headless conhost launch, whatever the child (was: powershell-only, widened after round-5 F19). Needs the headless-aware conhost ProcessCreate exclude in scripts/install-sysmon.ps1 — the upstream SwiftOnSecurity config excludes ALL conhost EID1 at the source and starved this rule for its entire life (F21, zero alerts ever until 2026-09-03 16:13)."
 ---
 title: LOLBin reaching network or running script/http
 id: d609881b-3a8b-5537-9cb0-3c7168a54aa2
