@@ -11,7 +11,15 @@ detection:
     Image|endswith: ['\schtasks.exe', '\powershell.exe', '\pwsh.exe', '\conhost.exe', '\cmd.exe']
     CommandLine|contains: ['/create', '-ExecutionPolicy Bypass', '--headless', '-Enc', '-ExecutionPolicy:Bypass', '-ep:Bypass', '-enc:']
   selection_path:
-    CommandLine|contains: ['ProgramData', 'AppData', '\Temp\', '\Users\Public\']
+    # 2026-09-02b redteam F3: schtasks accepts env-var references in /tr, so
+    # '/tr "%TEMP%\upd.exe"' carried no literal path token (and
+    # %LOCALAPPDATA%/%PROGRAMDATA% already contain AppData/ProgramData as
+    # substrings — only %TEMP%/%APPDATA% were gaps). FP-cheap: the selection
+    # already requires schtasks/PS with /create or bypass flags. Remaining F3
+    # gap: /xml <file> keeps the action out of the cmdline entirely — needs an
+    # engine helper resolving the XML; BASE-001 daily diff is the backstop
+    # (<=24h).
+    CommandLine|contains: ['ProgramData', 'AppData', '\Temp\', '\Users\Public\', '%temp%', '%appdata%']
   filter_cursor_agent:
     # Same filter as EXEC-001's (see rules.d/exec.yml): cursor.exe's agent
     # shell bridge runs powershell -ExecutionPolicy Bypass -NonInteractive
@@ -80,7 +88,15 @@ logsource: { product: windows, service: sysmon }
 detection:
   selection:
     EventID: 13
-    TargetObject|contains: ['\CurrentVersion\Run', '\RunOnce', '\Winlogon', '\AppInit_DLLs', '\Userinit']
+    # 2026-09-02b redteam F4: \Windows\Load and StubPath added — user-writable
+    # logon autostarts OUTSIDE the Run/RunOnce/Winlogon/AppInit/Userinit
+    # family. Windows\Load is the legacy Winlogon-loaded value
+    # (HKCU\...Windows NT\CurrentVersion\Windows\Load); anchored on
+    # \Windows\Load (not the whole CurrentVersion\Windows key) so per-user
+    # Device/printer churn in the same key family stays quiet. StubPath =
+    # per-user Active Setup execution (HKCU\...Active Setup\Installed
+    # Components\{guid}\StubPath).
+    TargetObject|contains: ['\CurrentVersion\Run', '\RunOnce', '\Winlogon', '\AppInit_DLLs', '\Userinit', '\Windows\Load', 'StubPath']
   filter_trustedinstaller_notify:
     # TrustedInstaller registering its Winlogon session notification during
     # Windows servicing (CreateSession event). Pure OS churn; fires on every
@@ -104,7 +120,12 @@ detection:
   selection:
     EventID: 11
     TargetFilename|contains: '\Start Menu\Programs\Startup'
-    TargetFilename|re: '(?i)\.(exe|ps1|bat|cmd|vbs|js|lnk)$'
+    # 2026-09-02b redteam F5: Startup items are ShellExecute'd at logon, so
+    # every script/handler extension outside the old exe|ps1|bat|cmd|vbs|js|lnk
+    # list persisted silently: .hta (mshta), .jse/.vbe/.wsf (wscript), .scr
+    # (scrfile association; association-dependent, kept anyway — quiet either
+    # way is the wrong outcome for a Startup-folder write of that type).
+    TargetFilename|re: '(?i)\.(exe|ps1|bat|cmd|vbs|js|jse|vbe|wsf|hta|scr|lnk)$'
   condition: selection
 level: high
 tags: [attack.persistence, attack.t1547.001]

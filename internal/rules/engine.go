@@ -41,7 +41,7 @@ type Allowlist interface {
 	ImageInDevTools(imagePath string) bool
 	CmdLineInDevScripts(cmdline string) bool
 	DstInCIDR(ip string) bool
-	DstIsKnownLoopback(ip string, port int) bool
+	DstIsKnownLoopback(imagePath, ip string, port int) bool
 	IsLogNoise(e *event.Event) bool      // log-only filter; never consulted by Evaluate
 	ShouldCapture(e *event.Event) string // file_capture; never consulted by Evaluate
 }
@@ -230,7 +230,7 @@ func (eng *Engine) exceptSuppresses(r *sigmaeval.Rule, e *event.Event) bool {
 					return true
 				}
 			case "known_loopback_listeners":
-				if eng.al.DstIsKnownLoopback(e.DstIP, e.DstPort) {
+				if eng.al.DstIsKnownLoopback(e.Image, e.DstIP, e.DstPort) {
 					return true
 				}
 			default:

@@ -24,7 +24,12 @@ logsource: { product: windows, service: sysmon }
 detection:
   selection:
     EventID: 7
-    ImageLoaded|re: '(?i)(Temp|AppData|ProgramData|Downloads).*\.dll$'
+    # 2026-09-02b redteam F7: Desktop|Documents added — top user-writable
+    # staging dirs (CRED-001's own note names Desktop) were invisible to the
+    # old Temp|AppData|ProgramData|Downloads list. Residual: any OTHER
+    # user-writable dir — durable fix is an unsigned-AND-user-writable helper
+    # (needs a user-writable-path predicate in the engine).
+    ImageLoaded|re: '(?i)(Temp|AppData|ProgramData|Downloads|Desktop|Documents).*\.dll$'
     Signed: 'false'
   condition: selection
 level: medium

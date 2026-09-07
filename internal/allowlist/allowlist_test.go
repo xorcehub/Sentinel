@@ -70,7 +70,7 @@ func TestDstIsKnownLoopbackCanonicalizesIPv6(t *testing.T) {
 		{"127.0.0.2", 9080, false},       // wrong ip
 	}
 	for _, c := range cases {
-		if got := a.DstIsKnownLoopback(c.ip, c.port); got != c.want {
+		if got := a.DstIsKnownLoopback("", c.ip, c.port); got != c.want {
 			t.Errorf("DstIsKnownLoopback(%q,%d)=%v want %v", c.ip, c.port, got, c.want)
 		}
 	}
@@ -123,12 +123,49 @@ func TestLoadAndChecks(t *testing.T) {
 		t.Error("garbage ip should not match")
 	}
 
-	// known loopback
-	if !a.DstIsKnownLoopback("127.0.0.1", 9080) {
+	// known loopback (this fixture uses bare string entries: any image)
+	if !a.DstIsKnownLoopback("c:\\anything.exe", "127.0.0.1", 9080) {
 		t.Error("127.0.0.1:9080 is a known loopback")
 	}
-	if a.DstIsKnownLoopback("127.0.0.1", 58172) {
+	if a.DstIsKnownLoopback("c:\\anything.exe", "127.0.0.1", 58172) {
 		t.Error("127.0.0.1:58172 should NOT be known (that's the broker)")
+	}
+}
+
+// TestKnownLoopbackImageScoping pins the 2026-09-02b F8b fix: a
+// known_loopback_listeners entry may be an object {"addr":..., "image":...}
+// that excepts ONLY the expected connecting image. A bare string entry keeps
+// the legacy any-image semantics.
+func TestKnownLoopbackImageScoping(t *testing.T) {
+	a, err := Compile([]byte(`{
+  "known_loopback_listeners": [
+    "127.0.0.1:5173",
+    { "addr": "127.0.0.1:9080", "image": "nahimic" }
+  ]
+}`))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	nahimic := `C:\Windows\System32\NahimicService.exe`
+	appdataNahimic := `c:\users\user01\appdata\local\nhnotifsys\nahimic\module.exe`
+	implant := `C:\Users\user01\Downloads\payload.exe`
+	// scoped entry: matching images are excepted, anything else stays armed
+	if !a.DstIsKnownLoopback(nahimic, "127.0.0.1", 9080) {
+		t.Error("scoped entry must except the expected image (system32 nahimic)")
+	}
+	if !a.DstIsKnownLoopback(appdataNahimic, "127.0.0.1", 9080) {
+		t.Error("scoped entry must except the expected image (appdata nahimic, case-insensitive)")
+	}
+	if a.DstIsKnownLoopback(implant, "127.0.0.1", 9080) {
+		t.Error("scoped entry must NOT except an unrelated image (the F8b hole: broker C2 on the excepted port)")
+	}
+	// bare string entry: legacy any-image semantics
+	if !a.DstIsKnownLoopback(implant, "127.0.0.1", 5173) {
+		t.Error("bare string entry keeps any-image semantics")
+	}
+	// scoping never widens the port match
+	if a.DstIsKnownLoopback(nahimic, "127.0.0.1", 9081) {
+		t.Error("wrong port must never match")
 	}
 }
 
@@ -234,9 +271,13 @@ func TestDevToolPathRegexCompiles(t *testing.T) {
 // -File invocations of the trusted script, and must NOT match a hostile script
 // of a different name.
 func TestCmdLineInDevScripts(t *testing.T) {
+	// 2026-09-02b redteam F2: entries are path-anchored — a payload that merely
+	// NAMES ITSELF pe-triage-docker.ps1 outside the pe_triage repo must NOT
+	// match; a relative invocation has no repo component, so it (safely)
+	// alerts, same doctrine as install.ps1.
 	a, err := Compile([]byte(`{
   "dev_scripts": [
-    "pe-triage-docker\\.ps1"
+    "pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1"
   ]
 }`))
 	if err != nil {
@@ -247,8 +288,17 @@ func TestCmdLineInDevScripts(t *testing.T) {
 	if !a.CmdLineInDevScripts(abs) {
 		t.Error("absolute -File invocation of dev script must match")
 	}
-	if !a.CmdLineInDevScripts(rel) {
-		t.Error("relative -File invocation of dev script must match")
+	if a.CmdLineInDevScripts(rel) {
+		t.Error("relative -File invocation must NOT match a path-anchored entry (safe alert, install.ps1 doctrine)")
+	}
+	// Hostile script of a different name must NOT match (EXEC-001 stays armed).
+	if a.CmdLineInDevScripts(`powershell -ep bypass -File C:\ProgramData\evil.ps1`) {
+		t.Error("unrelated hostile script must NOT match dev_scripts")
+	}
+	// Hostile script of the SAME name outside the repo must NOT match (the F2
+	// hole this anchoring closes).
+	if a.CmdLineInDevScripts(`powershell.exe -ExecutionPolicy Bypass -File C:\Users\ju\evil\pe-triage-docker.ps1`) {
+		t.Error("same-named payload outside the pe_triage repo must NOT match dev_scripts (F2)")
 	}
 	// Hostile script of a different name must NOT match (EXEC-001 stays armed).
 	if a.CmdLineInDevScripts(`powershell -ep bypass -File C:\ProgramData\evil.ps1`) {
@@ -380,12 +430,20 @@ func TestProductionAllowlistDevTuning(t *testing.T) {
 		t.Error("pi-lite dev_tool_paths entry over-matches an unrelated tool")
 	}
 
-	// pe-triage-docker.ps1 (EXEC-001 FP): both invocation forms match dev_scripts,
-	// but a hostile ProgramData script must NOT (EXEC-001 stays armed).
+	// pe-triage-docker.ps1 (EXEC-001 FP): absolute invocation from the pe_triage
+	// repo matches dev_scripts; relative + same-name-elsewhere must NOT
+	// (path-anchored, 2026-09-02b redteam F2 — EXEC-001 stays armed for a
+	// payload that merely names itself like the dev script).
 	abs := `powershell -ExecutionPolicy Bypass -File C:\Users\user01\Documents\Github\pe_triage\scripts\pe-triage-docker.ps1`
 	rel := `powershell -ExecutionPolicy Bypass -File ./scripts/pe-triage-docker.ps1`
-	if !a.CmdLineInDevScripts(abs) || !a.CmdLineInDevScripts(rel) {
-		t.Error("pe-triage-docker.ps1 (both abs + rel -File forms) should be in dev_scripts (EXEC-001 FP tuning)")
+	if !a.CmdLineInDevScripts(abs) {
+		t.Error("pe-triage-docker.ps1 absolute -File form should be in dev_scripts (EXEC-001 FP tuning)")
+	}
+	if a.CmdLineInDevScripts(rel) {
+		t.Error("relative form must NOT match a path-anchored dev_scripts entry (safe alert)")
+	}
+	if a.CmdLineInDevScripts(`powershell -ExecutionPolicy Bypass -File C:\Users\ju\evil\pe-triage-docker.ps1`) {
+		t.Error("dev_scripts must NOT match a same-named payload outside the pe_triage repo (F2)")
 	}
 	if a.CmdLineInDevScripts(`powershell -ep bypass -File C:\ProgramData\evil.ps1`) {
 		t.Error("dev_scripts must NOT match a hostile ProgramData script (EXEC-001 would be blinded)")

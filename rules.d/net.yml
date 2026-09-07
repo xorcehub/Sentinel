@@ -68,7 +68,14 @@ logsource: { product: windows, service: sysmon }
 detection:
   selection:
     EventID: 3
-    Image|contains: ['Temp', 'AppData', 'ProgramData']
+    # 2026-09-02b redteam F8a: Users\Public added — the world-writable
+    # C:\Users\Public tree is in NONE of Temp/AppData/ProgramData, so a
+    # beacon from there to an allowlisted DoH IP (1.1.1.1/1.0.0.1) was
+    # invisible to the entire catalog (NET-002/003 except the dst,
+    # NET-004 didn't select). DoH CIDRs kept: the system resolver uses them.
+    # Residual: other user-writable dirs outside this list + allowlisted
+    # DoH dst — durable fix is a DoH-from-non-resolver-image helper.
+    Image|contains: ['Temp', 'AppData', 'ProgramData', 'Users\Public']
   condition: selection
 level: high
 tags: [attack.command_and_control]

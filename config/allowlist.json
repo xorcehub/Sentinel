@@ -83,7 +83,14 @@
     ]
   },
   "known_loopback_listeners": [
-    "127.0.0.1:9080"
+    // NahimicService (OEM audio stack) local control channel. Scoped to
+    // nahimic-named images (2026-09-02b redteam F8b): the entry had no image
+    // constraint, so ANY process chatting on :9080 was silent for NET-005 —
+    // the exact broker-C2 shape the rule exists for. Matches both the
+    // system32 service and the AppData-resident components (case-insensitive
+    // name fragment). An entry is either "host:port" (any image) or
+    // { "addr": "host:port", "image": "<regex>" }.
+    { "addr": "127.0.0.1:9080", "image": "nahimic" }
     // Add: vite :5173, Cursor/Docker desktop ports, your app's dev ports.
   ],
   "dev_tool_paths": {
@@ -147,10 +154,15 @@
   // dev_scripts: CmdLine-anchored exceptions for EXEC-001 (see allowlist doc).
   // The operator's own dev scripts run via `powershell -ep bypass -File <x>`;
   // anchoring on the script filename keeps EXEC-001 armed for everything else.
-  // Filename anchor covers BOTH absolute (-File C:\\...\\pe-triage-docker.ps1)
-  // and relative (-File ./scripts/pe-triage-docker.ps1) invocations.
+  // Every entry is PATH-anchored (2026-09-02b redteam F2): a bare-filename
+  // anchor suppressed EXEC-001 for ANY payload that named itself like the
+  // dev script, from ANY folder, with full bypass flags. Like install.ps1
+  // below, relative invocations (-File .\scripts\pe-triage-docker.ps1) no
+  // longer match and (safely) alert.
   "dev_scripts": [
-    "pe-triage-docker\\.ps1",
+    // pe-triage-docker helper (dockerized PE triage). Anchored on the
+    // pe_triage repo's scripts dir; separator tolerated both ways.
+    "pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
     // operator install/uninstall scripts. Path-anchored on the repo dir so a
     // same-named dropper (install.ps1 is a top-tier dropper name) can't evade
     // EXEC-001. Requires absolute-path invocation

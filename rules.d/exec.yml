@@ -33,6 +33,27 @@ detection:
       - '-exec:Bypass'
       - '-w:Hidden'
       - '-WindowStyle:Hidden'
+      # 2026-09-02b redteam F1: PowerShell resolves ABBREVIATED parameter names
+      # AND abbreviated enum values, so '-ep b' / '-ExecutionPolicy B' / '-w h'
+      # execute with full Bypass/Hidden semantics while every keyword above
+      # (all longer) misses: contains() cannot match a prefix form. One
+      # first-letter token covers every longer prefix ('-ep by' contains
+      # '-ep b'; '-ExecutionPolicy Byp' contains '-ExecutionPolicy B').
+      # Acknowledged whack-a-mole vs PS prefix matching — the durable fix is
+      # an engine helper that parses PS argv (flag/value pairs).
+      - '-ep b'
+      - '-ep u'
+      - '-ep:B'
+      - '-ep:U'
+      - '-exec b'
+      - '-exec:B'
+      - '-ExecutionPolicy B'
+      - '-ExecutionPolicy:U'
+      - '-ExecutionPolicy:B'
+      - '-w h'
+      - '-w:H'
+      - '-WindowStyle h'
+      - '-WindowStyle:H'
       - 'FromBase64String'
       - 'DownloadString'
       - 'DownloadFile'
