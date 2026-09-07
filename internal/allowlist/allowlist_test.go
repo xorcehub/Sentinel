@@ -460,13 +460,22 @@ func TestProductionAllowlistDevTuning(t *testing.T) {
 // C:\Windows\Temp\Program Files\7-Zip\evil.exe, and a planted
 // C:\Users\Public\Windows\System32\svchost.exe (fake system32 sibling).
 //
-// The fix prepends ^[a-z]: to each path pattern: NormalizePath always emits
-// "<drive-letter>:\...", so the anchor pins the match to the drive root and the
-// trusted substring can no longer appear mid-path in a user-writable location.
-// This test loads the REAL config/allowlist.json and asserts both halves:
-// cross-directory substring mimics must be UNtrusted, while legit install paths
-// (including a non-C drive, proving the anchor is [a-z]: and not literal c:)
-// stay trusted.
+// The fix prepends a drive-root anchor to each path pattern: NormalizePath
+// always emits "<drive-letter>:\...", so the anchor pins the match to the
+// drive root and the trusted substring can no longer appear mid-path in a
+// user-writable location. This test loads the REAL config/allowlist.json and
+// asserts both halves: cross-directory substring mimics must be UNtrusted,
+// while legit install paths stay trusted.
+//
+// 2026-09-02c redteam F15 SUPERSEDES the original drive-letter posture: the
+// anchor is now the literal system drive ^[c]:, not [a-z]:. The old comment
+// here required a D:-drive legit case to prove [a-z]: generality — round 3
+// showed that is the hole: on a user-writable data volume an UNPRIVILEGED
+// user creates D:\Program Files\..., so drive-agnostic trust let a plant
+// inherit FULL behavioral trust. D:-drive installs of trusted tools are now
+// attacker cases (asserted below); if a trusted tool ever legitimately ships
+// on a data volume, the fix is a system-volume helper or hash_gated_path —
+// not reopening the wildcard.
 //
 // KNOWN LIMITATION (not asserted here, by design): this anchor does NOT close
 // per-user-profile mimicry — patterns like ^[a-z]:\users\[^\\]+\appdata\local\
@@ -510,6 +519,8 @@ func TestProductionAllowlistDriveRootAnchored(t *testing.T) {
 		{"fake system32 sibling dir", `C:\Users\Public\Windows\System32\svchost.exe`},
 		{"programdata defender substring mimic", `C:\Users\Public\ProgramData\Microsoft\Windows Defender\MpCmdRun.exe`},
 		{"go bin substring under Temp", `C:\Users\user01\AppData\Local\Temp\Program Files\Git\bin\git.exe`},
+		{"firefox planted on a DATA drive (F15: Program Files is user-creatable there)", `D:\Program Files\Mozilla Firefox\ffupdate.exe`},
+		{"7-zip planted on a DATA drive (F15)", `D:\Program Files\7-Zip\7z.exe`},
 	}
 	for _, c := range attacks {
 		t.Run("attack/"+c.name, func(t *testing.T) {
@@ -522,17 +533,15 @@ func TestProductionAllowlistDriveRootAnchored(t *testing.T) {
 		})
 	}
 
-	// Legit install paths: must stay trusted. Includes a D: drive to prove the
-	// anchor is [a-z]: (any drive), not a literal c: that would break multi-drive
-	// boxes. Per-user patterns wildcard the username, so a real Cursor install
+	// Legit install paths: must stay trusted. All on the SYSTEM drive —
+	// F15 (2026-09-02c) revoked non-system-volume trust (see comment above).
+	// Per-user patterns wildcard the username, so a real Cursor install
 	// for an arbitrary user must still match.
 	legit := []struct {
 		name  string
 		image string
 	}{
 		{"firefox (C:)", `C:\Program Files\Mozilla Firefox\firefox.exe`},
-		{"7-zip (D: drive)", `D:\Program Files\7-Zip\7z.exe`},
-		{"firefox (D: drive)", `D:\Program Files\Mozilla Firefox\firefox.exe`},
 		{"real system32 svchost", `C:\Windows\System32\svchost.exe`},
 		{"per-user cursor install", `C:\Users\anyone\AppData\Local\Programs\Cursor\Cursor.exe`},
 		{"per-user go bin", `C:\Users\anyone\go\bin\task.exe`},

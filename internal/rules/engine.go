@@ -421,4 +421,47 @@ func (eng *Engine) normalize(e *event.Event) {
 	e.SourceImage = pathnorm.NormalizePath(e.SourceImage)
 	e.TargetImage = pathnorm.NormalizePath(e.TargetImage)
 	e.TargetFile = pathnorm.NormalizePath(e.TargetFile)
+	e.CmdLine = foldCmdLine(e.CmdLine)
+	e.ParentCmdLine = foldCmdLine(e.ParentCmdLine)
 }
+
+// foldCmdLine applies the cmdline spelling folds that close evasion classes
+// at ONE choke point — rule matching, dev_scripts matching and dedup keying
+// all see the folded form:
+//
+//   - Unicode dash → ASCII '-' (round-4 F16: PS accepts '–ep bypass' with
+//     full Bypass semantics while ASCII-prefixed tokens miss).
+//   - whitespace runs → single space (round-5 F17: PowerShell and
+//     CommandLineToArgvW treat a RUN of spaces as one separator, so
+//     `-ep  bypass -w  h -c <payload>` executed with full Bypass/Hidden
+//     semantics — live-confirmed 2026-09-03 — while every space-form token
+//     pair ('-ep bypass', '-w h', '-ExecutionPolicy B', …), a plain
+//     substring, missed).
+//
+// Known ceiling (ponytail): this also collapses runs INSIDE quoted payload
+// strings, so a payload mentioning '-ep   bypass' as inert text folds to the
+// token shape. Single-space inert mentions already match today (contains),
+// so this adds no new FP class; the durable fix remains the PS argv-parser
+// helper noted in rules.d/exec.yml.
+func foldCmdLine(s string) string {
+	return strings.Join(strings.Fields(psDashFold.Replace(s)), " ")
+}
+
+// psDashFold replaces the Unicode dash characters PowerShell's console host
+// accepts as argument dashes with ASCII '-'. PS resolves e.g.
+// '–ep bypass –w h –c <payload>' with FULL Bypass/Hidden semantics, so token
+// rules that key on '-ep bypass' (all ASCII-prefixed) never match. Round-4
+// redteam F16 (live-confirmed 2026-09-03): such a cmdline executed its
+// payload while the daemon logged nothing. Folding here (round-1 doctrine:
+// fix it once where all consumers route through) closes the whole spelling
+// class for BOTH rule matching and allowlist (dev_scripts) matching, instead
+// of chasing per-token dash variants. Folded BEFORE dedup keying, so the
+// ASCII and unicode spellings of the same launch dedup to one alert.
+var psDashFold = strings.NewReplacer(
+	"\u2013", "-", // en dash
+	"\u2014", "-", // em dash
+	"\u2015", "-", // horizontal bar
+	"\u2212", "-", // minus sign
+	"\ufe63", "-", // small hyphen-minus
+	"\uff0d", "-", // fullwidth hyphen-minus
+)

@@ -24,4 +24,7 @@ scripts/analysis/
 
 
 # live redteam launchers (local only - benign but replicate attack shapes)
-scripts/redteam/
+redteam/runners/
+
+# round-4 live lab (local only, benign probes)
+redteam/lab/

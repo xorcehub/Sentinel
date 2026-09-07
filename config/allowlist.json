@@ -11,12 +11,21 @@
       // now; path patterns below carry coverage.
     ],
     "path": [
-      "^[a-z]:\\\\program files\\\\mozilla firefox\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\microsoft\\\\edge(?:update|webview)?\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\steam\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|wc|git.*)\\.exe$",
-      "^[a-z]:\\\\program files\\\\7-zip\\\\.*\\.exe$",
+      // 2026-09-02c redteam F15: every pattern in this tier is anchored to the
+      // SYSTEM DRIVE (^[c]:, still case-insensitive). The old ^[a-z]: prefix
+      // made trust drive-agnostic: on any user-writable data volume (this box
+      // has D:), an UNPRIVILEGED user can create D:\Program Files\Mozilla
+      // Firefox\, D:\Windows\, D:\ProgramData\... — the tier's premise
+      // ("admin-owned install roots") only holds on the system drive. A plant
+      // on a data drive inherited FULL behavioral trust. Non-system volumes
+      // are untrusted by path, period; hash_gated_path is the only route to
+      // behavioral trust off C:.
+      "^[c]:\\\\program files\\\\mozilla firefox\\\\.*\\.exe$",
+      "^[c]:\\\\program files(?: \\(x86\\))?\\\\microsoft\\\\edge(?:update|webview)?\\\\.*\\.exe$",
+      "^[c]:\\\\program files(?: \\(x86\\))?\\\\steam\\\\.*\\.exe$",
+      "^[c]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
+      "^[c]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|wc|git.*)\\.exe$",
+      "^[c]:\\\\program files\\\\7-zip\\\\.*\\.exe$",
       // Benign Windows session/service binaries BY NAME (NOT a blanket
       // System32 glob). Trusting \windows\system32\.*\.exe was a design
       // bug: it also trusted the LOLBins (powershell, conhost, mshta,
@@ -35,10 +44,10 @@
       // older deployed build still on the eventcreate path. Kept because it is
       // harmless (eventcreate only writes eventlog entries; no rule selects on
       // it as an actor) and guards a config/binary version mismatch.
-      "^[a-z]:\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
-      "^[a-z]:\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
-      "^[a-z]:\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
-      "^[a-z]:\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
+      "^[c]:\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
+      "^[c]:\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
+      "^[c]:\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
+      "^[c]:\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
     ],
     // hash_gated_path: Tier-2 user-writable dev-tool paths. A path match
     // here is NOT trust by itself (Bypass B: the per-user username wildcard
@@ -90,7 +99,14 @@
     // system32 service and the AppData-resident components (case-insensitive
     // name fragment). An entry is either "host:port" (any image) or
     // { "addr": "host:port", "image": "<regex>" }.
-    { "addr": "127.0.0.1:9080", "image": "nahimic" }
+    // 2026-09-02c redteam F9: the image gate was the bare name fragment
+    // "nahimic" — compiled UNANCHORED, so any binary with "nahimic" anywhere
+    // in its path (Downloads\evil-nahimic-updater.exe) inherited the :9080
+    // exception. Image gates are ANCHORED PATHS from here on, not name
+    // fragments. Start-anchored only: system32\nahimic still matches
+    // NahimicService.exe, and the AppData alternative still matches the
+    // nhnotifsys component tree (pinned by internal/allowlist/allowlist_test.go).
+    { "addr": "127.0.0.1:9080", "image": "^[a-z]:\\\\(windows\\\\system32\\\\nahimic|users\\\\[^\\\\]+\\\\appdata\\\\local\\\\nhnotifsys\\\\nahimic)" }
     // Add: vite :5173, Cursor/Docker desktop ports, your app's dev ports.
   ],
   "dev_tool_paths": {
@@ -99,7 +115,7 @@
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cargo\\\\bin\\\\.*\\.exe$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:python|node)\\\\.*\\.(exe|dll)$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\npm\\\\.*\\.exe$",
-      "^[a-z]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
+      "^[c]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\lm studio\\\\.*\\.exe$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\pnpm\\\\.*\\.exe$",
       // pi-lite (operator's dev AI agent) — quiets NET-002/003. Scoped to the
@@ -118,7 +134,7 @@
       // quiet set - java is a real malware host, so deliberately NOT in
       // trusted_binaries: no behavioral trust, NET-002/003/004 quiet only).
       // Killed 19+18 hits/2wk (Gradle/Maven fetching from GCP/Fastly).
-      "^[a-z]:\\\\program files\\\\eclipse adoptium\\\\.*\\\\bin\\\\java(w)?\\.exe$",
+      "^[c]:\\\\program files\\\\eclipse adoptium\\\\.*\\\\bin\\\\java(w)?\\.exe$",
       // uv.exe under the hermes tool dir - operator Python toolchain
       // manager (jsdelivr CDN fetches). Same NET-only scope as above.
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\hermes\\\\bin\\\\.*\\.exe$",
@@ -161,16 +177,29 @@
   // longer match and (safely) alert.
   "dev_scripts": [
     // pe-triage-docker helper (dockerized PE triage). Anchored on the
-    // pe_triage repo's scripts dir; separator tolerated both ways.
-    "pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
+    // -File invocation + the pe_triage repo's scripts dir; separator
+    // tolerated both ways. 2026-09-02c redteam F10: the old bare path
+    // substring matched ANY cmdline that MENTIONED the path (e.g.
+    // `IEX(gc C:\pe_triage\scripts\pe-triage-docker.ps1)` — inert string,
+    // hostile payload), suppressing EXEC-001 for the whole launch. The
+    // -File context is now part of the anchor; relative invocations
+    // (-File .\scripts\...) still safely alert.
+    // 2026-09-03 residual R2: the repo-dir group was OPTIONAL ((...)?), so
+    // -File <any drive>:\pe_triage\scripts\... (attacker-created tree with
+    // arbitrary script content) still matched. Group is now MANDATORY and
+    // pinned to the system drive (F15 posture).
+    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
     // operator install/uninstall scripts. Path-anchored on the repo dir so a
     // same-named dropper (install.ps1 is a top-tier dropper name) can't evade
     // EXEC-001. Requires absolute-path invocation
-    // (-File C:\\...\\sentinel\\install.ps1); a relative run
+    // (-File C:\\...\\leave-my-shit-alone\\install.ps1); a relative run
     // (-File .\\install.ps1) won't match here and will (safely) alert, which is
     // the correct failure for a one-shot, supervised install.
-    "sentinel\\\\install\\.ps1",
-    "sentinel\\\\uninstall\\.ps1",
+    // 2026-09-03 residual R3: the old entries ("sentinel\\install.ps1") had
+    // NO -File anchor — any cmdline MENTIONING the path (inert-string IEX
+    // form, live-confirmed) suppressed EXEC-001. Now -File + real repo path.
+    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone\\\\install\\.ps1",
+    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone\\\\uninstall\\.ps1",
     // Docker Desktop registry-list helper (cscript ...\regedit\vbs\regList.wsf).
     // Path-anchored on Docker's stable install subdir so a same-named payload
     // elsewhere (e.g. C:\ProgramData\reglist.wsf via cscript+http) can't evade
@@ -178,17 +207,30 @@
     "regedit\\\\vbs\\\\reglist\\.wsf",
     // OEM "Control Center" (AiStone) logon script. A scheduled task fires
     // `powershell -ep bypass -File ...\AiStoneService\MyControlCenter\Command\LogonUserName.ps1`
-    // at every logon (plus a `cmd /c -> powershell` wrapper variant). Path-anchored
-    // on the admin-owned Program Files\OEM subtree; planting there already requires
-    // admin = game over, so the path anchor is safe. One pattern covers both the
-    // direct powershell and the cmd /c variants (same path substring).
-    "aistoneservice[\\\\/]+mycontrolcenter[\\\\/]+command[\\\\/]+logonusername\\.ps1",
-    // GCUBridge service-watchdog. A scheduled task runs
-    // `powershell -WindowStyle Hidden -ep bypass -Command "Get-Service -Name 'GCUBridge';
-    // if not running, Start-Service"` at every logon. Anchored on the GCUBridge
-    // Get-Service probe (regex compiled (?i) case-insensitive); a real attacker won't
-    // name their service GCUBridge AND use this exact watchdog form.
-    "Get-Service -Name 'GCUBridge'"
+    // at every logon (plus a `cmd /c -> powershell` wrapper variant, same
+    // -File form). 2026-07-29 known-limitations #1 + 2026-09-03 redteam F20
+    // (live-confirmed: a repo-tree mimic ran bypass-flagged and EXEC-001 was
+    // suppressed, sentinel.log 'suppressed (allowlist) rule=EXEC-001'): the
+    // old entry was an UNANCHORED substring, so those dir names ANYWHERE in
+    // the cmdline (attacker-created tree in any user-writable path) gagged
+    // EXEC-001/EXEC-003. Now anchored on -File + the admin-owned
+    // Program Files\OEM subtree on the system drive (F15 posture): planting
+    // there already requires admin = game over, and the -File anchor keeps
+    // inert-string piggybacks (IEX(gc <oem path>)) from re-opening F10.
+    "-file\\s+\"?[c]:\\\\program[ -]files\\\\oem[^\"']*aistoneservice[\\\\/]+mycontrolcenter[\\\\/]+command[\\\\/]+logonusername\\.ps1",
+    // GCUBridge service-watchdog (2026-09-02c redteam F10). A scheduled task
+    // runs scripts\gcubridge-watchdog.ps1 at every logon:
+    // `powershell -WindowStyle Hidden -ep bypass -File <repo>\scripts\gcubridge-watchdog.ps1`.
+    // The old entry anchored on the bare marker string
+    // `Get-Service -Name 'GCUBridge'` — ANY bypass-flagged powershell whose
+    // cmdline contained it (piggybacked payload after the marker) suppressed
+    // EXEC-001 for the whole launch (live-confirmed: 'gcupiggy'). Now anchored
+    // on the script path; OPERATOR STEP: re-register the task to the -File
+    // form above (until then the task safely alerts at logon).
+    // 2026-09-03 residual R4: the old entry had no -File anchor — ANY cmdline
+    // mentioning the path (-File or IEX from an attacker tree) suppressed
+    // EXEC-001 (engine-confirmed). Now -File + system-drive repo anchor.
+    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone[\\\\/]+scripts[\\\\/]+gcubridge-watchdog\\.ps1"
   ],
 
   // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the

@@ -106,7 +106,14 @@ detection:
     # 0:0:0:0:0:0:0:1 = Sysmon's EXPANDED rendering of ::1 (observed live
     # 2026-09-01: an ::1 connect arrived as 0:0:0:0:0:0:0:1 and missed the
     # old '^(127\.|::1)' anchor entirely).
-    DestinationIp|re: '^(127\.|::1|0:0:0:0:0:0:0:1)'
+    # 2026-09-02c redteam F12: ::ffff:127\. added — the IPv4-MAPPED spelling
+    # starts '::f' and missed this regex while allowed_destinations still
+    # excepted it from NET-002/003 (IPNet.Contains sees it as 127.0.0.1):
+    # fully silent IF such an event ever arrives. Unreachable on current
+    # Winsock (v4-mapped connect() → WSAEADDRNOTAVAIL, probe-verified) — this
+    # token closes the spelling class if a future Windows/driver path ever
+    # delivers it.
+    DestinationIp|re: '^(127\.|::ffff:127\.|::1|0:0:0:0:0:0:0:1)'
   condition: selection
 level: high
 tags: [attack.command_and_control, attack.t1571]

@@ -1,0 +1,95 @@
+# Red-team round 5 — spelling class round 3 + a dead-telemetry find (2026-09-03b)
+
+Round 4 closed the Unicode-dash spelling (F16, engine-side dash fold). This
+round attacks the next spellings of the same class and re-attacks EXEC-002's
+telemetry. Everything (scripts, mimic trees, proof files) stayed inside
+`redteam/2026-09-03b/`; payloads are `Write-Host`/`echo`/`Add-Content` only.
+
+**Post-round fixes applied (same session):** F17/F17b (foldCmdLine whitespace
+collapse in Engine.normalize), F20 (AiStone dev_scripts anchored to
+-File + OEM tree), F21 (install-sysmon.ps1 patch 2 — headless-aware conhost
+exclude). F18/F19 remain open, pinned below. EXEC-002 stays inert on the
+LIVE daemon until the operator re-runs install-sysmon.ps1 as admin.
+
+## Findings
+
+| ID | Vector | Live verdict | Status |
+|----|--------|--------------|--------|
+| **F17** | **Whitespace-run token split.** `powershell -ep  bypass -w  h -c <payload>` (double-spaced) — PS/CommandLineToArgvW treat a space RUN as one separator, so the launch executes with full Bypass+Hidden semantics while every space-form token pair (`-ep bypass`, `-w h`, `-ExecutionPolicy B`, …) is a plain substring and misses. | **QUIET live** 15:10:51: payload marker in proof file; zero ALERTS lines; sibling control (single-spaced, same parent, same second) fired EXEC-001 CRITICAL ×2 (powershell child rec=2244424 + cmd broker rec=2244423) | **FIXED** — foldCmdLine collapses whitespace runs in Engine.normalize (one choke point: rules, dev_scripts, dedup); pinned C17b/C17c |
+| **F17b** | Same split on the full-name form `-ExecutionPolicy  Bypass`. | **QUIET live** (engine-pinned) | **FIXED** — same collapse; pinned C17c |
+| **F18** | **Full-name non-Bypass policy value.** F1's fix added `-ep u`/`-ep:U`/`-ExecutionPolicy:U` but not the space forms `-exec u`/`-ExecutionPolicy U`: `-ExecutionPolicy Unrestricted -c <payload>` was quiet. | **QUIET live** 15:10:52; control `-ep u` fired EXEC-001 CRITICAL | **FIXED** — the two missing first-letter tokens added (3ed4c5b); live-verified 5c: vector FIRED EXEC-001. Durable fix remains the PS-argv-parser helper |
+| **F19** | **EXEC-002 headless-broker gap.** Rule required `['--headless','powershell']`; a headless conhost running `cmd` (or pwsh/wscript/…) matched neither EXEC-002 nor EXEC-001. Hidden execution via the incident's exact broker. | **QUIET live** 15:10:52 + re-fire 15:13; also QUIET in 5b (16:13) | **FIXED** — EXEC-002 keys on `--headless` alone, any child (3ed4c5b); live-verified 5c: `--headless cmd` vector FIRED EXEC-002 hid=R-…-000518 |
+| **F20** | **AiStone dev_scripts unanchored** (known-limitations #1, documented 2026-07-29; the allowlist comment falsely claimed "path-anchored"). Repo-tree mimic `…\redteam\2026-09-03b\aistoneservice\mycontrolcenter\command\logonusername.ps1` run with `-ExecutionPolicy Bypass -File`. | **QUIET live, mechanism proven**: 15:11:31 the vector's EID1 matched EXEC-001 and was swallowed — `suppressed (allowlist) summary rule=EXEC-001 count=1 last_seen=15:11:31` — sandwiched between the control's EXEC-001 CRITICAL HITs (ctl_r5f20.ps1, same second, same parent) | **FIXED** — entry anchored to `-file\s+"?[c]:\\program[ -]files\\oem…` (R2–R4 pattern); repo mimic pinned C20b, real OEM task pinned quiet in TestRound5LegitStaysQuiet |
+| **F21** | **EXEC-002 is dead telemetry on this deployment.** The deployed Sysmon config (SwiftOnSecurity base, `C:\ProgramData\Sysmon\sentinel-sysmon.xml` line 104) **excludes `conhost.exe` from ProcessCreate at the source** — conhost EID1 never reaches the daemon. EXEC-002 has **0 alerts ever** in ALERTS.log (grep-verified). My C19 live control (`conhost --headless powershell`) was silent for this reason, while the engine-level control passes. Same failure class as the 127.0.0.1 NetworkConnect source-blindness `install-sysmon.ps1` already patches — this one was missed. | live + config | **FIXED (installer)** — patch 2 converts the blanket exclude into a `<Rule>` (Image AND CommandLine `excludes` --headless; direct children of an event tag are OR-combined, so the wrapper is required). **POSTMORTEM:** the first cut used `condition="not contains"` from memory — the deployed Sysmon64 15.21 has no such condition (verified against the binary's embedded DTD + usage strings: `excludes` is the sanctioned negative), and an unknown condition makes sysmon64 CRASH on apply (0xC0000409). Caught by enable-filecreate's exit-code check; install-sysmon.ps1 step 3 had swallowed the same crash ($LASTEXITCODE now checked) and the service silently kept the old config. **OPERATOR STEP: re-run scripts/install-sysmon.ps1 as admin, then enable-filecreate-telemetry.ps1** |
+
+## Bounded impact (as of this round)
+
+- F17/F18 quiet only the EXEC-shape rules for THAT launch; follow-on NET /
+  PERSIST / CRED behavior stays armed (round-1 doctrine).
+- F19+F21 compound: headless conhost + non-PS child + no CLI tokens = fully
+  silent hidden execution today. The child's own behavior still trips
+  behavioral rules, and `cmd`-brokered bypass launches still fire EXEC-001's
+  broker arm when tokens are present.
+- F20 gags EXEC-001/EXEC-003 for one launch shape; bounded per
+  known-limitations #1.
+
+## Run
+
+```
+go test ./redteam/2026-09-03b/ -v          # engine pins (open rows quiet, fixed rows + controls fire)
+powershell -NoProfile -File run.ps1        # live fire (expects ~4 CRITICAL toasts; pre-fix run)
+```
+
+## Attempt log (live-fire 2026-09-03 15:10:49–15:13, transient artifacts deleted after)
+
+| probe | shape | verdict |
+|-------|-------|---------|
+| F17 vec | `powershell -ep  bypass -w  h -c "Write-Host r5f17-marker"` (double spaces) | payload RAN (proof file); no ALERTS line |
+| F17 ctl | same, single spaces | EXEC-001 CRITICAL ×2 (child + cmd broker) |
+| F18 vec | `powershell -ExecutionPolicy Unrestricted -c "Write-Host r5f18-marker"` | payload RAN; no ALERTS line |
+| F18 ctl | `-ep u -c …` | EXEC-001 CRITICAL |
+| F19 vec | `conhost --headless cmd /c "echo r5f19-marker > …\r5f19.txt"` | payload RAN (file written); no ALERTS line |
+| F19 ctl | `conhost --headless powershell -NoProfile -c …` | **also silent** → F21 (conhost EID1 source-excluded); engine control passes |
+| F20 vec | `-ExecutionPolicy Bypass -File …\aistoneservice\mycontrolcenter\command\logonusername.ps1` (repo tree) | payload RAN; EID1 matched EXEC-001, suppressed (allowlist/dev_scripts) — summary line 15:15:59 |
+| F20 ctl | same flags, `-File …\ctl_r5f20.ps1` | EXEC-001 CRITICAL rec=2244424/23 |
+
+Attribution: every quiet vector has a same-parent, same-second control that
+fired (F17/F18/F20), an execution proof artifact, and — for F20 — the
+suppressed-hit summary proving the event reached rule evaluation. F19's
+live silence is fully explained by F21 (source-level exclusion), pinned
+separately at engine level.
+
+## Post-fix live re-fire (round 5b, 16:13:10–16:13:36)
+
+After the fixes were deployed (daemon rebuilt 15:56→redeployed via
+install.ps1 16:12, Sysmon config headless-aware with the corrected
+`groupRelation="and"` Rule, EID1 flow guard OK):
+
+| probe | expected | verdict (ALERTS.log, run2.ps1 markers r5b-*) |
+|-------|----------|--------------------------------------------|
+| F17 vec (double-space) | FIRE | **FIRED** EXEC-001 hid=R-…-001888 — foldCmdLine live ✓ |
+| F17 ctl | FIRE | **FIRED** EXEC-001 hid=R-…-001874 ✓ |
+| F18 vec (Unrestricted full-name) | QUIET (open) | **QUIET** — still a live bypass |
+| F19 vec (headless conhost + cmd) | QUIET (open) | **QUIET** — still a live bypass |
+| F19 ctl (headless conhost + powershell) | FIRE | **FIRED EXEC-002** hid=R-…-001864 — **the first EXEC-002 alert ever**; F21 telemetry fix + and-Rule confirmed working end-to-end ✓ |
+| F20 vec (AiStone repo mimic) | FIRE | **FIRED** EXEC-001 hid=R-…-001830 (ALERTS cmdline display truncates at ~120 chars, marker beyond `…` — grep the hid, not the marker) ✓ |
+
+Interim incident (for the record): between the first F21 deploy (~15:57)
+and the corrected one (16:12), the box was EID1-BLIND — the attribute-less
+`<Rule>` OR-combined its conditions under the section's `groupRelation="or"`,
+excluding nearly every process create. Detected by round-5b controls going
+quiet while FileCreate kept flowing; fixed by explicit `groupRelation="and"`
+plus the installer's new EID1 flow guard (commit 276b7e6).
+
+**Remaining circumvention: NONE from round 5.** All six findings (F17/F17b/F18/F19/F20/F21) are fixed and live-verified. Still open by deliberate operator decision (earlier rounds, documented-accept): the F8a DoH-dst residual (beacon to allowlisted 1.1.1.1/1.0.0.1 from any dir outside NET-004's list) and the F13 EXEC-004 dir-list residual (hex-named exe outside Temp/AppData/ProgramData/Public).
+
+## Round 5c final verification (16:26, post-F18/F19 deploy)
+
+| probe | verdict |
+|-------|---------|
+| F18 vec `-ExecutionPolicy Unrestricted -c …` (r5c-f18vec) | **FIRED EXEC-001** ✓ |
+| F18 ctl `-ep bypass -c …` (r5c-f18ctl) | **FIRED EXEC-001** ✓ |
+| F19 vec `conhost --headless cmd /c …` (r5c-f19vec) | **FIRED EXEC-002** hid=R-…-000518 ✓ (the exact vector that ran silently at 15:10) |
+| F19 ctl `conhost --headless powershell …` (r5c-f19ctl) | **FIRED EXEC-002** hid=R-…-000517 ✓ |
+
+Round 5 closed: zero open bypasses.

@@ -1,6 +1,6 @@
 # Red-team round 2 — rule/allowlist evasion vectors (2026-09-02b)
 
-Round 1 (`docs/redteam-plan-2026-09-02.md`) found and fixed the suffix-trust
+Round 1 (`../plan-2026-09-02.md`) found and fixed the suffix-trust
 hole in `filter_cursor_agent`. This round probes **new** holes in the shipped
 rules (`rules.d/`) and allowlist (`config/allowlist.json`), found by reading
 the engine semantics (`internal/sigmaeval`, `internal/rules`,
@@ -16,7 +16,7 @@ powershell echo and loops one byte over 127.0.0.1.
 ## Run
 
 ```
-go test ./tests/redteam-2026-09-02b/ -v
+go test ./redteam/2026-09-02b/ -v
 ```
 
 `TestBypassVectorsAreQuiet` — every finding row asserts **silence** (current,
@@ -111,7 +111,7 @@ The vector tests run the same engine+allowlist the daemon runs; live-fire only
 re-proves ingestion. If wanted:
 
 ```powershell
-go build -o tests/redteam-2026-09-02b/bin/probe.exe tests/redteam-2026-09-02b/probe-bin.go
+go build -o redteam/2026-09-02b/bin/probe.exe redteam/2026-09-02b/probe-bin.go
 tests\redteam-2026-09-02b\bin\probe.exe bypassps        # expect EXEC-001 CRITICAL toast (F1-fixed; was QUIET)
 tests\redteam-2026-09-02b\bin\probe.exe bypassps-full   # expect EXEC-001 CRITICAL toast (C1)
 tests\redteam-2026-09-02b\bin\probe.exe loopctl 9080    # expect NET-005 CRITICAL toast (F8b-fixed; was QUIET - probe.exe is not nahimic)

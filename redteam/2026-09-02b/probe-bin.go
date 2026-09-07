@@ -9,7 +9,7 @@
 //
 // Build (output stays inside this dir):
 //
-//	go build -o tests/redteam-2026-09-02b/bin/probe.exe tests/redteam-2026-09-02b/probe-bin.go
+//	go build -o redteam/2026-09-02b/bin/probe.exe redteam/2026-09-02b/probe-bin.go
 //
 // Modes:
 //
