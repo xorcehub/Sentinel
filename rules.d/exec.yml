@@ -101,19 +101,29 @@ detection:
     CommandLine|re: '(?i)^\s*"?[^\s"]*powershell\.exe"?\s+-ExecutionPolicy Bypass -NonInteractive -File "?c:\\users\\[^\\]+\\AppData\\Local\\Temp\\ps-script-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ps1"?\s*$'
   filter_python_sigverify:
     # python-parented `powershell -NoProfile -EncodedCommand <b64>` whose
-    # payload verifiably decodes to `Get-AuthenticodeSignature -LiteralPath `
+    # payload verifiably decodes to `Get-AuthenticodeSignature -LiteralPath @('`
     # — the operator's tier-2 signer-discovery helper (internal/sigverify
     # discovery via python tooling; 6 EXEC-001 hits 09-03→09-08, all parented
     # by appdata\local\programs\python\pythonNNN\python.exe). Same form as
     # filter_cursor_agent (451bce4): parent anchored to the real per-profile
     # python install path, cmdline left-anchored at the powershell token with
-    # the exact flag pair. The 104-char base64 anchor is the UTF-16LE encoding
-    # of exactly 'Get-AuthenticodeSignature -LiteralPath ' (78 bytes = 26x3,
+    # the exact flag pair. The 112-char base64 anchor is the UTF-16LE encoding
+    # of exactly 'Get-AuthenticodeSignature -LiteralPath @(' (84 bytes = 28x3,
     # a base64 block boundary), so the prefix is FULLY determined by that
     # fixed, benign, read-only plaintext and independent of the file list
     # that follows (decoded + re-encoded with a tool, not guessed). Any other
     # encoded payload produces a different prefix and stays armed; any parent
     # outside the python install path stays armed.
+    # RESIDUAL (irreducible at the regex layer; probe redteam/2026-09-22/
+    # sigverify_filter_probe.py): the cmdline after the anchor is MORE BASE64
+    # (encoded continuation, not decoded text), so a trailing '; IEX(...)' in
+    # the DECODED payload is invisible here — no end-anchor or tail charset can
+    # separate the benign file list from a smuggled statement (char-class fix
+    # candidate DISPROVEN by the probe; both tails are [A-Za-z0-9+/=]). Accepted
+    # because the gate is the PARENT: exploiting it requires spawning this shape
+    # from the real per-profile python.exe (code exec under that path or PPID
+    # spoof), and any child/persistence/network action still fires downstream
+    # rules. Pinned as expected-quiet in TestPythonSigverifyEncodedQuiet.
     ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\python\\python[0-9]+\\python\.exe$'
     CommandLine|re: '(?i)^\s*"?[^\s"]*powershell(\.exe)?"?\s+-noprofile\s+-encodedcommand\s+RwBlAHQALQBBAHUAdABoAGUAbgB0AGkAYwBvAGQAZQBTAGkAZwBuAGEAdAB1AHIAZQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAQAAoACcA'
   filter_untrusted_profile_tree:

