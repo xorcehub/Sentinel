@@ -99,14 +99,32 @@ detection:
     # Both sides now require a real ^<drive>:\users\<profile> prefix.
     ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\cursor\\(?:_\\)?cursor\.exe$'
     CommandLine|re: '(?i)^\s*"?[^\s"]*powershell\.exe"?\s+-ExecutionPolicy Bypass -NonInteractive -File "?c:\\users\\[^\\]+\\AppData\\Local\\Temp\\ps-script-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ps1"?\s*$'
+  filter_python_sigverify:
+    # python-parented `powershell -NoProfile -EncodedCommand <b64>` whose
+    # payload verifiably decodes to `Get-AuthenticodeSignature -LiteralPath `
+    # — the operator's tier-2 signer-discovery helper (internal/sigverify
+    # discovery via python tooling; 6 EXEC-001 hits 09-03→09-08, all parented
+    # by appdata\local\programs\python\pythonNNN\python.exe). Same form as
+    # filter_cursor_agent (451bce4): parent anchored to the real per-profile
+    # python install path, cmdline left-anchored at the powershell token with
+    # the exact flag pair. The 104-char base64 anchor is the UTF-16LE encoding
+    # of exactly 'Get-AuthenticodeSignature -LiteralPath ' (78 bytes = 26x3,
+    # a base64 block boundary), so the prefix is FULLY determined by that
+    # fixed, benign, read-only plaintext and independent of the file list
+    # that follows (decoded + re-encoded with a tool, not guessed). Any other
+    # encoded payload produces a different prefix and stays armed; any parent
+    # outside the python install path stays armed.
+    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\python\\python[0-9]+\\python\.exe$'
+    CommandLine|re: '(?i)^\s*"?[^\s"]*powershell(\.exe)?"?\s+-noprofile\s+-encodedcommand\s+RwBlAHQALQBBAHUAdABoAGUAbgB0AGkAYwBvAGQAZQBTAGkAZwBuAGEAdAB1AHIAZQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAQAAoACcA'
   filter_untrusted_profile_tree:
     # 2026-09-02 review: \users\public (WORLD-WRITABLE), \default
     # and \all users are not per-user profiles - a plant there must not
     # inherit bridge trust. RE2 has no lookahead, so this is a separate
     # filter the condition ANDs into the trust decision. ParentImage is
     # pathnorm'd (resolved) - Win32 trailing-dot spellings do not survive.
+    # Guard shared by filter_cursor_agent AND filter_python_sigverify.
     ParentImage|startswith: ['c:\users\public\', 'c:\users\default\', 'c:\users\all users\']
-  condition: selection_cli and (selection_image or selection_broker) and not (filter_cursor_agent and not filter_untrusted_profile_tree)
+  condition: selection_cli and (selection_image or selection_broker) and not (filter_cursor_agent and not filter_untrusted_profile_tree) and not (filter_python_sigverify and not filter_untrusted_profile_tree)
 level: high
 tags: [attack.execution, attack.t1059.001, attack.defense_evasion]
 x-sentinel:
@@ -133,8 +151,39 @@ detection:
     # a CLI token). --headless alone is the anomaly: nothing on this box
     # legitimately launches conhost headless (it was the incident vector).
     # EXEC-001 stays the payload-catcher for bypass/encoded children.
+    # 2026-09-08 tuning: that "nothing legitimately" assumption was wrong —
+    # EVERY ConPTY allocation (Cursor integrated terminal/utility sessions;
+    # 14/14 real hits 09-03→09-08, all cursor.exe-parented; the 3 non-cursor
+    # hits in the window were the round-5 verification fires) spawns Windows'
+    # own console host as `conhost --headless [--inheritcursor] --width N
+    # --height N --signal 0xN --server 0xN`. Quieted via filter_cursor_pty
+    # below in the 451bce4 form (parent + shape anchored); the incident
+    # shape (`--headless powershell -ep bypass ...`) matches neither the
+    # fixed ConPTY flag sequence nor the $-anchor and stays armed.
     CommandLine|contains: '--headless'
-  condition: selection
+  filter_cursor_pty:
+    # Cursor IDE's ConPTY pseudoconsole hosts: cursor.exe allocates a PTY for
+    # every terminal/utility session and Windows spawns its own console host
+    # with the fixed handshake flags. Requires ALL of: the AppData
+    # install-path parent (a directory merely NAMED cursor does not qualify),
+    # the cmdline anchored at the conhost token, the exact flag sequence in
+    # the fixed order (optional --inheritcursor directly after --headless,
+    # then width/height/signal/server) and NOTHING after --server (any
+    # trailing token = a child binary/command = re-arms, same $-anchor
+    # doctrine as filter_cursor_agent). The flag set is CreatePseudoConsole's
+    # own handshake — a headless conhost LAUNCHING a child (the incident
+    # vector) cannot carry it. Residual, same accepted class as the cursor
+    # agent bridge: a binary planted AT the real install path spawning this
+    # exact shape is quiet HERE, but any child it hosts fires EXEC-001 /
+    # PERSIST-003 / NET rules; pinned by TestCursorConPTYHostSuppressed.
+    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\cursor\\(?:_\\)?cursor\.exe$'
+    CommandLine|re: '(?i)^\s*"?[^\s"]*conhost\.exe"?\s+--headless(?:\s+--inheritcursor)?\s+--width [0-9]+ --height [0-9]+ --signal 0x[0-9a-f]+ --server 0x[0-9a-f]+\s*$'
+  filter_untrusted_profile_tree:
+    # Same guard as EXEC-001's (see that rule): \users\public (world-
+    # writable), \default and \all users are not per-user profiles — a
+    # plant there must not inherit PTY-host quiet. RE2 has no lookahead.
+    ParentImage|startswith: ['c:\users\public\', 'c:\users\default\', 'c:\users\all users\']
+  condition: selection and not (filter_cursor_pty and not filter_untrusted_profile_tree)
 level: high
 tags: [attack.execution, attack.t1059.001, attack.defense_evasion]
 x-sentinel:

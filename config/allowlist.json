@@ -24,7 +24,7 @@
       "^[c]:\\\\program files(?: \\(x86\\))?\\\\microsoft\\\\edge(?:update|webview)?\\\\.*\\.exe$",
       "^[c]:\\\\program files(?: \\(x86\\))?\\\\steam\\\\.*\\.exe$",
       "^[c]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
-      "^[c]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|wc|git.*)\\.exe$",
+      "^[c]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|ls|wc|git.*)\\.exe$",
       "^[c]:\\\\program files\\\\7-zip\\\\.*\\.exe$",
       // Benign Windows session/service binaries BY NAME (NOT a blanket
       // System32 glob). Trusting \windows\system32\.*\.exe was a design
@@ -108,6 +108,16 @@
     // nhnotifsys component tree (pinned by internal/allowlist/allowlist_test.go).
     { "addr": "127.0.0.1:9080", "image": "^[a-z]:\\\\(windows\\\\system32\\\\nahimic|users\\\\[^\\\\]+\\\\appdata\\\\local\\\\nhnotifsys\\\\nahimic)" }
     // Add: vite :5173, Cursor/Docker desktop ports, your app's dev ports.
+    // llama.cpp llama-server (operator's local LLM API, winget install):
+    // Cursor + python tooling poll it on its two fixed defaults :8001 (web)
+    // and :1234 (alt) every ~5m — 44/46 NET-005 hits 09-03→09-08 were exactly
+    // this listener pair re-minted at each 5m dedup expiry. Bare host:port
+    // entries: the CONNECTORS (cursor/python/…) are many and rotate, and the
+    // image gate applies to the connecting image, not the listener, so it
+    // cannot be scoped tighter. Residual = any broker binding these exact
+    // fixed ports goes NET-005-quiet (the documented pre-seed posture in
+    // docs/found_noise.md); ephemeral-port loopback stays fully armed.
+    , "127.0.0.1:8001", "127.0.0.1:1234"
   ],
   "dev_tool_paths": {
     "path": [
@@ -117,6 +127,12 @@
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\npm\\\\.*\\.exe$",
       "^[c]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\lm studio\\\\.*\\.exe$",
+      // llama-server (winget, AppData = user-writable): operator's local LLM
+      // API server; its own :8001/:1234 loopback binds hit NET-004 (3 hits
+      // 09-08). NET-only quiet, same accepted Bypass-B class as the go-build
+      // test binaries below (self-naming quiets NET-002/003/004 only);
+      // NET-005 seeds are fixed-port, behavioral rules stay armed.
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\microsoft\\\\winget\\\\packages\\\\ggml\\.llamacpp[a-z0-9_.]*\\\\llama-server\\.exe$",
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\pnpm\\\\.*\\.exe$",
       // pi-lite (operator's dev AI agent) — quiets NET-002/003. Scoped to the
       // built binary path, NOT the whole tree. Its API endpoints (128.14.69.x)
@@ -148,9 +164,9 @@
       // as the other user-writable dev_tool_paths (documented Bypass-B class:
       // NET-005 loopback-C2 and every behavioral rule stay armed; NET-005 only
       // after the 2026-09-01 X1/X2 redeploy - see docs/found_noise.md). Anchored
-      // on the digits-only go-build dir + .test.exe suffix to keep the
-      // pattern useless for anything but go test binaries.
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\temp\\\\go-build[0-9]+\\\\.*\\\\.*\\.test\\.exe$",
+      // on the digits-only go-build dir + .test.exe/govulncheck.exe suffix
+      // to keep the pattern useless for anything but go toolchain binaries.
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\temp\\\\go-build[0-9]+\\\\.*\\\\(?:[a-z0-9._-]+\\.test|govulncheck)\\.exe$",
       // Reclassified from trusted_binaries (interim Bypass-B hardening). These are
       // DUPLICATED in trusted_binaries.hash_gated_path (above) — edit both
       // together or they drift (see that section's comment). Here they serve
@@ -230,7 +246,14 @@
     // 2026-09-03 residual R4: the old entry had no -File anchor — ANY cmdline
     // mentioning the path (-File or IEX from an attacker tree) suppressed
     // EXEC-001 (engine-confirmed). Now -File + system-drive repo anchor.
-    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone[\\\\/]+scripts[\\\\/]+gcubridge-watchdog\\.ps1"
+    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone[\\\\/]+scripts[\\\\/]+gcubridge-watchdog\\.ps1",
+    // pe-triage-docker, the -Command form (2 EXEC-001 hits 09-08): the
+    // repo sets $env:OUTPUT_DIR to the repo tree and then invokes the
+    // script by RELATIVE path, so the -File anchor above cannot see it.
+    // Same F10/R2 doctrine: BOTH the repo-path OUTPUT_DIR assignment AND
+    // the relative & '.\scripts\pe-triage-docker.ps1' invocation are
+    // required — an inert path mention alone does not suppress.
+    "-command\\s+\"?\\$env:output_dir\\s*=\\s*'[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pe_triage[\\\\/]+output[\\\\/][^']*';\\s*&\\s*'\\.[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1'(?:\\s+-[^\\s;\"]+(?:\\s+[^\\s;\"]+)?)*\\s*\"?\\s*$"
   ],
 
   // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the

