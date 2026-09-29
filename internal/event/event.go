@@ -68,6 +68,10 @@ type Event struct {
 	SourceImage   string // acting process (= Image; kept explicit so EID8/10 rules read naturally)
 	TargetImage   string // victim process, e.g. lsass.exe — CRED-002 matches THIS
 	GrantedAccess string // EID10 access mask
+	SourcePID     string // EID8/10 source PID — DECIMAL (live-verified: tpid 2316 == the running client's PID 2316); pivot to EID 1 for the path
+	TargetPID     string // EID8/10 target PID — the pivot when TargetImage is Sysmon's "<unknown process>"
+	StartModule   string // EID8 only: module holding the new thread's start address
+	StartFunction string // EID8 only: function at that address (both usually absent unless Sysmon resolves it)
 
 	// EID 3 (NetworkConnect)
 	DstIP    string
@@ -130,6 +134,14 @@ func (e *Event) Field(name string) (val string, ok bool) {
 		return e.TargetImage, e.TargetImage != ""
 	case "grantedaccess":
 		return e.GrantedAccess, e.GrantedAccess != ""
+	case "sourceprocessid":
+		return e.SourcePID, e.SourcePID != ""
+	case "targetprocessid":
+		return e.TargetPID, e.TargetPID != ""
+	case "startmodule":
+		return e.StartModule, e.StartModule != ""
+	case "startfunction":
+		return e.StartFunction, e.StartFunction != ""
 	case "destinationip":
 		return e.DstIP, e.DstIP != ""
 	case "destinationport":

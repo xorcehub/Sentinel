@@ -72,6 +72,13 @@ func Parse(raw []byte, src event.Source) (event.Event, error) {
 		SourceImage:   m["SourceImage"],
 		TargetImage:   m["TargetImage"],
 		GrantedAccess: m["GrantedAccess"],
+		// EID 8/10 PIDs + EID 8 thread start address. TargetImage is often
+		// Sysmon's literal "<unknown process>" (victim exited before the event
+		// was written) — these four are what's left of the victim then.
+		SourcePID:     m["SourceProcessId"],
+		TargetPID:     m["TargetProcessId"],
+		StartModule:   m["StartModule"],
+		StartFunction: m["StartFunction"],
 
 		DstIP:        m["DestinationIp"],
 		DstProto:     m["Protocol"],

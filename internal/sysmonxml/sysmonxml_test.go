@@ -133,6 +133,40 @@ func TestParseEID10TargetImage(t *testing.T) {
 	}
 }
 
+// EID 8 — CreateRemoteThread whose victim Sysmon could not resolve (the exact
+// shape of the live wardogs INJECT-001 alert: target: <unknown process>).
+// StartModule/StartFunction and the two PIDs are all that identify the victim.
+const eid8XML = `<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+  <System>
+    <EventID>8</EventID>
+    <EventRecordID>50003</EventRecordID>
+  </System>
+  <EventData>
+    <Data Name="SourceProcessId">0x2f0</Data>
+    <Data Name="SourceImage">D:\steam\wardogs\wardogslauncher-shipping.exe</Data>
+    <Data Name="TargetProcessId">0x1a40</Data>
+    <Data Name="TargetImage">&lt;unknown process&gt;</Data>
+    <Data Name="StartModule">gameoverlayrenderer64.dll</Data>
+    <Data Name="StartFunction">Ordinal12</Data>
+  </EventData>
+</Event>`
+
+func TestParseEID8InjectionEvidence(t *testing.T) {
+	ev, err := Parse([]byte(eid8XML), event.SrcSysmonRT)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if ev.StartModule != "gameoverlayrenderer64.dll" || ev.StartFunction != "Ordinal12" {
+		t.Errorf("start=%q!%q — EID 8 start address dropped in parse", ev.StartModule, ev.StartFunction)
+	}
+	if ev.SourcePID != "0x2f0" || ev.TargetPID != "0x1a40" {
+		t.Errorf("pids=%q/%q want 0x2f0/0x1a40 — the only victim pivot when TargetImage is a placeholder", ev.SourcePID, ev.TargetPID)
+	}
+	if ev.TargetImage != "<unknown process>" {
+		t.Errorf("TargetImage=%q want Sysmon's literal placeholder", ev.TargetImage)
+	}
+}
+
 func TestParseMalformedIsError(t *testing.T) {
 	if _, err := Parse([]byte("not xml at all"), event.SrcSysmonRT); err == nil {
 		t.Error("malformed XML should return an error")

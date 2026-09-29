@@ -176,6 +176,36 @@ func contextLines(e event.Event) []string {
 			lines = append(lines, cl("access", e.GrantedAccess))
 		}
 	}
+	// EID 8 thread start address + the PIDs. This is the evidence trail for the
+	// INJECT-001 alerts whose victim reads "<unknown process>": Sysmon only
+	// writes that placeholder when it cannot resolve the target PID to a path,
+	// so target is gone — but the PIDs still pivot to EID 1 (ProcessCreate,
+	// path resolved) and StartModule names the module the new thread lands in.
+	// Sysmon writes "-" for an unresolved start address (both "-" in the live
+	// wardogs INJECT-001), which would otherwise render as the nonsense "-!-".
+	mod, fn := e.StartModule, e.StartFunction
+	if mod == "-" {
+		mod = ""
+	}
+	if fn == "-" {
+		fn = ""
+	}
+	if mod != "" || fn != "" {
+		start := mod
+		if fn != "" {
+			if start != "" {
+				start += "!"
+			}
+			start += fn
+		}
+		lines = append(lines, cl("start", start))
+	}
+	if e.SourcePID != "" {
+		lines = append(lines, cl("spid", e.SourcePID))
+	}
+	if e.TargetPID != "" {
+		lines = append(lines, cl("tpid", e.TargetPID))
+	}
 	// EID 11 / 23 (FileCreate / FileDelete)
 	if e.TargetFile != "" {
 		lines = append(lines, cl("file", e.TargetFile))

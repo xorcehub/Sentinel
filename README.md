@@ -24,7 +24,7 @@ Deliberately scoped to one operator, one box — see [Boundaries](#boundaries).
 | | |
 |---|---|
 | **Role** | Single-host behavior detector + forensic capture |
-| **Language** | Go (module `sentinel`, Go 1.26) — ~8.0k LOC core + ~8.2k tests, 82 files, 40 test files, 3 fuzz targets |
+| **Language** | Go (module `sentinel`, Go 1.26) — ~8.0k LOC core + ~8.8k tests, 82 files, 40 test files, 3 fuzz targets |
 | **Platform** | Windows 10 1607+ / Windows 11 (latest Sysmon from Sysinternals; installer pulls the current release, no version is pinned) |
 | **Telemetry source** | Sysmon (real-time, 1s poll) + Sysinternals Autoruns (daily persistence diff) |
 | **Detection paradigms** | Catch-by-act behavior rules + catch-by-result baseline diff |
@@ -46,25 +46,29 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
   evasion, baseline, config-tamper, and telemetry-integrity. Rules live in [`rules.d/`](rules.d)
   as Sigma YAML with an `x-sentinel:` extension block for routing/severity.
 - **Watches its own telemetry.** If no Sysmon event arrives for 10 minutes
-  (default), the daemon fires one critical `HEALTH-001` hit per stale episode
+  (hard-coded for now — no flag or config knob yet), the daemon fires one
+  critical `HEALTH-001` hit per stale episode
   and flags `sysmon=STALE` in the heartbeat — a dead feed can no longer look
   like a quiet machine. Sysmon config changes (EID 16) raise `TELEMETRY-001`.
 - On a hit, fans out to four alert channels: **popup, toast, Windows Event
-  Log, and `ALERTS.log`**. Every severity toasts (suspicious silently, no
-  banner sound). With popup on, criticals also toast silently alongside the
-  MessageBox; the installed task's `-popup=false` (an unattended daemon
-  shouldn't block on a click) instead makes the critical hit's toast the loud
-  looping-alarm variant — same channel, louder tier. Every hit gets a per-hit correlation ID (`hid`)
-  stamped across the popup, EventLog, and ALERTS.log channels (toast omits it
-  — too little room).
+  Log, and `ALERTS.log`**. Every severity toasts except `info` (log-only by
+  default) — suspicious silently, no banner sound. A rule's own `alert:` list
+  *replaces* that default channel set instead of merging with it
+  (`NET-003` ships log-only). With popup on, criticals also toast silently
+  alongside the MessageBox; the installed task's `-popup=false` (an
+  unattended daemon shouldn't block on a click) instead makes the critical
+  hit's toast the loud looping-alarm variant — same channel, louder tier.
+  Every hit gets a per-hit correlation ID (`hid`) stamped across the popup,
+  EventLog, and ALERTS.log channels (toast omits it — too little room).
 - Forensically captures files matching `file_capture.patterns` in
   [`config/allowlist.json`](config/allowlist.json) into a vault before they
   can be deleted. Content files are written **without an extension** (can't be
   double-clicked into execution); a `manifest.json` sidecar carries sha256,
   parent process, and status (`ok` / `truncated` / `lost-race`).
-- **Detection is never blinded by suppression.** The noise filter and capture
-  hook run *after* rule evaluation — never before. Regression tests in
-  `internal/rules/catalog_blindspot_test.go` and
+- **Detection is never blinded by suppression.** The noise filter runs *after*
+  rule evaluation; the capture hook runs in the forensics band *before* it, but
+  is non-blocking and reads no rule input — neither can delay, drop or alter a
+  hit. Regression tests in `internal/rules/catalog_blindspot_test.go` and
   `internal/app/noise_blinds_test.go` pin this invariant.
 
 ---
@@ -357,7 +361,7 @@ Sigma fields (`title`, `id`, `logsource`, `detection`, `condition`, `level`,
 |-------|--------|--------|
 | `id` | mnemonic like `PERSIST-004`, `EXEC-001` | Stable ID stamped in logs, dedup, EventLog, alerts. `EXEC-001` style is conventional. |
 | `severity` | `critical` / `suspicious` / `info` | Routes the alert. `critical` surfaces a blocking popup (or, with `-popup=false`, the loud looping-alarm toast) and carries the severity in the toast text. |
-| `alert` | subset of `[popup, toast, log, eventlog]` | Which channels fire on hit. `log` should always be present. |
+| `alert` | subset of `[popup, toast, log, eventlog]` | Which channels fire on hit — **replaces** the severity's default channel set (no merge with it). `log` should always be present. |
 
 **Optional `x-sentinel:` fields:**
 
@@ -365,8 +369,8 @@ Sigma fields (`title`, `id`, `logsource`, `detection`, `condition`, `level`,
 |-------|--------|
 | `except` | Suppress hits matching an allowlist operator (see below). |
 | `note` | Free-text rationale; shown in some alert contexts. |
-| `target_key` | Override the dedup grouping key (default: rule + image). |
-| `dedup` | Dedup window override (e.g. `{window: 15m}`). |
+| `target_key` | What counts as "the same thing" for the cool-down below — default: same rule + same image + same command line. Example: add the destination IP:port so each remote host triggers its own alert. |
+| `dedup` | Cool-down: once it has alerted, stay quiet about the same thing for this long (default 15 minutes). Write it as a single value — `dedup: 30m`. |
 
 **`except` operators** (each takes an `allowlist.json` section name):
 
@@ -404,6 +408,29 @@ Mnemonic IDs are stable across logs, dedup state, and the self-test regression
 matches an existing one (`EXEC-`, `PERSIST-`, `NET-`, `CRED-`, `INJECT-`,
 `EVADE-`, `BASE-`, `CONFIG-`, `TELEMETRY-`) and the next free number, or mint
 a new prefix.
+
+### Audit the shipped rules first
+
+The catalog in [`rules.d/`](rules.d) and [`config/allowlist.json`](config/allowlist.json)
+is a worked example from **one incident on one workstation**. Read it as
+*"how to write rules for your own situation"*, not as a drop-in baseline:
+
+- **Every `except:` operator and allowlist entry is a trust decision, not a
+  tuning knob.** If the process or path it names doesn't belong on your
+  machine, delete it rather than inherit it.
+- **Prune the personal entries.** `dev_scripts` / `dev_tool_paths` name one
+  operator's own tools and repo paths; `trusted_binaries` path patterns grant
+  trust to whoever can write to those paths.
+- **Capture `baseline_clean.csv` on the machine you deploy to** — it is
+  gitignored, so a fresh clone has none and the daily diff stays off until you
+  run `sentinel -baseline-snapshot` there. If you did carry one over from
+  another box, re-capture it: it measures against *that* box's idea of
+  "clean", not yours.
+- **Re-tune the noise settings** against your own `ALERTS.log` — per-rule
+  `dedup` windows and `file_capture.patterns` (`HEALTH-001` staleness is
+  hard-coded at 10 min for now). Then run
+  `go test ./...` and `sentinel -self-test` so every rule still fires on its
+  vector after your edits.
 
 ### All CLI flags
 
@@ -469,6 +496,9 @@ the boundary documented in [`THREAT-MODEL.md`](THREAT-MODEL.md):
   cleanup or periodic sweep yet. Plan for it.
 - **The toast relay pipe is not ACL-hardened** and **fuzzing is not in CI.**
   Both named in the threat model.
+- **The rules and allowlist are a worked example, tuned to one machine.**
+  Audit every `except:` and allowlist entry before deploying elsewhere — see
+  [Audit the shipped rules first](#audit-the-shipped-rules-first).
 
 **Parser hardening is partial.** The three in-house parsers (`sysmonxml`,
 `allowlist`, `sigmaeval`) are each fuzzed for 5 minutes on the host (no
