@@ -34,7 +34,7 @@ event_log_source = "Sentinel"               # registered via scripts/register-ev
 #                                           # the silent suspicious-tier toasts) instead of a click-away
 #                                           # box. log + eventlog are unaffected either way.
 
-# --- file capture (forensics; see config/allowlist.json file_capture) ---
+# --- file capture (forensics; see file_capture: live config/allowlist.json.local, seed config/allowlist.json.example) ---
 # Copies EID-11 FileCreate events whose path matches a file_capture pattern into
 # a vault before they can be deleted — the Cursor Temp\ps-script-<guid>.ps1
 # create-and-delete pattern. Best-effort (wins the race when the daemon processes

@@ -13,7 +13,7 @@ import (
 // TestTier2EndToEndRealSignatureAgainstRealConfig is the end-to-end proof that
 // Plan A1 (lazy signature-seeded hash cache) closes Bypass B against the REAL
 // production config and the REAL sigverify machinery, on the operator's actual
-// machine. It loads the shipped config/allowlist.json, wires the real
+// machine. It loads the shipped config/allowlist.json.example, wires the real
 // sigverify.IsSignedBy (native WinVerifyTrust on Windows), and asserts:
 //
 //  1. Each real on-disk dev tool (Cursor/Python/Claude) at its Tier-2 path IS
@@ -30,7 +30,7 @@ import (
 func TestTier2EndToEndRealSignatureAgainstRealConfig(t *testing.T) {
 	prodPath, ok := findProdAllowlist(t)
 	if !ok {
-		t.Skip("config/allowlist.json not found (running outside repo root)")
+		t.Skip("config/allowlist.json.example not found (running outside repo root)")
 	}
 	a, err := Load(prodPath)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestTier2EndToEndRealSignatureAgainstRealConfig(t *testing.T) {
 	}
 }
 
-// findProdAllowlist walks up from this test file to locate config/allowlist.json.
+// findProdAllowlist walks up from this test file to locate config/allowlist.json.example.
 func findProdAllowlist(t *testing.T) (string, bool) {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -107,7 +107,7 @@ func findProdAllowlist(t *testing.T) (string, bool) {
 	}
 	dir := filepath.Dir(file)
 	for i := 0; i < 6; i++ {
-		cand := filepath.Join(dir, "config", "allowlist.json")
+		cand := filepath.Join(dir, "config", "allowlist.json.example")
 		if _, err := os.Stat(cand); err == nil {
 			return cand, true
 		}

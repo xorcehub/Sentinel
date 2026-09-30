@@ -143,7 +143,7 @@ func TestShouldCaptureForwardSlashPathNormalized(t *testing.T) {
 	}
 }
 
-// TestShouldCaptureRealShippedConfig loads the REAL config/allowlist.json and
+// TestShouldCaptureRealShippedConfig loads the REAL config/allowlist.json.example and
 // asserts the shipped Cursor pattern actually matches a realistic event. This
 // fails if someone edits the pattern into something that no longer catches
 // ps-script files (the whole point of the feature).
@@ -154,9 +154,9 @@ func TestShouldCaptureRealShippedConfig(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..")
-	path := filepath.Join(root, "config", "allowlist.json")
+	path := filepath.Join(root, "config", "allowlist.json.example")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("allowlist.json not present (%v); skipping real-config test", err)
+		t.Skipf("config/allowlist.json.example not present (%v); skipping real-config test", err)
 	}
 	a, err := Load(path)
 	if err != nil {

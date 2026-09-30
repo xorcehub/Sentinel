@@ -7,7 +7,7 @@ import (
 )
 
 // filterJSONC mirrors the event_log_filter section shipped in
-// config/allowlist.json (powershell eid=11 empty cmdline; git poller). Kept
+// config/allowlist.json.example (powershell eid=11 empty cmdline; git poller). Kept
 // inline (not loaded from disk) so this unit test is self-contained.
 const filterJSONC = `{
   "event_log_filter": [

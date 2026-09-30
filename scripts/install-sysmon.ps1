@@ -42,6 +42,7 @@ Invoke-WebRequest -Uri $ConfigUrl -OutFile $configPath
 # Loopback noise this re-admits is bounded by NET-005's known_loopback_listeners
 # except + 5m dedup and allowed_destinations (127/8, ::1/128) in
 # config/allowlist.json - but expect extra toasts until dev ports are seeded
+# in your live allowlist (config/allowlist.json.local)
 # (both "127.0.0.1:P" and "::1:P" spellings; Sysmon sends the expanded
 # 0:0:0:0:0:0:0:1 form, which the loader canonicalizes).
 $cfg = Get-Content $configPath -Raw

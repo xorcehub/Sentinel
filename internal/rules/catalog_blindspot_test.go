@@ -12,7 +12,7 @@ import (
 )
 
 // These tests load the REAL shipped catalog (rules.d/) and REAL allowlist
-// (config/allowlist.json) and assert detection is NOT blinded by them. Unlike
+// (config/allowlist.json.example) and assert detection is NOT blinded by them. Unlike
 // the synthetic-YAML tests, these fail if someone edits a rule's `except` to
 // over-trust a LOLBin, or adds powershell.exe to trusted_binaries. They are the
 // "is it blind now?" guarantee, pinned against the actual production config.
@@ -63,12 +63,12 @@ func loadRealCatalog(t *testing.T) []*sigmaeval.Rule {
 	return rs
 }
 
-// loadRealAllowlist loads the shipped config/allowlist.json (JSONC).
+// loadRealAllowlist loads the shipped config/allowlist.json.example (JSONC).
 func loadRealAllowlist(t *testing.T) *allowlist.Allowlist {
 	t.Helper()
-	al, err := allowlist.Load(filepath.Join(repoRoot(t), "config", "allowlist.json"))
+	al, err := allowlist.Load(filepath.Join(repoRoot(t), "config", "allowlist.json.example"))
 	if err != nil {
-		t.Skipf("allowlist.json not present (%v); skipping real-config regression", err)
+		t.Skipf("config/allowlist.json.example not present (%v); skipping real-config regression", err)
 	}
 	return al
 }

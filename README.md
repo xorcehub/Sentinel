@@ -60,8 +60,8 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
   hit's toast the loud looping-alarm variant — same channel, louder tier.
   Every hit gets a per-hit correlation ID (`hid`) stamped across the popup,
   EventLog, and ALERTS.log channels (toast omits it — too little room).
-- Forensically captures files matching `file_capture.patterns` in
-  [`config/allowlist.json`](config/allowlist.json) into a vault before they
+- Forensically captures files matching `file_capture.patterns` in your live
+  allowlist (start from [`config/allowlist.json.example`](config/allowlist.json.example)) into a vault before they
   can be deleted. Content files are written **without an extension** (can't be
   double-clicked into execution); a `manifest.json` sidecar carries sha256,
   parent process, and status (`ok` / `truncated` / `lost-race`).
@@ -103,7 +103,7 @@ false-anchor bug).
 
 ```powershell
 # Capture the clean reference on a verified machine, review + commit it:
-sentinel -baseline-snapshot          # writes baseline_clean.csv (gitignored)
+sentinel -baseline-snapshot          # writes baseline_clean.csv
 
 # Manually diff current state vs the committed baseline (prints new entries):
 sentinel -baseline-now
@@ -129,7 +129,7 @@ exists yet.
    binary the rules hunt (`powershell`, `certutil`, `mshta`, `regsvr32`, …) —
    so it silently disarms every rule that uses `except: image_in_allowlist`.
    Instead, only specific, named session/service binaries are trusted, by
-   exact filename. Comments in `config/allowlist.json` spell out the reasoning.
+   exact filename. Comments in `config/allowlist.json.example` spell out the reasoning.
 
 3. **Layered capture for create-and-delete droppers.** Best-effort EID 11
    snapshot races the delete; Sysmon's EID 23 `ArchiveDirectory` is the
@@ -199,7 +199,7 @@ exists yet.
 - **`sentinel -self-test`** runs an incident-coverage regression of 12
   representative vectors (core rules' motivating incidents), then exits. The
   **full** per-rule regression — every catalog rule must fire on its vector
-  against the real shipped config — is
+  against the worked example config — is
   `internal/rules/catalog_vector_test.go` (`go test ./internal/rules`).
 - **`sentinel -self-test` is portable** — pure engine check, no mutex,
   ingestion, or alerters. It builds and runs on non-Windows too (the Windows
@@ -258,6 +258,18 @@ go build -o sentinel.exe ./cmd/sentinel
 # 3. Full install (elevated PowerShell) — installs Sysmon, registers the task
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
+
+Before step 3: `copy config\allowlist.json.example config\allowlist.json.local`
+and prune it for your box. The example is the tuning manual for the somewhat
+unusual syntax — a real allowlist where every entry says which noise it kills
+and why the regex looks like that — so copy from it rather than writing entries
+from scratch. `install-task.ps1` auto-detects that file and registers the task
+with `-allowlist`, so re-installing never reverts your tuning.
+
+Skip that step and Sentinel runs with the empty default: every rule armed,
+nothing trusted — expect noise until you tune (the heartbeat's `allowlist=ok`
+just means the empty policy loaded fine), forensic file-capture stays off (no
+patterns set) and DEBUG logging runs unfiltered.
 
 `-self-test` is the fastest way to see the detector work without a live attack.
 
@@ -345,7 +357,9 @@ apply changes):
 | File | Purpose |
 |------|---------|
 | `rules.d/*.yml` | Sigma rules + `x-sentinel:` extension. Edit to add/tune detection. |
-| `config/allowlist.json` | Trusted binaries (incl. Tier-2 hash-gated signature trust, `hash_gated_path`), allowed destinations, dev-tool paths, event-log noise filter, `file_capture.patterns`. JSONC (comments allowed). |
+| `config/allowlist.json` | What Sentinel runs with out of the box: empty — every rule armed, nothing trusted, so expect noise until you tune. This file stays empty on purpose; make your tuning in `allowlist.json.local` (below) instead of editing it. |
+| `config/allowlist.json.example` | **Your tuning reference.** A real allowlist, annotated by the tuning that went into it: every entry documents which noise class it kills and why its regex is shaped that way (the syntax is unusual — JSONC comments, `\`-escaped path regexes, patterns anchored to the drive root). Copy it to `allowlist.json.local` as your starting point. |
+| `config/allowlist.json.local` | **Your live allowlist** — the file Sentinel actually runs with once you create it. Keep the name (the config-tamper alarm watches for `allowlist.json` in it). `install-task.ps1` auto-detects it and registers the task with `-allowlist`; for manual runs, pass `-allowlist config\allowlist.json.local`. JSONC (comments allowed). |
 | `config/sentinel.conf.example` | Documents the runtime knobs and defaults. The daemon currently reads CLI flags (see `sentinel -h`); this file is the spec for the Phase 2 config-file loader. |
 
 ### Adding a rule
@@ -411,7 +425,7 @@ a new prefix.
 
 ### Audit the shipped rules first
 
-The catalog in [`rules.d/`](rules.d) and [`config/allowlist.json`](config/allowlist.json)
+The catalog in [`rules.d/`](rules.d) and [`config/allowlist.json.example`](config/allowlist.json.example)
 is a worked example from **one incident on one workstation**. Read it as
 *"how to write rules for your own situation"*, not as a drop-in baseline:
 
@@ -421,9 +435,9 @@ is a worked example from **one incident on one workstation**. Read it as
 - **Prune the personal entries.** `dev_scripts` / `dev_tool_paths` name one
   operator's own tools and repo paths; `trusted_binaries` path patterns grant
   trust to whoever can write to those paths.
-- **Capture `baseline_clean.csv` on the machine you deploy to** — it is
-  gitignored, so a fresh clone has none and the daily diff stays off until you
-  run `sentinel -baseline-snapshot` there. If you did carry one over from
+- **Capture `baseline_clean.csv` on the machine you deploy to** — it is not
+  shipped (each machine's baseline is its own), so a fresh clone has none and
+  the daily diff stays off until you run `sentinel -baseline-snapshot` there. If you did carry one over from
   another box, re-capture it: it measures against *that* box's idea of
   "clean", not yours.
 - **Re-tune the noise settings** against your own `ALERTS.log` — per-rule
@@ -496,7 +510,8 @@ the boundary documented in [`THREAT-MODEL.md`](THREAT-MODEL.md):
   cleanup or periodic sweep yet. Plan for it.
 - **The toast relay pipe is not ACL-hardened** and **fuzzing is not in CI.**
   Both named in the threat model.
-- **The rules and allowlist are a worked example, tuned to one machine.**
+- **The rules and the example allowlist (`config/allowlist.json.example`) are
+  a worked example, tuned to one machine.**
   Audit every `except:` and allowlist entry before deploying elsewhere — see
   [Audit the shipped rules first](#audit-the-shipped-rules-first).
 

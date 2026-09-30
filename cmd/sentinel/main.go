@@ -129,7 +129,7 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.StringVar(&out.baselineClean, "baseline-clean", "baseline_clean.csv", "baseline CSV file (clean reference for the daily diff)")
 	f.IntVar(&out.baselineHour, "baseline-hour", 4, "hour (0-23, local) for the daemon's daily baseline scan")
 	f.StringVar(&out.autorunsc, "autorunsc", "", "path to autorunsc64.exe (default: search exe dir, C:\\Tools\\Autoruns, PATH)")
-	f.StringVar(&out.snapshotDir, "snapshot-dir", "", "directory to snapshot file_capture-matched files into before they're deleted (empty = disabled; see config/allowlist.json file_capture)")
+	f.StringVar(&out.snapshotDir, "snapshot-dir", "", "directory to snapshot file_capture-matched files into before they're deleted (empty = disabled; see file_capture in config/allowlist.json.example)")
 	f.IntVar(&out.snapshotPerFileKB, "snapshot-per-file-kb", 2048, "max KB copied per captured file (0 = unlimited; oversize files are truncated with status=truncated)")
 	f.IntVar(&out.snapshotTotalMB, "snapshot-total-mb", 500, "max total MB of the snapshot vault; oldest captures evicted when exceeded (0 = unlimited)")
 	f.StringVar(&out.sysmonArchiveDir, "sysmon-archive-dir", "", "Sysmon FileDelete archive directory (where <ArchiveDirectory> stores EID 23 archived copies). Enables guaranteed capture of create-and-delete files that are gone before EID 11 delivery. Empty = EID 23 archive captures disabled.")
@@ -715,8 +715,9 @@ func loadRulesDir(dir string) ([]byte, error) {
 	return out, nil
 }
 
-// loadAllowlist returns nil (no error) if the file is absent — the engine
-// treats a nil Allowlist as "nothing trusted", which is noisy but safe.
+// loadAllowlist returns an error (with a nil Allowlist) if the file is
+// absent — the engine then trusts nothing: noisy but safe, surfaced as
+// allowlist=degraded in the heartbeat.
 func loadAllowlist(path string) (*allowlist.Allowlist, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

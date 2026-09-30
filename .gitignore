@@ -28,3 +28,8 @@ redteam/runners/
 
 # round-4 live lab (local only, benign probes)
 redteam/lab/
+
+# per-box live allowlist (copy from config/allowlist.json.example, prune).
+# install-task.ps1 auto-passes -allowlist for it; the tracked
+# config/allowlist.json stays an empty default (tripwire-tested).
+config/allowlist.json.local

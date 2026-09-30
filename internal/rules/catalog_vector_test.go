@@ -113,6 +113,9 @@ var vectorCases = []vectorCase{
 	{"CONFIG-001", "config tamper: a non-sentinel process writes into rules.d\\ (real install path, not Temp)",
 		event.Event{EID: 11, Image: `C:\Users\jurij\Downloads\tamper.exe`,
 			TargetFile: `C:\Users\jurij\Documents\Github\leave-my-shit-alone\rules.d\persistence.yml`}, event.SevCritical},
+	{"CONFIG-001", "config tamper: write to the LIVE allowlist config\\allowlist.json.local — the .local name must keep containing 'allowlist.json' (substring coverage in the rule + Sysmon FileCreate filter)",
+		event.Event{EID: 11, Image: `C:\Users\jurij\Downloads\tamper.exe`,
+			TargetFile: `C:\Users\jurij\Documents\Github\leave-my-shit-alone\config\allowlist.json.local`}, event.SevCritical},
 
 	// --- G. Telemetry integrity (docs/hardening-plan_2308.md H2) ---
 	{"TELEMETRY-001", "Sysmon config changed (EID 16): fires on legit -c updates too, hence suspicious",
@@ -120,7 +123,7 @@ var vectorCases = []vectorCase{
 }
 
 // TestCatalogVectorRegression is the "every rule fires on its motivating
-// vector" guarantee, pinned against the shipped rules.d + allowlist.json.
+// vector" guarantee, pinned against the shipped rules.d + the example allowlist.
 func TestCatalogVectorRegression(t *testing.T) {
 	for _, tc := range vectorCases {
 		t.Run(tc.rule, func(t *testing.T) {

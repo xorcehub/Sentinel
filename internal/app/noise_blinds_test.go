@@ -31,7 +31,7 @@ func appRepoRoot(t *testing.T) string {
 	return filepath.Join(filepath.Dir(file), "..", "..")
 }
 
-// realEngineFromDisk builds an Engine from the shipped rules.d + allowlist.json.
+// realEngineFromDisk builds an Engine from the shipped rules.d + the example allowlist.
 func realEngineFromDisk(t *testing.T) *rules.Engine {
 	t.Helper()
 	root := appRepoRoot(t)
@@ -60,9 +60,9 @@ func realEngineFromDisk(t *testing.T) *rules.Engine {
 	if err != nil {
 		t.Fatalf("load catalog: %v", err)
 	}
-	al, err := allowlist.Load(filepath.Join(root, "config", "allowlist.json"))
+	al, err := allowlist.Load(filepath.Join(root, "config", "allowlist.json.example"))
 	if err != nil {
-		t.Skipf("allowlist.json not present (%v); skipping", err)
+		t.Skipf("config/allowlist.json.example not present (%v); skipping", err)
 	}
 	eng, err := rules.New(rs, al, newFakeDedup())
 	if err != nil {

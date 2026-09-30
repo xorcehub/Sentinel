@@ -1,5 +1,5 @@
 // Package redteam — round-3 evasion vectors: CUSTOM-BINARY shapes against the
-// REAL catalog (rules.d/*.yml) + REAL allowlist (config/allowlist.json) + the
+// REAL catalog (rules.d/*.yml) + REAL allowlist (config/allowlist.json.example) + the
 // REAL engine.
 //
 // Rounds 1-2 probed event SPELLING (cmdline tokens, path anchors). This round
@@ -82,9 +82,9 @@ func loadRealCatalog(t *testing.T) []*sigmaeval.Rule {
 
 func loadRealAllowlist(t *testing.T) *allowlist.Allowlist {
 	t.Helper()
-	al, err := allowlist.Load(filepath.Join(repoRoot(t), "config", "allowlist.json"))
+	al, err := allowlist.Load(filepath.Join(repoRoot(t), "config", "allowlist.json.example"))
 	if err != nil {
-		t.Skipf("allowlist.json not present (%v)", err)
+		t.Skipf("config/allowlist.json.example not present (%v)", err)
 	}
 	return al
 }

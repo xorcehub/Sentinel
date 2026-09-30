@@ -1,5 +1,5 @@
 // Package redteam — round-2 evasion vectors against the REAL catalog
-// (rules.d/*.yml) + REAL allowlist (config/allowlist.json) + the REAL engine.
+// (rules.d/*.yml) + REAL allowlist (config/allowlist.json.example) + the REAL engine.
 //
 // Round 1 (../plan-2026-09-02.md) found the suffix-trust hole in
 // filter_cursor_agent; it is fixed. This round probes NEW holes, found by
@@ -81,9 +81,9 @@ func loadRealCatalog(t *testing.T) []*sigmaeval.Rule {
 
 func loadRealAllowlist(t *testing.T) *allowlist.Allowlist {
 	t.Helper()
-	al, err := allowlist.Load(filepath.Join(repoRoot(t), "config", "allowlist.json"))
+	al, err := allowlist.Load(filepath.Join(repoRoot(t), "config", "allowlist.json.example"))
 	if err != nil {
-		t.Skipf("allowlist.json not present (%v)", err)
+		t.Skipf("config/allowlist.json.example not present (%v)", err)
 	}
 	return al
 }

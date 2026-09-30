@@ -1,309 +1,54 @@
 {
-  // Sentinel starter allowlist. PRUNE before go-live (04-TELEMETRY.md §3).
+  // OUT-OF-THE-BOX DEFAULT — deliberately EMPTY: every rule armed, nothing
+  // trusted, so expect toast noise until you tune. Make your tuning in your
+  // own copy (route 1), not this file (a test keeps this one empty).
+  //
+  // How to tune for YOUR machine:
+  //
+  //   1. config/allowlist.json.local (gitignored) — copy from
+  //      config/allowlist.json.example, prune for your box. install-task.ps1
+  //      auto-detects the file and registers the task with -allowlist for it.
+  //      Manual daemon runs: pass -allowlist config\allowlist.json.local.
+  //   2. Fork-style: edit THIS file directly if you maintain your own fork
+  //      (git will show it modified; upstream keeps it empty).
+  //
+  // config/allowlist.json.example is your tuning reference: a real allowlist
+  // with per-entry comments on the unusual syntax (JSONC, 4-backslash regex
+  // path separators, drive-root anchors) and the noise class each entry kills.
+  // Start from it rather than writing entries from scratch.
+  //
   // ESCAPING: path separator = 4 backslashes (regex \\), literal dot before
-  // extension = 2 backslashes (regex \.). SHA256 entries ROT on every tool
-  // update — prefer path patterns for anything that re-signs frequently.
+  // extension = 2 backslashes (regex \.).
 
   "trusted_binaries": {
-    "sha256": [
-      // Add SHA256 of currently-on-disk firefox.exe, msedge.exe, etc. after
-      // running scripts/gen-allowlist-seed.ps1 (TODO Phase 5). Left empty for
-      // now; path patterns below carry coverage.
-    ],
-    "path": [
-      // 2026-09-02c redteam F15: every pattern in this tier is anchored to the
-      // SYSTEM DRIVE (^[c]:, still case-insensitive). The old ^[a-z]: prefix
-      // made trust drive-agnostic: on any user-writable data volume (this box
-      // has D:), an UNPRIVILEGED user can create D:\Program Files\Mozilla
-      // Firefox\, D:\Windows\, D:\ProgramData\... — the tier's premise
-      // ("admin-owned install roots") only holds on the system drive. A plant
-      // on a data drive inherited FULL behavioral trust. Non-system volumes
-      // are untrusted by path, period; hash_gated_path is the only route to
-      // behavioral trust off C:.
-      "^[c]:\\\\program files\\\\mozilla firefox\\\\.*\\.exe$",
-      "^[c]:\\\\program files(?: \\(x86\\))?\\\\microsoft\\\\edge(?:update|webview)?\\\\.*\\.exe$",
-      "^[c]:\\\\program files(?: \\(x86\\))?\\\\steam\\\\.*\\.exe$",
-      "^[c]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
-      "^[c]:\\\\program files\\\\git\\\\.*\\\\(bash|grep|head|ls|wc|git.*)\\.exe$",
-      "^[c]:\\\\program files\\\\7-zip\\\\.*\\.exe$",
-      // Benign Windows session/service binaries BY NAME (NOT a blanket
-      // System32 glob). Trusting \windows\system32\.*\.exe was a design
-      // bug: it also trusted the LOLBins (powershell, conhost, mshta,
-      // certutil, wscript, cscript, schtasks, regsvr32, rundll32, bitsadmin,
-      // msiexec, forfiles, msdt) - the EXACT actors the behavior rules
-      // target - so every rule with `except: image_in_allowlist` was silently
-      // disabled for the incident binaries. This explicit list quiets
-      // NET-002/003 (svchost/explorer phoning home) WITHOUT trusting the
-      // LOLBins. Add a binary here only if it is NOT a LOLBin.
-      // eventcreate.exe was trusted because Sentinel's eventlog alerter used
-      // to shell to it with the alert body on its command line, which caused
-      // the EVADE-001 feedback loop (the title carried 'System.dll'/'amsi',
-      // EVADE-001's own match tokens). Level 3 (internal/alert/eventlog_windows.go)
-      // replaced that shell-out with native ReportEventW, so the loop is now
-      // structurally impossible and this trust is belt-and-suspenders for any
-      // older deployed build still on the eventcreate path. Kept because it is
-      // harmless (eventcreate only writes eventlog entries; no rule selects on
-      // it as an actor) and guards a config/binary version mismatch.
-      "^[c]:\\\\windows\\\\(?:explorer\\.exe$|(?:system32|syswow64)\\\\(svchost|dwm|runtimebroker|sihost|taskhostw|ctfmon|searchindexer|searchprotocolhost|searchfilterhost|fontdrvhost|dllhost|smss|csrss|wininit|winlogon|services|lsass|spoolsv|lsaiso|applicationframehost|shellexperiencehost|startmenuexperiencehost|textinputhost|systemsettings|securityhealthsystray|securityhealthservice|securityhealthsignalsutility|mousocoreworker|musnotifyicon|backgroundtaskhost|widgetsservice|phoneexperiencehost|eventcreate)\\.exe$)",
-      "^[c]:\\\\windows\\\\system32\\\\driverstore\\\\filerepository\\\\.*\\.exe$",
-      "^[c]:\\\\programdata\\\\microsoft\\\\windows defender\\\\.*\\\\(msmpeng|mpcmdrun|nis srv|mpdefendercoreservice)\\.exe$",
-      "^[c]:\\\\program files(?: \\(x86\\))?\\\\microsoft office\\\\.*\\.exe$"
-    ],
-    // hash_gated_path: Tier-2 user-writable dev-tool paths. A path match
-    // here is NOT trust by itself (Bypass B: the per-user username wildcard
-    // lets malware running AS the user plant a same-path binary). Trust
-    // additionally requires an Authenticode signature by one of
-    // allowed_signers, verified lazily by internal/sigverify and cached by
-    // SHA256. A legit auto-update (same vendor, new hash) re-verifies once
-    // and re-trusts with zero operator action; a planted/unsigned mimic is
-    // rejected whether it runs before or after the legit tool. Signers were
-    // DISCOVERED by internal/sigverify's test against the on-disk binaries
-    // (NOT guessed): Anysphere=Cursor, PSF=Python, Anthropic=claude.
-    // Dev-tool vendors ONLY — never a LOLBin signer like Microsoft (signs
-    // mshta/certutil). Patterns DUPLICATED in dev_tool_paths (below) on
-    // PURPOSE: the two sets have different semantics — hash_gated_path grants
-    // behavioral trust (Tier-2: path AND signature), dev_tool_paths is the
-    // NET-002/003/004 quiet-by-path set. If you edit one, edit the other to
-    // match, or the two will drift. No cross-check test exists; keep them in
-    // sync by hand. Patterns copied verbatim from dev_tool_paths.
-    "hash_gated_path": [
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:cursor|.*?vscode.*?|python)\\\\.*\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cursor\\\\extensions\\\\.*\\\\claude-code-.*\\\\native-binary\\\\claude\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.local\\\\bin\\\\claude\\.exe$"
-    ],
-    // allowed_signers: Authenticode subject names (simple-display type)
-    // that auto-trust a Tier-2 path match. Verified against the real
-    // on-disk binaries via internal/sigverify.Subjects. Add a vendor only
-    // after running that discovery (a guessed string silently fails to
-    // match and the tool stays untrusted — fail closed, but unintended).
-    "allowed_signers": [
-      "Anysphere, Inc.",
-      "Python Software Foundation",
-      "Anthropic, PBC"
-    ]
+    "sha256": [],
+    "path": [],
+    "hash_gated_path": [],
+    "allowed_signers": []
   },
   "allowed_destinations": {
+    // Universal networks (RFCs, not machine-specific): loopback, private LAN,
+    // link-local, multicast. Kept in the empty default so a fresh box isn't
+    // toast-flooded by svchost/explorer talking to the router, DHCP, DNS and
+    // discovery peers; everything else is trust-nothing. If your resolver uses
+    // DoH (e.g. Cloudflare 1.1.1.1/1.0.0.1), add it when you tune — the
+    // example carries it. Note: this set only feeds NET-002/003's dst except
+    // (match-all minus this list); NET-004/NET-005 and every behavioral rule
+    // ignore it.
     "cidr": [
       "127.0.0.0/8", "::1/128",
       "10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12",
       "169.254.0.0/16", "fe80::/10",
-      "224.0.0.0/4", "ff00::/8",
-      "1.1.1.1/32", "1.0.0.1/32"
+      "224.0.0.0/4", "ff00::/8"
     ]
   },
-  "known_loopback_listeners": [
-    // NahimicService (OEM audio stack) local control channel. Scoped to
-    // nahimic-named images (2026-09-02b redteam F8b): the entry had no image
-    // constraint, so ANY process chatting on :9080 was silent for NET-005 —
-    // the exact broker-C2 shape the rule exists for. Matches both the
-    // system32 service and the AppData-resident components (case-insensitive
-    // name fragment). An entry is either "host:port" (any image) or
-    // { "addr": "host:port", "image": "<regex>" }.
-    // 2026-09-02c redteam F9: the image gate was the bare name fragment
-    // "nahimic" — compiled UNANCHORED, so any binary with "nahimic" anywhere
-    // in its path (Downloads\evil-nahimic-updater.exe) inherited the :9080
-    // exception. Image gates are ANCHORED PATHS from here on, not name
-    // fragments. Start-anchored only: system32\nahimic still matches
-    // NahimicService.exe, and the AppData alternative still matches the
-    // nhnotifsys component tree (pinned by internal/allowlist/allowlist_test.go).
-    { "addr": "127.0.0.1:9080", "image": "^[a-z]:\\\\(windows\\\\system32\\\\nahimic|users\\\\[^\\\\]+\\\\appdata\\\\local\\\\nhnotifsys\\\\nahimic)" }
-    // Add: vite :5173, Cursor/Docker desktop ports, your app's dev ports.
-    // llama.cpp llama-server (operator's local LLM API, winget install):
-    // Cursor + python tooling poll it on its two fixed defaults :8001 (web)
-    // and :1234 (alt) every ~5m — 44/46 NET-005 hits 09-03→09-08 were exactly
-    // this listener pair re-minted at each 5m dedup expiry. Bare host:port
-    // entries: the CONNECTORS (cursor/python/…) are many and rotate, and the
-    // image gate applies to the connecting image, not the listener, so it
-    // cannot be scoped tighter. Residual = any broker binding these exact
-    // fixed ports goes NET-005-quiet (the documented pre-seed posture in
-    // docs/found_noise.md); ephemeral-port loopback stays fully armed.
-    , "127.0.0.1:8001", "127.0.0.1:1234"
-  ],
+  "known_loopback_listeners": [],
   "dev_tool_paths": {
-    "path": [
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\go\\\\bin\\\\.*\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cargo\\\\bin\\\\.*\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:python|node)\\\\.*\\.(exe|dll)$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\npm\\\\.*\\.exe$",
-      "^[c]:\\\\program files\\\\docker\\\\docker\\\\.*\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\lm studio\\\\.*\\.exe$",
-      // llama-server (winget, AppData = user-writable): operator's local LLM
-      // API server; its own :8001/:1234 loopback binds hit NET-004 (3 hits
-      // 09-08). NET-only quiet, same accepted Bypass-B class as the go-build
-      // test binaries below (self-naming quiets NET-002/003/004 only);
-      // NET-005 seeds are fixed-port, behavioral rules stay armed.
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\microsoft\\\\winget\\\\packages\\\\ggml\\.llamacpp[a-z0-9_.]*\\\\llama-server\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\pnpm\\\\.*\\.exe$",
-      // pi-lite (operator's dev AI agent) — quiets NET-002/003. Scoped to the
-      // built binary path, NOT the whole tree. Its API endpoints (128.14.69.x)
-      // rotate, so trust the image rather than chasing each IP. NET-004
-      // (Temp/AppData/ProgramData outbound) + NET-005 (loopback) still apply
-      // (NET-005 only after the 2026-09-01 X1/X2 redeploy - see docs/found_noise.md).
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pi-lite\\\\dist\\\\pi-lite\\.exe$",
-      // bun runtime - operator JS toolchain. Trust image so NET-002/003
-      // quiet down; NET-005 (loopback) still applies (after the 2026-09-01
-      // X1/X2 redeploy - see docs/found_noise.md).
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.bun\\\\bin\\\\.*\\.exe$",
-      // uv-installed CPython (appdata/roaming/uv/python/<ver>/python.exe).
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\roaming\\\\uv\\\\python\\\\.*\\\\python\\.exe$",
-      // Adoptium JDK (program files = admin-owned, but this is the NET-only
-      // quiet set - java is a real malware host, so deliberately NOT in
-      // trusted_binaries: no behavioral trust, NET-002/003/004 quiet only).
-      // Killed 19+18 hits/2wk (Gradle/Maven fetching from GCP/Fastly).
-      "^[c]:\\\\program files\\\\eclipse adoptium\\\\.*\\\\bin\\\\java(w)?\\.exe$",
-      // uv.exe under the hermes tool dir - operator Python toolchain
-      // manager (jsdelivr CDN fetches). Same NET-only scope as above.
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\hermes\\\\bin\\\\.*\\.exe$",
-      // Nahimic (OEM audio stack) notification service, AppData-resident -
-      // its AWS telemetry hit NET-002/003/004. NET-only quiet; NOT Tier-2
-      // trusted (no hash_gated_path entry, no behavioral trust).
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\nhnotifsys\\\\nahimic\\\\.*\\.exe$",
-      // `go test ./...` temp binaries (Temp/go-build<digits>/bNNN/*.test.exe).
-      // Temp is user-writable, so an aware attacker could self-name into
-      // this pattern to quiet NET-002/003/004 - accepted for the same reason
-      // as the other user-writable dev_tool_paths (documented Bypass-B class:
-      // NET-005 loopback-C2 and every behavioral rule stay armed; NET-005 only
-      // after the 2026-09-01 X1/X2 redeploy - see docs/found_noise.md). Anchored
-      // on the digits-only go-build dir + .test.exe/govulncheck.exe suffix
-      // to keep the pattern useless for anything but go toolchain binaries.
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\temp\\\\go-build[0-9]+\\\\.*\\\\(?:[a-z0-9._-]+\\.test|govulncheck)\\.exe$",
-      // Reclassified from trusted_binaries (interim Bypass-B hardening). These are
-      // DUPLICATED in trusted_binaries.hash_gated_path (above) — edit both
-      // together or they drift (see that section's comment). Here they serve
-      // NET-002/003/004 quiet-by-path; there they grant behavioral trust only
-      // with a valid allowed_signers signature.
-      // USER-WRITABLE per-user paths, so path-trust alone let a planted mimic
-      // (e.g. C:\Users\<you>\AppData\Local\Programs\Cursor\evil.exe) suppress every
-      // image_in_allowlist rule. Moved here so ONLY NET-002/003/004 (which except
-      // image_in_dev_tools) treat them as quiet-by-path; the behavioral rules
-      // (EXEC/CRED/INJECT/PERSIST/EVADE) no longer suppress on these paths.
-      // Full close = hash-authority (sha256 seed), tracked separately.
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\appdata\\\\local\\\\programs\\\\(?:cursor|.*?vscode.*?|python)\\\\.*\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.cursor\\\\extensions\\\\.*\\\\claude-code-.*\\\\native-binary\\\\claude\\.exe$",
-      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\.local\\\\bin\\\\claude\\.exe$"
-    ]
+    "path": []
   },
-  // dev_scripts: CmdLine-anchored exceptions for EXEC-001 (see allowlist doc).
-  // The operator's own dev scripts run via `powershell -ep bypass -File <x>`;
-  // anchoring on the script filename keeps EXEC-001 armed for everything else.
-  // Every entry is PATH-anchored (2026-09-02b redteam F2): a bare-filename
-  // anchor suppressed EXEC-001 for ANY payload that named itself like the
-  // dev script, from ANY folder, with full bypass flags. Like install.ps1
-  // below, relative invocations (-File .\scripts\pe-triage-docker.ps1) no
-  // longer match and (safely) alert.
-  "dev_scripts": [
-    // pe-triage-docker helper (dockerized PE triage). Anchored on the
-    // -File invocation + the pe_triage repo's scripts dir; separator
-    // tolerated both ways. 2026-09-02c redteam F10: the old bare path
-    // substring matched ANY cmdline that MENTIONED the path (e.g.
-    // `IEX(gc C:\pe_triage\scripts\pe-triage-docker.ps1)` — inert string,
-    // hostile payload), suppressing EXEC-001 for the whole launch. The
-    // -File context is now part of the anchor; relative invocations
-    // (-File .\scripts\...) still safely alert.
-    // 2026-09-03 residual R2: the repo-dir group was OPTIONAL ((...)?), so
-    // -File <any drive>:\pe_triage\scripts\... (attacker-created tree with
-    // arbitrary script content) still matched. Group is now MANDATORY and
-    // pinned to the system drive (F15 posture).
-    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pe_triage[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1",
-    // operator install/uninstall scripts. Path-anchored on the repo dir so a
-    // same-named dropper (install.ps1 is a top-tier dropper name) can't evade
-    // EXEC-001. Requires absolute-path invocation
-    // (-File C:\\...\\leave-my-shit-alone\\install.ps1); a relative run
-    // (-File .\\install.ps1) won't match here and will (safely) alert, which is
-    // the correct failure for a one-shot, supervised install.
-    // 2026-09-03 residual R3: the old entries ("sentinel\\install.ps1") had
-    // NO -File anchor — any cmdline MENTIONING the path (inert-string IEX
-    // form, live-confirmed) suppressed EXEC-001. Now -File + real repo path.
-    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone\\\\install\\.ps1",
-    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone\\\\uninstall\\.ps1",
-    // Docker Desktop registry-list helper (cscript ...\regedit\vbs\regList.wsf).
-    // Path-anchored on Docker's stable install subdir so a same-named payload
-    // elsewhere (e.g. C:\ProgramData\reglist.wsf via cscript+http) can't evade
-    // EXEC-003. Docker's real path is the only legit occurrence of that subtree.
-    "regedit\\\\vbs\\\\reglist\\.wsf",
-    // OEM "Control Center" (AiStone) logon script. A scheduled task fires
-    // `powershell -ep bypass -File ...\AiStoneService\MyControlCenter\Command\LogonUserName.ps1`
-    // at every logon (plus a `cmd /c -> powershell` wrapper variant, same
-    // -File form). 2026-07-29 known-limitations #1 + 2026-09-03 redteam F20
-    // (live-confirmed: a repo-tree mimic ran bypass-flagged and EXEC-001 was
-    // suppressed, sentinel.log 'suppressed (allowlist) rule=EXEC-001'): the
-    // old entry was an UNANCHORED substring, so those dir names ANYWHERE in
-    // the cmdline (attacker-created tree in any user-writable path) gagged
-    // EXEC-001/EXEC-003. Now anchored on -File + the admin-owned
-    // Program Files\OEM subtree on the system drive (F15 posture): planting
-    // there already requires admin = game over, and the -File anchor keeps
-    // inert-string piggybacks (IEX(gc <oem path>)) from re-opening F10.
-    "-file\\s+\"?[c]:\\\\program[ -]files\\\\oem[^\"']*aistoneservice[\\\\/]+mycontrolcenter[\\\\/]+command[\\\\/]+logonusername\\.ps1",
-    // GCUBridge service-watchdog (2026-09-02c redteam F10). A scheduled task
-    // runs scripts\gcubridge-watchdog.ps1 at every logon:
-    // `powershell -WindowStyle Hidden -ep bypass -File <repo>\scripts\gcubridge-watchdog.ps1`.
-    // The old entry anchored on the bare marker string
-    // `Get-Service -Name 'GCUBridge'` — ANY bypass-flagged powershell whose
-    // cmdline contained it (piggybacked payload after the marker) suppressed
-    // EXEC-001 for the whole launch (live-confirmed: 'gcupiggy'). Now anchored
-    // on the script path; OPERATOR STEP: re-register the task to the -File
-    // form above (until then the task safely alerts at logon).
-    // 2026-09-03 residual R4: the old entry had no -File anchor — ANY cmdline
-    // mentioning the path (-File or IEX from an attacker tree) suppressed
-    // EXEC-001 (engine-confirmed). Now -File + system-drive repo anchor.
-    "-file\\s+[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\leave-my-shit-alone[\\\\/]+scripts[\\\\/]+gcubridge-watchdog\\.ps1",
-    // pe-triage-docker, the -Command form (2 EXEC-001 hits 09-08): the
-    // repo sets $env:OUTPUT_DIR to the repo tree and then invokes the
-    // script by RELATIVE path, so the -File anchor above cannot see it.
-    // Same F10/R2 doctrine: BOTH the repo-path OUTPUT_DIR assignment AND
-    // the relative & '.\scripts\pe-triage-docker.ps1' invocation are
-    // required — an inert path mention alone does not suppress.
-    "-command\\s+\"?\\$env:output_dir\\s*=\\s*'[c]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pe_triage[\\\\/]+output[\\\\/][^']*';\\s*&\\s*'\\.[\\\\/]+scripts[\\\\/]+pe-triage-docker\\.ps1'(?:\\s+-[^\\s;\"]+(?:\\s+[^\\s;\"]+)?)*\\s*\"?\\s*$"
-  ],
-
-  // event_log_filter: OPTIONAL log-only noise filter. Suppresses ONLY the
-  // per-event DEBUG dump line (the raw "every event" telemetry) — it does NOT
-  // affect rule evaluation, so a real HIT still alerts and logs on its own
-  // "HIT" line regardless of this section.
-  //
-  // Semantics: AND of set fields WITHIN an entry, OR ACROSS entries. A field
-  // is "set" only when you provide it; an omitted field is a wildcard. The
-  // per-entry AND is what keeps this 1:1 safe: e.g. the powershell entry below
-  // matches ONLY eid=11 (FileCreate) by powershell.exe with an EMPTY command
-  // line — a powershell eid=11 that carries a command fails the "cmdline":"^$"
-  // clause and is still logged.
-  //
-  // Escaping: same as trusted_binaries — 4 backslashes per literal path
-  // separator (regex \\), 2 before a literal dot (regex \.). image regexes
-  // are matched on the normalized lower path (e.g. c:\windows\...). cmdline
-  // regexes on the raw command line, case-insensitive.
-  "event_log_filter": [
-    // #1: PowerShell FileCreate (eid 11) with no command line. This was ~24k
-    // lines/day of pure noise — eid 11 carries no cmdline, and the real
-    // persistence/config rules key on TargetFilename, not this dump line.
-    { "eid": 11, "image": "\\\\windowspowershell\\\\v1\\.0\\\\powershell\\.exe$", "cmdline": "^$" },
-    // #2: the editor's (Cursor) git poller firing check-ignore / rev-parse /
-    // log --max-count / ls-files every couple seconds. ~20k lines/day. Read-
-    // only inspection; no detection rule keys on these git subcommands.
-    { "image": "\\\\git\\\\.*\\\\git\\.exe$", "cmdline": "(check-ignore|rev-parse|--max-count|ls-files)" }
-  ],
-
-  // file_capture: path patterns whose created files (EID 11) the daemon
-  // snapshots to the forensic vault before they can be deleted. NOT an except
-  // operator and NOT consulted by rule evaluation - purely additive forensics.
-  // The motivating case: Cursor spawns `powershell -ep bypass -File
-  // <TEMP>\ps-script-<guid>.ps1` and deletes the script the instant it exits,
-  // so its contents are otherwise never inspectable. Snapshotting lets you read
-  // what was actually run, and a later alert whose cmdline names a captured
-  // path back-links its hid into that capture's manifest (see 05-ALERTING.md).
-  //
-  // This is best-effort: the daemon wins the race when it processes the EID 11
-  // within the file's lifetime. Sysmon FileDelete archiving (Layer B, see
-  // docs/05-ALERTING.md) is the guaranteed backstop for the misses.
-  //
-  // Escaping: same as trusted_binaries - 4 backslashes per literal path
-  // separator (regex \\), matched on the normalized lower path. Vault I/O
-  // (dir, size caps) is configured in sentinel.conf, not here.
+  "dev_scripts": [],
+  "event_log_filter": [],
   "file_capture": {
-    "patterns": [
-      // Cursor's create-and-delete bootstrap scripts. GUID-named so the
-      // pattern anchors on the stable \Temp\ps-script- prefix, not the GUID.
-      "\\\\temp\\\\ps-script-"
-    ]
+    "patterns": []
   }
 }

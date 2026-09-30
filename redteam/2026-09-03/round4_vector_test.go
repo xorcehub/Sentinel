@@ -83,9 +83,9 @@ func loadRealCatalog(t *testing.T) []*sigmaeval.Rule {
 
 func loadRealAllowlist(t *testing.T) *allowlist.Allowlist {
 	t.Helper()
-	al, err := allowlist.Load(filepath.Join(repoRoot(t), "config", "allowlist.json"))
+	al, err := allowlist.Load(filepath.Join(repoRoot(t), "config", "allowlist.json.example"))
 	if err != nil {
-		t.Skipf("allowlist.json not present (%v)", err)
+		t.Skipf("config/allowlist.json.example not present (%v)", err)
 	}
 	return al
 }

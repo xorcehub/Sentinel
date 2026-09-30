@@ -68,6 +68,17 @@ if ($AsSystem) {
     # looping-alarm toast (relayed by sentinel-tray).
     $actionArg = "-popup=false -snapshot-dir `"$SnapshotDir`" -sysmon-archive-dir `"$ArchiveDir`""
 }
+
+# Per-box allowlist override: file presence IS the machine distinction. If
+# config/allowlist.json.local exists next to the exe (gitignored, copied from
+# allowlist.json.example and pruned), run with it; a fresh clone ships only the
+# EMPTY config/allowlist.json default and never has this file. Re-running this
+# script therefore preserves per-box tuning instead of silently reverting it.
+$localAllowlist = Join-Path (Split-Path $ExePath -Parent) "config\allowlist.json.local"
+if (Test-Path $localAllowlist) {
+    $actionArg += " -allowlist `"$localAllowlist`""
+    Write-Host "Allowlist override detected: $localAllowlist" -ForegroundColor Yellow
+}
 $action    = New-ScheduledTaskAction -Execute $ExePath -Argument $actionArg -WorkingDirectory (Split-Path $ExePath -Parent)
 $trigger   = New-ScheduledTaskTrigger -AtLogOn
 
