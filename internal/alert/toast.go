@@ -98,11 +98,27 @@ func pushNoFallback(n toast.Notification) error {
 	if err := toast.SetAppData(wintoast.AppData{AppID: n.AppID}); err != nil {
 		return fmt.Errorf("set toast app data: %w", err)
 	}
+	xml, err := renderToastXML(n)
+	if err != nil {
+		return err
+	}
+	return wintoast.Push(xml) // zero options => no PowerShell fallback
+}
+
+// renderToastXML cleans Title/Body (stripToastChars) and renders the toast
+// XML. Cleaning happens HERE, the one choke point every toast passes through,
+// not only in toastText: the sentinel-tray relay hands pipe-supplied text
+// (unauthenticated local pipe) straight to SilentToast/LoudToast, and an
+// unstripped "]]>" there would close the CDATA section and let the sender add
+// its own toast XML (actions, images) under the Sentinel identity.
+func renderToastXML(n toast.Notification) (string, error) {
+	n.Title = stripToastChars(n.Title)
+	n.Body = stripToastChars(n.Body)
 	var buf bytes.Buffer
 	if err := tmpl.XMLTemplate.Execute(&buf, n); err != nil {
-		return fmt.Errorf("render toast xml: %w", err)
+		return "", fmt.Errorf("render toast xml: %w", err)
 	}
-	return wintoast.Push(buf.String()) // zero options => no PowerShell fallback
+	return buf.String(), nil
 }
 
 // ToastAlerter shows a best-effort Windows toast (05-ALERTING.md §4).
@@ -120,7 +136,7 @@ func pushNoFallback(n toast.Notification) error {
 // critical toast stays silent (SilentToast) as before — the popup is already the
 // attention-grabber, and a loud alarm alongside a modal box would be a
 // redundant double-signal. "Best-effort" is operative: toast failure is
-// logged (WARN, rate limited; see noteFailure) and never propagated. A failed push returns an error but
+// logged (WARN with back-off; see noteFailure) and never propagated. A failed push returns an error but
 // does NOT show a MessageBox fallback — this preserves our severity tiers
 // (suspicious must never pop a blocking box).
 //
@@ -136,32 +152,57 @@ type ToastAlerter struct {
 	// visible at the default log level, not only at debug.
 	mu           sync.Mutex
 	failed       uint64
-	lastFailWarn time.Time
+	lastFailWarn time.Time     // zero = no WARN yet in the current failure streak
+	warnEvery    time.Duration // current WARN interval; 0 = toastFailWarnEvery
 }
 
-// toastFailWarnEvery bounds the "toast failed" WARN to one line per window
-// (with the running total), so a broken toast channel under an alert burst
-// cannot flood the log.
-const toastFailWarnEvery = time.Minute
+// toastFailWarnEvery is the first WARN interval of a failure streak. Each
+// further WARN in the same streak doubles it, up to toastFailWarnMax, so a
+// permanently broken toast channel (e.g. "Access is denied" on every push)
+// settles at ~1 line per hour instead of 1440 a day. A successful push ends
+// the streak (noteSuccess) and the next failure warns at once again.
+const (
+	toastFailWarnEvery = time.Minute
+	toastFailWarnMax   = time.Hour
+)
 
-// noteFailure counts a failed push and logs it: WARN at most once per
-// toastFailWarnEvery (with failed_total), DEBUG otherwise. now is injected so
-// tests control the clock.
+// noteFailure counts a failed push and logs it: WARN when the current
+// back-off interval has passed (with failed_total), DEBUG otherwise. now is
+// injected so tests control the clock.
 func (t *ToastAlerter) noteFailure(err error, h event.Hit, now time.Time) {
 	t.mu.Lock()
 	t.failed++
 	total := t.failed
-	warn := now.Sub(t.lastFailWarn) >= toastFailWarnEvery
+	if t.warnEvery == 0 {
+		t.warnEvery = toastFailWarnEvery
+	}
+	warn := t.lastFailWarn.IsZero() || now.Sub(t.lastFailWarn) >= t.warnEvery
 	if warn {
+		if !t.lastFailWarn.IsZero() {
+			t.warnEvery = min(2*t.warnEvery, toastFailWarnMax)
+		}
 		t.lastFailWarn = now
 	}
+	next := t.warnEvery
 	t.mu.Unlock()
 	args := []any{"err", err, "rule", h.RuleID, "critical", h.Severity == event.SevCritical, "failed_total", total}
+	if warn {
+		args = append(args, "next_warn_after", next)
+	}
 	if warn {
 		t.log.Warn("toast failed (dropped; hit is still in ALERTS.log + Event Log)", args...)
 		return
 	}
 	t.log.Debug("toast failed (best-effort)", args...)
+}
+
+// noteSuccess ends a failure streak: the back-off resets, so the next failure
+// after a working push warns immediately.
+func (t *ToastAlerter) noteSuccess() {
+	t.mu.Lock()
+	t.lastFailWarn = time.Time{}
+	t.warnEvery = 0
+	t.mu.Unlock()
 }
 
 // NewToastAlerter constructs the best-effort toast alerter. loud=true makes
@@ -177,12 +218,14 @@ func (t *ToastAlerter) Name() string { return "toast" }
 // toastText formats the title/body for a toast. Shared by ToastAlerter (fires
 // locally) and PipeToastAlerter (sends to the user-session relay).
 func toastText(h event.Hit) (title, body string) {
-	title = stripToastChars(fmt.Sprintf("Sentinel: %s", trunc(h.RuleName, 60)))
-	body = stripToastChars(fmt.Sprintf("%s — %s", strings.ToUpper(string(h.Severity)), trunc(h.Event.Image, 80)))
+	// No stripToastChars here: renderToastXML cleans every toast at push time
+	// (also the relay's, which arrives over the pipe).
+	title = fmt.Sprintf("Sentinel: %s", trunc(h.RuleName, 60))
+	body = fmt.Sprintf("%s — %s", strings.ToUpper(string(h.Severity)), trunc(h.Event.Image, 80))
 	// Former-popup tier: append the command line (the MessageBox showed it) so a
 	// loud critical toast is actionable, not just loud. Suspicious stays compact.
 	if h.Severity == event.SevCritical && h.Event.CmdLine != "" {
-		body = stripToastChars(body + " — " + trunc(h.Event.CmdLine, 100))
+		body = body + " — " + trunc(h.Event.CmdLine, 100)
 	}
 	return
 }
@@ -237,6 +280,8 @@ func (t *ToastAlerter) Alert(h event.Hit) error {
 	}
 	if err != nil {
 		t.noteFailure(err, h, time.Now())
+	} else {
+		t.noteSuccess()
 	}
 	return nil
 }
