@@ -126,6 +126,40 @@ detection:
     # rules. Pinned as expected-quiet in TestPythonSigverifyEncodedQuiet.
     ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\python\\python[0-9]+\\python\.exe$'
     CommandLine|re: '(?i)^\s*"?[^\s"]*powershell(\.exe)?"?\s+-noprofile\s+-encodedcommand\s+RwBlAHQALQBBAHUAdABoAGUAbgB0AGkAYwBvAGQAZQBTAGkAZwBuAGEAdAB1AHIAZQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAQAAoACcA'
+  filter_claude_launcher_cmd:
+    # Claude Code CLI shell launcher, outer layer (2026-11 tuning: 49 EXEC-001
+    # + 49 PERSIST-001 in 10-07 -> 11-07, the largest EXEC-001 source). Every
+    # PowerShell tool call of the CLI spawns
+    #   cmd /d /s /c ""chcp.com" 65001 >nul & "powershell.exe" -NoProfile
+    #   -NonInteractive -ExecutionPolicy Bypass -Command "<fixed IEX of
+    #   $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT>" > "<Temp>\claude\<hex>\<guid>\tasks\<id>.output" 2>&1"
+    # (captured live from the running process tree; foreground and background
+    # calls both carry the redirect). The cmdline is a FIXED string: the
+    # script itself travels in the env var, so the only variable part is the
+    # redirect target, pinned to hex / GUID / alnum components (no space, no
+    # '&', no quote = no room for a second command). Requires ALL of: the real
+    # system32 cmd.exe image, the per-profile ~\.local\bin\claude.exe parent
+    # (start-anchored, same doctrine as filter_cursor_agent), the exact string
+    # end-anchored. Same accepted residual class as the cursor bridge: a binary
+    # planted AT ~\.local\bin\claude.exe running this exact shape is quiet
+    # here (EID 1 has no parent hash for Tier-2 gating); anything that script
+    # then does (child processes, network, persistence, cred access) still
+    # fires its own rules. The same cmd spawned by any OTHER parent fires.
+    Image|re: '(?i)^c:\\windows\\system32\\cmd\.exe$'
+    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\\.local\\bin\\claude\.exe$'
+    CommandLine|re: '(?i)^c:\\windows\\system32\\cmd\.exe /d /s /c ""c:\\windows\\system32\\chcp\.com" 65001 >nul & "c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$__claudeCodeScript = \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = \$null; Invoke-Expression -Command \$__claudeCodeScript" > "c:\\users\\[^\\" ]+\\appdata\\local\\temp\\claude\\[0-9a-f]+\\[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\tasks\\[a-z0-9]+\.output" 2>&1"$'
+  filter_claude_launcher_ps:
+    # Claude Code CLI shell launcher, inner layer (14 EXEC-001 in the same
+    # window): the powershell.exe the launcher cmd above starts. Its parent is
+    # cmd.exe, not claude.exe, so it is gated on the PARENT CMDLINE being the
+    # exact launcher string instead. Chain logic: if anything other than the
+    # real claude.exe path spawns that cmd, the cmd layer itself fires
+    # EXEC-001, so every non-Claude chain still raises one alert. Payload-less
+    # by construction (end-anchored fixed string, script in the env var).
+    Image|re: '(?i)^c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe$'
+    ParentImage|re: '(?i)^c:\\windows\\system32\\cmd\.exe$'
+    ParentCommandLine|re: '(?i)^c:\\windows\\system32\\cmd\.exe /d /s /c ""c:\\windows\\system32\\chcp\.com" 65001 >nul & "c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$__claudeCodeScript = \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = \$null; Invoke-Expression -Command \$__claudeCodeScript" > "c:\\users\\[^\\" ]+\\appdata\\local\\temp\\claude\\[0-9a-f]+\\[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\tasks\\[a-z0-9]+\.output" 2>&1"$'
+    CommandLine|re: '(?i)^"c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$__claudeCodeScript = \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = \$null; Invoke-Expression -Command \$__claudeCodeScript"$'
   filter_untrusted_profile_tree:
     # 2026-09-02 review: \users\public (WORLD-WRITABLE), \default
     # and \all users are not per-user profiles - a plant there must not
@@ -134,7 +168,7 @@ detection:
     # pathnorm'd (resolved) - Win32 trailing-dot spellings do not survive.
     # Guard shared by filter_cursor_agent AND filter_python_sigverify.
     ParentImage|startswith: ['c:\users\public\', 'c:\users\default\', 'c:\users\all users\']
-  condition: selection_cli and (selection_image or selection_broker) and not (filter_cursor_agent and not filter_untrusted_profile_tree) and not (filter_python_sigverify and not filter_untrusted_profile_tree)
+  condition: selection_cli and (selection_image or selection_broker) and not (filter_cursor_agent and not filter_untrusted_profile_tree) and not (filter_python_sigverify and not filter_untrusted_profile_tree) and not (filter_claude_launcher_cmd and not filter_untrusted_profile_tree) and not filter_claude_launcher_ps
 level: high
 tags: [attack.execution, attack.t1059.001, attack.defense_evasion]
 x-sentinel:

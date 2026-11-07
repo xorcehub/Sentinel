@@ -120,8 +120,21 @@ tags: [attack.command_and_control, attack.t1571]
 x-sentinel:
   id: NET-005
   severity: critical
-  dedup: 5m
-  target_key: "{{.ID}}|{{.Image}}|{{.DstIP}}:{{.DstPort}}"
+  # 2026-11 tuning: keyed per IMAGE, 30m (was image+dst:port, 5m). 385
+  # NET-005 alerts 10-07 -> 11-07, 237 distinct dst ports: python (asyncio),
+  # java (NIO) and Cursor/claude make in-process loopback self-connections
+  # (Windows socketpair emulation) on a fresh EPHEMERAL port each time, so a
+  # port-keyed dedup re-alerted on every one. Nothing is excepted: the first
+  # loopback connection from ANY image still alerts immediately, a new image
+  # (a dropped driver) always gets its own alert, and an image that keeps
+  # talking re-alerts every 30m (fixed window, ReAlert records only on emit).
+  # Suppressed repeats stay in sentinel.log as reason=dedup-window. Residual:
+  # a second loopback channel opened by the SAME image path within 30m of a
+  # benign one is folded into that alert. Real fix (engine work, not tuning):
+  # ingest Initiated/SourcePort/ProcessId and drop pairs whose both ends are
+  # the same PID.
+  dedup: 30m
+  target_key: "{{.ID}}|{{.Image}}"
   alert: [popup, toast, log, eventlog]
   except:
     dst_in_allowlist: known_loopback_listeners

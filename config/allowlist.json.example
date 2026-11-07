@@ -140,6 +140,12 @@
       // (Temp/AppData/ProgramData outbound) + NET-005 (loopback) still apply
       // (NET-005 only after the 2026-09-01 X1/X2 redeploy - see docs/found_noise.md).
       "^[a-z]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github\\\\pi-lite\\\\dist\\\\pi-lite\\.exe$",
+      // pi coding agent (operator's build from a cloned upstream repo):
+      // 36 NET-002/003 hits 10-07 -> 11-07, all :443 to its LLM API
+      // endpoints (Alibaba Cloud 47.245.x + Cloudflare 104.18.x). Same scope
+      // and residual as the pi-lite entry above: exact built-binary path
+      // only, NET-002/003/004 quiet, NET-005 and every behavioral rule armed.
+      "^[a-z]:\\\\users\\\\[^\\\\]+\\\\documents\\\\github external\\\\pi-original\\\\pi\\\\packages\\\\coding-agent\\\\binaries\\\\windows-x64\\\\pi\\.exe$",
       // bun runtime - operator JS toolchain. Trust image so NET-002/003
       // quiet down; NET-005 (loopback) still applies (after the 2026-09-01
       // X1/X2 redeploy - see docs/found_noise.md).

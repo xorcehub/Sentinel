@@ -45,7 +45,17 @@ detection:
     # filter the condition ANDs into the trust decision. ParentImage is
     # pathnorm'd (resolved) - Win32 trailing-dot spellings do not survive.
     ParentImage|startswith: ['c:\users\public\', 'c:\users\default\', 'c:\users\all users\']
-  condition: selection_launch and selection_path and not (filter_cursor_agent and not filter_untrusted_profile_tree)
+  filter_claude_launcher_cmd:
+    # Claude Code CLI shell launcher (49 PERSIST-001 hits 10-07 -> 11-07): the
+    # outer cmd.exe trips this rule only because its fixed stdout redirect
+    # points into AppData\Local\Temp\claude\. Same filter and same reasoning
+    # as EXEC-001's filter_claude_launcher_cmd (see rules.d/exec.yml); keep
+    # the two copies identical. The inner powershell layer carries no
+    # user-writable path and never matched this rule.
+    Image|re: '(?i)^c:\\windows\\system32\\cmd\.exe$'
+    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\\.local\\bin\\claude\.exe$'
+    CommandLine|re: '(?i)^c:\\windows\\system32\\cmd\.exe /d /s /c ""c:\\windows\\system32\\chcp\.com" 65001 >nul & "c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$__claudeCodeScript = \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = \$null; Invoke-Expression -Command \$__claudeCodeScript" > "c:\\users\\[^\\" ]+\\appdata\\local\\temp\\claude\\[0-9a-f]+\\[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\tasks\\[a-z0-9]+\.output" 2>&1"$'
+  condition: selection_launch and selection_path and not (filter_cursor_agent and not filter_untrusted_profile_tree) and not (filter_claude_launcher_cmd and not filter_untrusted_profile_tree)
 level: high
 tags: [attack.persistence, attack.t1053.005]
 falsepositives: [legitimate installers running from temp]
@@ -178,7 +188,18 @@ detection:
     # or pointing into AppData/Temp/ProgramData/Users/Public still fires.
     TargetObject|endswith: '\ImagePath'
     Details|re: '(?i)^(?:c:\\windows\\system32\\svchost\.exe(?: -k [a-z0-9]+)?(?: -p)?|\\\?\?\\c:\\(?:windows\\system32|program files(?: \(x86\))?)\\(?:[^\.]|\.[^\.])+\.(?:exe|sys|dll)|"c:\\(?:windows\\system32|program files(?: \(x86\))?)\\(?:[^\.]|\.[^\.])+\.(?:exe|sys|dll)")$'
-  condition: selection and not filter_benign_subkeys and not filter_start_type and not filter_admin_dir_imagepath
+  filter_credential_enrollment_usersvc:
+    # 2026-11 tuning: 16/19 PERSIST-005 hits 10-07 -> 11-07. Windows mints a
+    # per-user instance of CredentialEnrollmentManagerUserSvc (_<hex> LUID
+    # suffix) at each logon and the SCM writes its ImagePath as the bare,
+    # unquoted system32 binary — a shape filter_admin_dir_imagepath does not
+    # cover (its unquoted arm is svchost-only). Scoped to this one service
+    # family and this one exact ImagePath, no arguments (end-anchored, no
+    # room for arg-injection). Kept narrow on purpose instead of widening the
+    # generic unquoted arm.
+    TargetObject|re: '(?i)\\services\\credentialenrollmentmanagerusersvc_[0-9a-f]+\\imagepath$'
+    Details|re: '(?i)^c:\\windows\\system32\\credentialenrollmentmanager\.exe$'
+  condition: selection and not filter_benign_subkeys and not filter_start_type and not filter_admin_dir_imagepath and not filter_credential_enrollment_usersvc
 level: medium
 tags: [attack.persistence, attack.t1543.003]
 x-sentinel:
@@ -218,7 +239,21 @@ detection:
     # machine-hive write whose Details Sysmon did not capture stays quiet
     # (Field-absent = no match).
     Details|re: '(?i)appdata|[/\\]temp[/\\]|programdata|[/\\]users[/\\]public|%temp%|%public%'
-  condition: selection and (selection_user_hive or selection_writable_payload)
+  filter_nahimic_datasystem:
+    # 2026-11 tuning: 18/18 PERSIST-006 hits 10-07 -> 11-07 were ONE tuple —
+    # the system32 Nahimic service re-registering its own DataSystemCOM.dll
+    # under ProgramData on every start. ProgramData trips the writable-payload
+    # arm, but this tree's ACL was checked on the box: Users have (OI)(CI)(RX)
+    # only on ...\Modules\Regular\x64 and the DLL (no WD/AD, so no swap and no
+    # new-file plant). ALL APPLICATION PACKAGES:F is not a hole: AppContainer
+    # access is intersected with the user's own (RX). Exact tuple only: writer
+    # pinned to the admin-owned system32 image, the machine-hive key to this
+    # CLSID, the payload to this exact path. Any other writer, CLSID, hive, or
+    # payload path (including a re-point of this CLSID elsewhere) still fires.
+    Image|re: '(?i)^c:\\windows\\system32\\nahimicservice\.exe$'
+    TargetObject|re: '(?i)^hkcr\\clsid\\\{1fc71449-acec-420d-a3e9-7a0fc630926e\}\\inprocserver32\\\(default\)$'
+    Details|re: '(?i)^c:\\programdata\\a-volute\\a-volute\.nahimic\\modules\\regular\\x64\\datasystemcom\.dll$'
+  condition: selection and (selection_user_hive or selection_writable_payload) and not filter_nahimic_datasystem
 level: medium
 tags: [attack.persistence, attack.t1546.015]
 x-sentinel:
