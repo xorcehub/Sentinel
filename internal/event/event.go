@@ -23,7 +23,16 @@ const (
 	SrcSysmonSweep Source = "sysmon_sweep"
 	SrcBaseline    Source = "baseline"
 	SrcFirewall    Source = "firewall"
+	// SrcSentinel tags synthetic events Sentinel raises about its own
+	// telemetry (e.g. the Sysmon channel's RecordId rewinding after a log
+	// clear). EID 0; the payload is in Details. Not counted as Sysmon flow.
+	SrcSentinel Source = "sentinel"
 )
+
+// DetailsSysmonRewound is the Details prefix of the synthetic SrcSentinel
+// event the Sysmon poller emits when the channel's RecordIds go backwards
+// (log cleared / channel recreated). Matched by TELEMETRY-002.
+const DetailsSysmonRewound = "sysmon-recordid-rewound"
 
 type Severity string
 

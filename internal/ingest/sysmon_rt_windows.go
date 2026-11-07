@@ -16,6 +16,9 @@
 //     | ForEach-Object { base64(UTF16LE($_.ToXml())) }
 //  2. For each base64 line: decode -> UTF-16LE bytes -> decodeUTF16LE -> sysmonxml.Parse.
 //  3. Advance highWater to the max RecordId seen so the next poll is incremental.
+//  4. The script also prints "CHANMAX:<newest RecordId>". If that is BELOW
+//     highWater the log was cleared / recreated: emit the synthetic event
+//     TELEMETRY-002 matches, reset highWater and re-read (pollAndEmit).
 //
 // maxPerPoll (default 2000) must exceed the worst-case per-interval event count.
 // Cursor peaks at ~100 events/sec, so 2000 covers ~20s of burst — well beyond
@@ -265,10 +268,31 @@ func (s *sysmonRT) pollLoop(ctx context.Context, out chan<- event.Event) {
 }
 
 func (s *sysmonRT) pollAndEmit(ctx context.Context, highWater *int64, out chan<- event.Event) {
-	events, newMax, err := s.poll(*highWater)
+	events, newMax, chanMax, err := s.poll(*highWater)
 	if err != nil {
 		s.log.Warn("poll failed", "err", err)
 		return
+	}
+	// Log-clear / channel-recreate recovery. RecordIds restart at 1 after
+	// `wevtutil cl` (or a Sysmon reinstall), so the high-water filter would
+	// drop every new event forever — the daemon stays blind until restart and
+	// HEALTH-001 fires only once. Detect the rewind, raise TELEMETRY-002 via a
+	// synthetic event, reset the high-water and re-read the new log at once.
+	if recordIDsRewound(chanMax, *highWater) {
+		s.log.Warn("sysmon channel RecordId rewound (log cleared or channel recreated); resetting high-water and re-reading",
+			"channel", s.channel, "channel_max", chanMax, "high_water", *highWater)
+		rewind := rewoundEvent(s.channel, chanMax, *highWater)
+		select {
+		case <-ctx.Done():
+			return
+		case out <- rewind:
+		}
+		*highWater = -1
+		events, newMax, _, err = s.poll(*highWater)
+		if err != nil {
+			s.log.Warn("poll failed (after rewind)", "err", err)
+			return
+		}
 	}
 	// Saturation detection: if we got exactly maxPerPoll events, a burst exceeded
 	// our fetch cap and some older events may have been skipped. This shouldn't
@@ -316,14 +340,20 @@ func (s *sysmonRT) isSelfChild(ev event.Event) bool {
 // Cursor peaks at ~100 events/sec, so 2000 covers ~20s of burst — well beyond
 // the 1s poll interval. Rare stranding under extreme load is acceptable for a
 // behavior engine; total ingestion failure is not.
-func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
+//
+// chanMax is the newest RecordId currently in the channel (for the EID filter),
+// independent of afterID, or -1 when the channel returned nothing. It is what
+// lets pollAndEmit notice a log clear (see recordIDsRewound).
+func (s *sysmonRT) poll(afterID int64) (events []event.Event, maxID, chanMax int64, err error) {
 	script := fmt.Sprintf(
 		`$ErrorActionPreference='SilentlyContinue'; `+
-			`Get-WinEvent -FilterHashtable @{LogName='%s'; ID=%s} -MaxEvents %d | `+
-			`Where-Object { $_.RecordId -gt %d } | `+
+			`$all = @(Get-WinEvent -FilterHashtable @{LogName='%s'; ID=%s} -MaxEvents %d); `+
+			`if ($all.Count -gt 0) { '%s' + $all[0].RecordId }; `+
+			`$all | Where-Object { $_.RecordId -gt %d } | `+
 			`ForEach-Object { try { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_.ToXml())) } catch {} }`,
-		s.channel, eidList(s.eids), s.maxPerPoll, afterID,
+		s.channel, eidList(s.eids), s.maxPerPoll, chanMaxPrefix, afterID,
 	)
+	chanMax = -1
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -336,11 +366,14 @@ func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
 	runErr := cmd.Run()
 
-	var events []event.Event
-	var maxID int64
 	for _, line := range strings.Split(stdout.String(), "\n") {
 		line := strings.TrimSpace(line)
 		if line == "" {
+			continue
+		}
+		// The channel-max marker line (see the script) is not an event.
+		if id, ok := parseChanMax(line); ok {
+			chanMax = id
 			continue
 		}
 		// Per-line recover: a panic in base64 decode, UTF-16 decode, or
@@ -395,22 +428,63 @@ func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 	// base64 lines we already parsed them — discarding data over an exit code
 	// would blind ingestion. Only treat the nonzero exit as real when we got
 	// nothing usable out of it.
-	if runErr != nil && len(events) == 0 {
+	// A channel-max line counts as usable output: Get-WinEvent read the
+	// channel, there were just no NEW events. That is exactly the state right
+	// after a log clear (every record is below the high-water), so it must
+	// reach pollAndEmit's rewind check instead of being reported as a failure.
+	if runErr != nil && len(events) == 0 && chanMax < 0 {
 		// Genuinely broken: nonzero exit AND no usable output. Include raw
 		// stdout byte/line count so we can distinguish "powershell produced
 		// nothing" (pipe/cmdlet failure) from "produced lines we couldn't
 		// parse" (XML/base64 failure on specific events).
 		rawLines := len(strings.Split(strings.TrimSpace(stdout.String()), "\n"))
-		return nil, 0, fmt.Errorf("powershell: %w (stderr: %s; stdout %d bytes/%d lines)",
+		return nil, 0, -1, fmt.Errorf("powershell: %w (stderr: %s; stdout %d bytes/%d lines)",
 			runErr, strings.TrimSpace(stderr.String()), stdout.Len(), rawLines)
 	}
 	if runErr != nil {
 		// nonzero exit but we still got events: a suppressed non-fatal error
 		// (the common PowerShell gotcha). Log at debug, keep the data.
 		s.log.Debug("powershell exited nonzero but produced output; ignoring exit code",
-			"exit_err", runErr, "events", len(events))
+			"exit_err", runErr, "events", len(events), "channel_max", chanMax)
 	}
-	return events, maxID, nil
+	return events, maxID, chanMax, nil
+}
+
+// chanMaxPrefix marks the poll script's "newest RecordId in the channel" line.
+// ':' is not in the base64 alphabet, so it can never collide with an event line.
+const chanMaxPrefix = "CHANMAX:"
+
+// parseChanMax recognizes the channel-max marker line.
+func parseChanMax(line string) (int64, bool) {
+	rest, ok := strings.CutPrefix(line, chanMaxPrefix)
+	if !ok {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
+	if err != nil || id < 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+// recordIDsRewound reports whether the channel's newest RecordId is below the
+// high-water we already consumed — the signature of a cleared or recreated
+// log (RecordIds restart at 1). chanMax < 0 (channel returned nothing) and
+// highWater < 0 (nothing consumed yet) are never a rewind.
+func recordIDsRewound(chanMax, highWater int64) bool {
+	return chanMax >= 0 && highWater >= 0 && chanMax < highWater
+}
+
+// rewoundEvent is the synthetic event TELEMETRY-002 matches. Image carries the
+// channel name so alerts and dedup keys say what was rewound; the numbers go
+// in Details for the operator.
+func rewoundEvent(channel string, chanMax, highWater int64) event.Event {
+	return event.Event{
+		Source:  event.SrcSentinel,
+		Time:    time.Now(),
+		Image:   channel,
+		Details: fmt.Sprintf("%s channel=%s newest_record_id=%d previous_high_water=%d", event.DetailsSysmonRewound, channel, chanMax, highWater),
+	}
 }
 
 // eidList renders the EID slice as a PowerShell array literal "1,3,7,...".

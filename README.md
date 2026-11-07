@@ -28,7 +28,7 @@ Deliberately scoped to one operator, one box — see [Boundaries](#boundaries).
 | **Platform** | Windows 10 1607+ / Windows 11 (latest Sysmon from Sysinternals; installer pulls the current release, no version is pinned) |
 | **Telemetry source** | Sysmon (real-time, 1s poll) + Sysinternals Autoruns (daily persistence diff) |
 | **Detection paradigms** | Catch-by-act behavior rules + catch-by-result baseline diff |
-| **Coverage** | **26 hand-curated rules** across 9 categories, mapping to ~20 MITRE ATT&CK techniques |
+| **Coverage** | **27 hand-curated rules** across 9 categories, mapping to ~20 MITRE ATT&CK techniques |
 | **License** | MIT — [`LICENSE`](LICENSE); deps MIT/BSD/Apache only — [`THIRDPARTY.md`](THIRDPARTY.md) |
 | **Threat model** | Self-assessed — [`THREAT-MODEL.md`](THREAT-MODEL.md). Read before deploying. |
 
@@ -41,7 +41,7 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
 
 - Reads `Microsoft-Windows-Sysmon/Operational` in real time (1s poll; a native
   `EvtSubscribe` path exists but is broken — see `-sysmon-native`).
-- Evaluates **26 Sigma-style rules** (in-house evaluator, no external Sigma
+- Evaluates **27 Sigma-style rules** (in-house evaluator, no external Sigma
   library) across persistence, execution, network, credential, injection,
   evasion, baseline, config-tamper, and telemetry-integrity. Rules live in [`rules.d/`](rules.d)
   as Sigma YAML with an `x-sentinel:` extension block for routing/severity.
@@ -49,7 +49,9 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
   (hard-coded for now — no flag or config knob yet), the daemon fires one
   critical `HEALTH-001` hit per stale episode
   and flags `sysmon=STALE` in the heartbeat — a dead feed can no longer look
-  like a quiet machine. Sysmon config changes (EID 16) raise `TELEMETRY-001`.
+  like a quiet machine. Sysmon config changes (EID 16) raise `TELEMETRY-001`;
+  a cleared or recreated Sysmon log (RecordIds rewind) raises critical
+  `TELEMETRY-002` and the poller resets its high-water and keeps ingesting.
 - On a hit, fans out to four alert channels: **popup, toast, Windows Event
   Log, and `ALERTS.log`**. Every severity toasts except `info` (log-only by
   default) — suspicious silently, no banner sound. A rule's own `alert:` list
@@ -174,6 +176,7 @@ exists yet.
 | | T1204 / T1566 User Execution via Office/Doc parent | EXEC-005 |
 | **Defense Evasion** | T1562.002 Disable Tools: AMSI | EVADE-001 |
 | | T1562.001 Impair Defenses (config tamper) | CONFIG-001, TELEMETRY-001 |
+| | T1070.001 Clear Windows Event Logs (Sysmon channel) | TELEMETRY-002 |
 | | T1055 Process Injection / Hollowing (INJECT-003) | INJECT-003 |
 | **Credential Access** | T1555 Credentials from Password Store (browser vault) | CRED-001 |
 | | T1003.001 LSASS Memory | CRED-002 |

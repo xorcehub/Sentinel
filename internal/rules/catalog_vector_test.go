@@ -120,6 +120,9 @@ var vectorCases = []vectorCase{
 	// --- G. Telemetry integrity (docs/hardening-plan_2308.md H2) ---
 	{"TELEMETRY-001", "Sysmon config changed (EID 16): fires on legit -c updates too, hence suspicious",
 		event.Event{EID: 16, Image: `C:\Windows\Sysmon64.exe`}, event.SevSuspicious},
+	{"TELEMETRY-002", "wevtutil cl Microsoft-Windows-Sysmon/Operational: poller sees RecordIds rewind and emits the synthetic sentinel event",
+		event.Event{Source: event.SrcSentinel, Image: "Microsoft-Windows-Sysmon/Operational",
+			Details: event.DetailsSysmonRewound + " channel=Microsoft-Windows-Sysmon/Operational newest_record_id=12 previous_high_water=884213"}, event.SevCritical},
 }
 
 // TestCatalogVectorRegression is the "every rule fires on its motivating

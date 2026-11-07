@@ -16,3 +16,20 @@ x-sentinel:
   dedup: 24h
   alert: [toast, log, eventlog]
   note: "Fires on every legitimate `sysmon64 -c <config>` update too — severity stays suspicious (not critical) for that reason. Realistic value is catching ACCIDENTS (bad script overwrites config) + forensic record of when/what changed; deliberate tampering requires admin = out of scope per THREAT-MODEL."
+---
+title: Sysmon log cleared or channel recreated (RecordId rewound)
+id: 3c9b2e71-5d0a-4f8e-9b16-7a4e2d81c5f0
+status: experimental
+logsource: { product: sentinel-telemetry }
+detection:
+  selection:
+    Source: sentinel
+    Details|startswith: 'sysmon-recordid-rewound'
+  condition: selection
+level: critical
+tags: [attack.defense_evasion, attack.t1070.001]
+x-sentinel:
+  id: TELEMETRY-002
+  severity: critical
+  dedup: 1m
+  note: "Synthetic event from the Sysmon poller (internal/ingest/sysmon_rt_windows.go): the channel's newest RecordId fell below the high-water already consumed, i.e. the Sysmon Operational log was cleared (wevtutil cl / Clear-EventLog, a classic anti-forensics step) or the channel was recreated (Sysmon reinstall). The poller resets its high-water and keeps ingesting, so detection recovers on its own; this alert records that the history before the clear is gone. Events written between the clear and the next poll are still read."
