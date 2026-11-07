@@ -22,7 +22,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/gen2brain/beeep"
 	"golang.org/x/sys/windows"
 
 	"sentinel/internal/alert"
@@ -48,13 +47,13 @@ const (
 type toastMsg struct {
 	Title    string `json:"title"`
 	Body     string `json:"body"`
-	Severity string `json:"severity"` // "critical" => loud looping-alarm (alert.LoudToast); "" / other => silent beeep. Optional: absent in older daemons, treated as non-critical.
+	Severity string `json:"severity"` // "critical" => loud looping-alarm (alert.LoudToast); "" / other => silent (alert.SilentToast). Optional: absent in older daemons, treated as non-critical.
 }
 
 // notifyFn is the toast call, indirected so the round-trip test can capture
 // instead of firing a real toast. Production: notify (below). It routes
 // critical-severity toasts to the loud looping-alarm path (alert.LoudToast) and
-// everything else to the silent beeep path — mirroring the interactive
+// everything else to the silent path (alert.SilentToast) — mirroring the interactive
 // ToastAlerter's tiering so a Session-0 daemon's critical hits stand out too.
 // The loud-toast policy is shared (alert.LoudToast) so tuning it updates both
 // the interactive and relay paths in one place.
@@ -64,7 +63,10 @@ func notify(title, body, severity string) error {
 	if severity == "critical" {
 		return alert.LoudToast(title, body)
 	}
-	return beeep.Notify(title, body, "")
+	// Never beeep.Notify: its go-toast PowerShell fallback interpolates the
+	// (pipe-supplied, attacker-influenced) text into a double-quoted
+	// here-string and runs it. Both alert.*Toast paths push COM-only.
+	return alert.SilentToast(title, body)
 }
 
 func main() {

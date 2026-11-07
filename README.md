@@ -222,7 +222,7 @@ exists yet.
                        │  \\.\pipe\sentinel-toast  (named pipe, local)
                        ▼
                  sentinel-tray.exe  (user, Session 1+)
-                   reads pipe, fires WinRT toast via beeep
+                   reads pipe, fires WinRT toast (go-toast, COM only)
 ```
 
 The daemon runs as SYSTEM in Session 0. Session 0 cannot show MessageBoxes or
@@ -230,7 +230,7 @@ fire toasts on the interactive desktop, so:
 
 - **Popup:** crosses to the active console session via `WTSSendMessageW`.
 - **Toast:** the daemon writes one-line JSON to a named pipe; the user-session
-  `sentinel-tray.exe` relay reads it and calls `beeep.Notify`. **Best-effort:**
+  `sentinel-tray.exe` relay reads it and fires it via WinRT COM (no PowerShell fallback). **Best-effort:**
   no AUMID/Start-Menu shortcut is registered, so toasts may not persist in
   Action Center; treat the log/eventlog/popup channels as authoritative.
 - **EventLog / file log:** work directly from SYSTEM (no session dependency).

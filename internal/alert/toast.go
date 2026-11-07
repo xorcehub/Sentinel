@@ -9,21 +9,14 @@ import (
 	"git.sr.ht/~jackmordaunt/go-toast"
 	"git.sr.ht/~jackmordaunt/go-toast/tmpl"
 	"git.sr.ht/~jackmordaunt/go-toast/wintoast"
-	"github.com/gen2brain/beeep"
 
 	"sentinel/internal/event"
 )
 
 // toastAppID is the AppUserModelID under which all Sentinel toasts group in
-// Action Center. Set on beeep at package init so the silent suspicious-tier
-// toasts (beeep) and the loud critical-tier toasts (go-toast, via LoudToast)
-// share one app identity instead of fragmenting across beeep's "DefaultAppName"
-// and "Sentinel".
+// Action Center. Both tiers (SilentToast, LoudToast) push under it, so they
+// share one app identity.
 const toastAppID = "Sentinel"
-
-func init() {
-	beeep.AppName = toastAppID
-}
 
 // criticalNotification builds the toast config for a former-popup-tier
 // (critical) alert: a looping alarm sound, long on-screen duration, looped
@@ -48,8 +41,7 @@ func criticalNotification(title, body string) toast.Notification {
 // LoudToast fires a critical-tier toast (looping alarm). Best-effort: callers
 // (ToastAlerter, the relay) log and swallow the error — a critical hit always
 // also lands in ALERTS.log + Event Log, so a toast failure never drops the
-// audit trail. Uses go-toast directly because beeep hardcodes silent audio
-// (toastNotify(..., urgent=false) -> Audio=Silent), giving no way to be loud.
+// audit trail. Uses go-toast directly (no PowerShell fallback, see SilentToast).
 //
 // LOOP-SAFETY: bypasses go-toast's high-level Notification.Push() and calls
 // wintoast.Push(xml) with NO option, which disables the PowerShell fallback.
@@ -64,12 +56,43 @@ func criticalNotification(title, body string) toast.Notification {
 // feedback fix: a Sentinel alerter must never emit a child process whose
 // command line matches the very rules Sentinel enforces.
 func LoudToast(title, body string) error {
-	n := criticalNotification(title, body)
+	return pushNoFallback(criticalNotification(title, body))
+}
+
+// silentNotification builds the toast config for the suspicious tier (and for
+// criticals while the MessageBox is the attention-grabber): no sound, short
+// duration. Pure, like criticalNotification, so the policy is unit-testable.
+func silentNotification(title, body string) toast.Notification {
+	return toast.Notification{
+		AppID:    toastAppID,
+		Title:    title,
+		Body:     body,
+		Audio:    toast.Silent,
+		Duration: toast.Short,
+	}
+}
+
+// SilentToast fires a silent toast through the same no-fallback path as
+// LoudToast. It replaces beeep.Notify, which calls go-toast's Push() WITH the
+// PowerShell fallback. That fallback renders the toast XML unescaped
+// (text/template) into a DOUBLE-QUOTED PowerShell here-string (@" ... "@) and
+// runs it with -ExecutionPolicy Bypass. PowerShell expands $(...) inside such
+// a string, and Title/Body carry attacker-controlled Image/CmdLine text ('$',
+// '(' and ')' are legal in Windows file names) — so any COM failure turned an
+// alert into code execution in the alerting process. No toast path may ever
+// reach that fallback; a COM failure must only return an error.
+func SilentToast(title, body string) error {
+	return pushNoFallback(silentNotification(title, body))
+}
+
+// pushNoFallback renders n and pushes it via WinRT COM only. Zero wintoast
+// options => no PowerShell fallback (see SilentToast / LoudToast).
+func pushNoFallback(n toast.Notification) error {
 	// wintoast.Push needs the AppID registered (the high-level Notification.Push
 	// calls SetAppData before pushing). We bypass Push to disable the PowerShell
 	// fallback, so replicate the registration here. Cheap HKCU registry write;
 	// idempotent. ActivationExe/Icon left empty (no click-through / branding),
-	// which is fine for a loud fire-and-forget alert.
+	// which is fine for a fire-and-forget alert.
 	if err := toast.SetAppData(wintoast.AppData{AppID: n.AppID}); err != nil {
 		return fmt.Errorf("set toast app data: %w", err)
 	}
@@ -82,10 +105,9 @@ func LoudToast(title, body string) error {
 
 // ToastAlerter shows a best-effort Windows toast (05-ALERTING.md §4).
 //
-// Uses github.com/gen2brain/beeep, which wraps the Windows toast (WinRT)
-// notification API. Unlike the previous BurntToast implementation, this needs
-// NO PowerShell module — beeep calls the WinRT type accelerators that ship
-// built-in on Windows 10/11. Self-contained: works on a stock install.
+// Uses go-toast's WinRT COM binding directly (SilentToast / LoudToast), with
+// its PowerShell fallback disabled. Needs no PowerShell module; works on a
+// stock Windows 10/11 install.
 //
 // Two toast tiers, so an operator who disables MessageBox (-popup=false) still
 // gets an unmissable critical signal: with popup disabled, critical hits fire
@@ -93,10 +115,10 @@ func LoudToast(title, body string) error {
 // silent suspicious tier (which otherwise only lands in ALERTS.log). The loud
 // critical toast is the non-blocking REPLACEMENT for the gated-off popup, so
 // it fires only when popup is off (loud=true); with popup on (default) the
-// critical toast stays silent (beeep) as before — the popup is already the
+// critical toast stays silent (SilentToast) as before — the popup is already the
 // attention-grabber, and a loud alarm alongside a modal box would be a
 // redundant double-signal. "Best-effort" is operative: toast failure is
-// logged and never propagated. beeep.Notify returns an error on failure but
+// logged and never propagated. A failed push returns an error but
 // does NOT show a MessageBox fallback — this preserves our severity tiers
 // (suspicious must never pop a blocking box).
 //
@@ -132,7 +154,7 @@ func toastText(h event.Hit) (title, body string) {
 }
 
 // stripToastChars drops characters go-toast's WinRT COM XML binding can't render,
-// and neutralizes the CDATA terminator. Two breakers, both reachable from
+// and neutralizes the CDATA terminator. Three breakers, all reachable from
 // attacker-influenced event fields (Image/CmdLine):
 //
 //  1. Astral-plane (4-byte UTF-8) runes: go-toast fails XmlDocument.LoadXml
@@ -141,16 +163,22 @@ func toastText(h event.Hit) (title, body string) {
 //     CDATA (tmpl/xml.go.tmpl), and "]]>" terminates the CDATA section early,
 //     producing mismatched elements and the same LoadXml failure. Splitting it
 //     to "] ]>" keeps the text readable and the envelope sealed.
+//  3. Characters illegal in XML 1.0 (C0 controls other than tab/LF/CR, and
+//     U+FFFE/U+FFFF): LoadXml rejects them anywhere in the document, CDATA
+//     included. Dropped for the same reason as (1).
 //
-// Either breaker breaks COM and — for beeep, which keeps go-toast's PowerShell
-// fallback — triggers exactly the self-referential powershell-bypass-from-Temp
-// spawn that EXEC-001/PERSIST-001 match; LoudToast (no fallback) would silently
-// drop the critical toast instead. BMP chars (incl. em-dash) pass.
+// Any breaker makes the COM push fail, which (with no fallback) silently drops
+// the toast; the hit is still in ALERTS.log + Event Log. BMP chars (incl.
+// em-dash) pass.
+//
 // ponytail: only astral is dropped; if go-toast ever widens its char support,
 // remove that leg.
 func stripToastChars(s string) string {
 	return strings.ReplaceAll(strings.Map(func(r rune) rune {
-		if r > 0xFFFF {
+		if r > 0xFFFF || r == 0xFFFE || r == 0xFFFF {
+			return -1
+		}
+		if r < 0x20 && r != '\t' && r != '\n' && r != '\r' {
 			return -1
 		}
 		return r
@@ -160,7 +188,7 @@ func stripToastChars(s string) string {
 // Alert fires a toast. Critical hits get the loud looping-alarm treatment
 // (LoudToast) ONLY when loud is set (popup disabled) — so they stand out from
 // the silent suspicious tier as the "different notification level" for
-// former-popup-tier alerts. With popup still on, criticals use the silent beeep
+// former-popup-tier alerts. With popup still on, criticals use the silent
 // path (the MessageBox is the attention-grabber; a loud alarm too would be a
 // redundant double-signal). Errors are swallowed (best-effort): the dispatcher
 // must not fail an alert because the toast channel broke, and a critical hit is
@@ -171,7 +199,7 @@ func (t *ToastAlerter) Alert(h event.Hit) error {
 	if h.Severity == event.SevCritical && t.loud {
 		err = LoudToast(title, body)
 	} else {
-		err = beeep.Notify(title, body, "")
+		err = SilentToast(title, body)
 	}
 	if err != nil {
 		t.log.Debug("toast failed (best-effort)", "err", err,

@@ -44,7 +44,7 @@ func (p *PipeToastAlerter) Alert(h event.Hit) error {
 	// popup on, criticals must NOT trigger the relay's looping alarm — the WTS
 	// MessageBox is already the attention-grabber, and the two together would be
 	// a redundant double-signal. An empty severity makes the relay use the
-	// silent beeep path (the suspicious-tier contract), matching ToastAlerter.
+	// silent SilentToast path (the suspicious-tier contract), matching ToastAlerter.
 	severity := ""
 	if h.Severity == event.SevCritical && p.loud {
 		severity = string(h.Severity)
