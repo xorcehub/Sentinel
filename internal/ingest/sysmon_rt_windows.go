@@ -76,6 +76,8 @@ const (
 // defaultEIDs is the Sysmon EID set our rules use (03-RULES.md / 04-TELEMETRY §1).
 // 16 (Sysmon config change) is included: it's the event that says "your
 // telemetry rules just changed" — see rules.d/telemetry.yml TELEMETRY-001.
+// At most 23 IDs: -FilterHashtable silently returns nothing (exit 0) above
+// that (TestDefaultEIDsFitFilterHashtableLimit).
 var defaultEIDs = []int{1, 3, 7, 8, 10, 11, 12, 13, 16, 19, 20, 21, 22, 23, 25}
 
 // sysmonRT is the production (PowerShell poller) ingester.

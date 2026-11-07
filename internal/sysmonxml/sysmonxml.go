@@ -13,7 +13,6 @@
 package sysmonxml
 
 import (
-	"bytes"
 	"encoding/xml"
 	"fmt"
 	"strconv"
@@ -99,20 +98,27 @@ func Parse(raw []byte, src event.Source) (event.Event, error) {
 	return ev, nil
 }
 
-// SanitizeXML replaces everything encoding/xml would reject as a character
-// with U+FFFD, so one bad character can no longer discard a whole event:
+// SanitizeXML replaces everything encoding/xml would reject as a character,
+// so one bad character can no longer discard a whole event:
 //
 //   - raw characters outside the XML 1.0 Char production (C0 controls other
 //     than tab/LF/CR, U+FFFE, U+FFFF) and invalid UTF-8 bytes;
-//   - numeric character references to such characters (&#x1; / &#1;).
+//   - numeric character references to such characters (&#x1; / &#1;, any
+//     number of leading zeros).
 //
 // Why: a process can put e.g. U+0001 in its own command line. encoding/xml
 // fails the entire document on it ("illegal character code U+0001"), so the
 // event was dropped before any rule saw it — a one-byte detection bypass.
-// U+FFFD (not deletion) keeps the tampering visible in alerts and never glues
-// neighbouring tokens together into a new spelling. Everything else, including
-// valid character references and entity references, is left byte-identical.
-// Returns raw itself when nothing needs replacing (the common case).
+//
+// Replacement: vertical tab and form feed become a space, because they are
+// whitespace both to PowerShell's tokenizer (`iex\v(...)` runs) and to the
+// rules engine's whitespace fold (foldCmdLine); U+FFFD would glue the two
+// tokens into one and hide the spelling from token rules. Every other illegal
+// character becomes U+FFFD: deletion could glue neighbouring tokens into a new
+// spelling and would hide the tampering, while U+FFFD shows up in alerts.
+// Everything else, including valid character references and entity
+// references, is left byte-identical. Returns raw itself when nothing needs
+// replacing (the common case).
 func SanitizeXML(raw []byte) []byte {
 	if !needsSanitize(raw) {
 		return raw
@@ -121,9 +127,12 @@ func SanitizeXML(raw []byte) []byte {
 	for i := 0; i < len(raw); {
 		if raw[i] == '&' && i+2 < len(raw) && raw[i+1] == '#' {
 			if n, cp, ok := parseCharRef(raw[i:]); ok {
-				if isXMLChar(cp) {
+				switch {
+				case isXMLChar(cp):
 					out = append(out, raw[i:i+n]...)
-				} else {
+				case isFoldSpace(cp):
+					out = append(out, ' ')
+				default:
 					out = append(out, "&#xFFFD;"...)
 				}
 				i += n
@@ -131,14 +140,26 @@ func SanitizeXML(raw []byte) []byte {
 			}
 		}
 		r, size := utf8.DecodeRune(raw[i:])
-		if (r == utf8.RuneError && size <= 1) || !isXMLChar(r) {
+		switch {
+		case r == utf8.RuneError && size <= 1:
 			out = utf8.AppendRune(out, utf8.RuneError)
-		} else {
+		case isXMLChar(r):
 			out = append(out, raw[i:i+size]...)
+		case isFoldSpace(r):
+			out = append(out, ' ')
+		default:
+			out = utf8.AppendRune(out, utf8.RuneError)
 		}
 		i += size
 	}
 	return out
+}
+
+// isFoldSpace reports the XML-illegal characters that are whitespace to
+// PowerShell and to foldCmdLine (vertical tab, form feed). SanitizeXML maps
+// them to a space instead of U+FFFD.
+func isFoldSpace(r rune) bool {
+	return r == '\v' || r == '\f'
 }
 
 // needsSanitize is the allocation-free fast path: true when raw contains
@@ -172,27 +193,48 @@ func needsSanitize(raw []byte) bool {
 // parseCharRef parses a numeric character reference at the start of b
 // ("&#x1F;" or "&#31;"). Returns its byte length and code point; ok=false when
 // b does not start with a well-formed reference (left for encoding/xml to judge).
+//
+// No length cap: encoding/xml accepts any number of digits (e.g. leading
+// zeros, "&#00000000001;"), so a capped parser would hand such a reference to
+// an illegal character straight back to encoding/xml and the event would be
+// dropped. Values above utf8.MaxRune saturate and are reported as U+0000
+// (illegal, so the caller replaces them). Linear in the digit count.
 func parseCharRef(b []byte) (n int, cp rune, ok bool) {
-	end := bytes.IndexByte(b, ';')
-	if end < 3 || end > 12 { // "&#" + 1..10 digits/x+hex + ";"
-		return 0, 0, false
+	i, base := 2, uint64(10)
+	if i < len(b) && b[i] == 'x' {
+		i, base = i+1, 16
 	}
-	body := string(b[2:end])
-	base := 10
-	if body[0] == 'x' {
-		base, body = 16, body[1:]
+	start := i
+	var v uint64
+	for ; i < len(b); i++ {
+		d, isDigit := digitVal(b[i], base)
+		if !isDigit {
+			break
+		}
+		if v <= utf8.MaxRune {
+			v = v*base + d
+		}
 	}
-	if body == "" {
-		return 0, 0, false
-	}
-	v, err := strconv.ParseUint(body, base, 32)
-	if err != nil {
+	if i == start || i >= len(b) || b[i] != ';' {
 		return 0, 0, false
 	}
 	if v > utf8.MaxRune {
 		v = 0 // out of range: treat as illegal so it is replaced
 	}
-	return end + 1, rune(v), true
+	return i + 1, rune(v), true
+}
+
+// digitVal returns the value of c as a digit in base 10 or 16.
+func digitVal(c byte, base uint64) (uint64, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return uint64(c - '0'), true
+	case base == 16 && c >= 'a' && c <= 'f':
+		return uint64(c-'a') + 10, true
+	case base == 16 && c >= 'A' && c <= 'F':
+		return uint64(c-'A') + 10, true
+	}
+	return 0, false
 }
 
 // isXMLChar reports whether r is in the XML 1.0 Char production.

@@ -149,3 +149,17 @@ func TestIsSelfChildDisabledWhenEmpty(t *testing.T) {
 		t.Error("empty selfParents must not silence anything")
 	}
 }
+
+// maxFilterHashtableIDs is the most EventIDs Get-WinEvent -FilterHashtable
+// accepts. Measured on PowerShell 5.1 (2026-11-07): with 24+ IDs the query
+// returns NOTHING and powershell.exe still exits 0, so the poller would see an
+// empty channel forever with no error, no WARN and no CHANMAX line (so the
+// log-clear check cannot notice either). Splitting into several queries or
+// switching to -FilterXPath is required before growing the list past this.
+const maxFilterHashtableIDs = 23
+
+func TestDefaultEIDsFitFilterHashtableLimit(t *testing.T) {
+	if n := len(defaultEIDs); n > maxFilterHashtableIDs {
+		t.Fatalf("defaultEIDs has %d IDs; Get-WinEvent -FilterHashtable silently returns no events above %d", n, maxFilterHashtableIDs)
+	}
+}

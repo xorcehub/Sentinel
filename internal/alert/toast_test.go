@@ -1,10 +1,16 @@
 package alert
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"git.sr.ht/~jackmordaunt/go-toast"
+
+	"sentinel/internal/event"
 )
 
 // Regression: "]]>" in attacker-influenced event data must not survive into the
@@ -45,5 +51,24 @@ func TestSilentNotificationPolicy(t *testing.T) {
 	}
 	if n.Title != "T" || n.Body != "B" {
 		t.Fatalf("title/body not passed through: %+v", n)
+	}
+}
+
+// With no PowerShell fallback a COM failure drops the toast, so failures must
+// surface at WARN (default level) — but at most once per window, with the total.
+func TestToastFailureWarnsRateLimited(t *testing.T) {
+	var buf bytes.Buffer
+	ta := &ToastAlerter{log: slog.New(slog.NewTextHandler(&buf, nil))} // default level: INFO
+	h := event.Hit{RuleID: "EXEC-001"}
+	t0 := time.Now()
+	ta.noteFailure(errors.New("first"), h, t0)
+	ta.noteFailure(errors.New("second"), h, t0.Add(time.Second))                   // inside window: not at WARN
+	ta.noteFailure(errors.New("third"), h, t0.Add(toastFailWarnEvery+time.Second)) // window expired
+	out := buf.String()
+	if strings.Count(out, "level=WARN") != 2 || !strings.Contains(out, "first") || !strings.Contains(out, "third") || strings.Contains(out, "second") {
+		t.Fatalf("want WARN for first and third only, got:\n%s", out)
+	}
+	if !strings.Contains(out, "failed_total=3") {
+		t.Fatalf("running total missing:\n%s", out)
 	}
 }

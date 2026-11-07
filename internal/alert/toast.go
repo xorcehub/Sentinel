@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"git.sr.ht/~jackmordaunt/go-toast"
 	"git.sr.ht/~jackmordaunt/go-toast/tmpl"
@@ -118,7 +120,7 @@ func pushNoFallback(n toast.Notification) error {
 // critical toast stays silent (SilentToast) as before — the popup is already the
 // attention-grabber, and a loud alarm alongside a modal box would be a
 // redundant double-signal. "Best-effort" is operative: toast failure is
-// logged and never propagated. A failed push returns an error but
+// logged (WARN, rate limited; see noteFailure) and never propagated. A failed push returns an error but
 // does NOT show a MessageBox fallback — this preserves our severity tiers
 // (suspicious must never pop a blocking box).
 //
@@ -128,6 +130,38 @@ func pushNoFallback(n toast.Notification) error {
 type ToastAlerter struct {
 	log  *slog.Logger
 	loud bool // fire LoudToast for criticals — set when popup is disabled (-popup=false), making the loud toast the critical signal instead of the gated-off MessageBox
+
+	// Failure accounting for noteFailure. With no PowerShell fallback a COM
+	// failure drops the toast, so a persistently broken toast channel must be
+	// visible at the default log level, not only at debug.
+	mu           sync.Mutex
+	failed       uint64
+	lastFailWarn time.Time
+}
+
+// toastFailWarnEvery bounds the "toast failed" WARN to one line per window
+// (with the running total), so a broken toast channel under an alert burst
+// cannot flood the log.
+const toastFailWarnEvery = time.Minute
+
+// noteFailure counts a failed push and logs it: WARN at most once per
+// toastFailWarnEvery (with failed_total), DEBUG otherwise. now is injected so
+// tests control the clock.
+func (t *ToastAlerter) noteFailure(err error, h event.Hit, now time.Time) {
+	t.mu.Lock()
+	t.failed++
+	total := t.failed
+	warn := now.Sub(t.lastFailWarn) >= toastFailWarnEvery
+	if warn {
+		t.lastFailWarn = now
+	}
+	t.mu.Unlock()
+	args := []any{"err", err, "rule", h.RuleID, "critical", h.Severity == event.SevCritical, "failed_total", total}
+	if warn {
+		t.log.Warn("toast failed (dropped; hit is still in ALERTS.log + Event Log)", args...)
+		return
+	}
+	t.log.Debug("toast failed (best-effort)", args...)
 }
 
 // NewToastAlerter constructs the best-effort toast alerter. loud=true makes
@@ -202,8 +236,7 @@ func (t *ToastAlerter) Alert(h event.Hit) error {
 		err = SilentToast(title, body)
 	}
 	if err != nil {
-		t.log.Debug("toast failed (best-effort)", "err", err,
-			"rule", h.RuleID, "critical", h.Severity == event.SevCritical)
+		t.noteFailure(err, h, time.Now())
 	}
 	return nil
 }

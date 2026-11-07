@@ -31,6 +31,9 @@ func TestParseSurvivesXMLIllegalCharacters(t *testing.T) {
 		"ref &#xFFFE;":     base + "&#xFFFE;",
 		"ref out of range": base + "&#x110000;",
 		"ref zero":         base + "&#0;",
+		"ref zero-padded":  base + "&#00000000001;",
+		"ref hex padded":   base + "&#x0000000001;",
+		"ref huge":         base + "&#x123456789ABCDEF0123;",
 		"invalid utf8":     base + "\xff\xfe",
 		"raw U+FFFF":       base + "\uffff",
 	}
@@ -53,6 +56,28 @@ func TestParseSurvivesXMLIllegalCharacters(t *testing.T) {
 	}
 }
 
+// Vertical tab and form feed are whitespace to PowerShell's tokenizer and to
+// the rules engine's whitespace fold, so they become a space (not U+FFFD, which
+// would glue the two tokens together and hide them from token rules).
+func TestSanitizeXMLFoldsVTabFormFeedToSpace(t *testing.T) {
+	for name, cmd := range map[string]string{
+		"raw VT":     "powershell -ep\vbypass -c iex\v(x)",
+		"raw FF":     "powershell -ep\fbypass -c iex\f(x)",
+		"ref VT hex": "powershell -ep&#xb;bypass -c iex&#xB;(x)",
+		"ref FF dec": "powershell -ep&#12;bypass -c iex&#012;(x)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ev, err := Parse(eid1WithCmd(cmd), event.SrcSysmonRT)
+			if err != nil {
+				t.Fatalf("Parse rejected event: %v", err)
+			}
+			if ev.CmdLine != "powershell -ep bypass -c iex (x)" {
+				t.Fatalf("VT/FF not folded to a space: %q", ev.CmdLine)
+			}
+		})
+	}
+}
+
 // Legal input must pass through byte-identical (no allocation, same slice),
 // including valid character and entity references.
 func TestSanitizeXMLLeavesValidInputAlone(t *testing.T) {
@@ -66,8 +91,8 @@ func TestSanitizeXMLLeavesValidInputAlone(t *testing.T) {
 			t.Fatalf("valid input changed:\n in=%q\nout=%q", in, out)
 		}
 	}
-	ev, err := Parse(eid1WithCmd("a &#x41;&#66; b"), event.SrcSysmonRT)
-	if err != nil || ev.CmdLine != "a AB b" {
+	ev, err := Parse(eid1WithCmd("a &#x41;&#66;&#0000000000067;&#x0044; b"), event.SrcSysmonRT)
+	if err != nil || ev.CmdLine != "a ABCD b" {
 		t.Fatalf("valid char refs mangled: %q err=%v", ev.CmdLine, err)
 	}
 }
