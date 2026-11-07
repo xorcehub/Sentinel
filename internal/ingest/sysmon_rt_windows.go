@@ -87,6 +87,29 @@ type sysmonRT struct {
 	// Hash-gated (see selfParents) so an imposter dropped into our user-writable
 	// install dir is detected rather than silenced.
 	parents *selfParents
+
+	// dropped counts events the poller received but could not decode/parse.
+	// Each one is an event no rule saw, so it is surfaced at WARN (rate
+	// limited by dropWarnEvery) instead of being skipped silently.
+	dropped      uint64
+	lastDropWarn time.Time
+}
+
+// dropWarnEvery bounds the "event dropped" WARN to one line per window (with
+// the running total), so a flood of malformed records cannot flood the log.
+const dropWarnEvery = time.Minute
+
+// noteDropped records one undecodable event and logs at WARN at most once per
+// dropWarnEvery. Called only from the single poll goroutine (no locking).
+func (s *sysmonRT) noteDropped(err error) {
+	s.dropped++
+	now := time.Now()
+	if now.Sub(s.lastDropWarn) < dropWarnEvery {
+		return
+	}
+	s.lastDropWarn = now
+	s.log.Warn("sysmon event dropped: could not decode/parse (no rule saw it)",
+		"err", err, "dropped_total", s.dropped)
 }
 
 // NewSysmonRT constructs the default Sysmon ingester (PowerShell poller).
@@ -351,6 +374,8 @@ func (s *sysmonRT) poll(afterID int64) ([]event.Event, int64, error) {
 			ev, err = sysmonxml.Parse([]byte(xmlStr), event.SrcSysmonRT)
 		}()
 		if err != nil {
+			// A dropped event is a detection gap: never skip silently.
+			s.noteDropped(err)
 			continue
 		}
 		if int64(ev.RecordID) > maxID {

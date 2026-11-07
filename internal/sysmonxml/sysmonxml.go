@@ -13,11 +13,13 @@
 package sysmonxml
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"sentinel/internal/event"
 )
@@ -44,7 +46,7 @@ type dataItem struct {
 // resulting Event.Source (rt / sweep / etc.) — the XML carries no such notion.
 func Parse(raw []byte, src event.Source) (event.Event, error) {
 	var se sysmonEvent
-	if err := xml.Unmarshal(raw, &se); err != nil {
+	if err := xml.Unmarshal(SanitizeXML(raw), &se); err != nil {
 		return event.Event{}, fmt.Errorf("sysmonxml parse: %w", err)
 	}
 	m := make(map[string]string, len(se.Data))
@@ -95,6 +97,110 @@ func Parse(raw []byte, src event.Source) (event.Event, error) {
 	}
 	ev.Hashes = parseHashes(m["Hashes"])
 	return ev, nil
+}
+
+// SanitizeXML replaces everything encoding/xml would reject as a character
+// with U+FFFD, so one bad character can no longer discard a whole event:
+//
+//   - raw characters outside the XML 1.0 Char production (C0 controls other
+//     than tab/LF/CR, U+FFFE, U+FFFF) and invalid UTF-8 bytes;
+//   - numeric character references to such characters (&#x1; / &#1;).
+//
+// Why: a process can put e.g. U+0001 in its own command line. encoding/xml
+// fails the entire document on it ("illegal character code U+0001"), so the
+// event was dropped before any rule saw it — a one-byte detection bypass.
+// U+FFFD (not deletion) keeps the tampering visible in alerts and never glues
+// neighbouring tokens together into a new spelling. Everything else, including
+// valid character references and entity references, is left byte-identical.
+// Returns raw itself when nothing needs replacing (the common case).
+func SanitizeXML(raw []byte) []byte {
+	if !needsSanitize(raw) {
+		return raw
+	}
+	out := make([]byte, 0, len(raw)+16)
+	for i := 0; i < len(raw); {
+		if raw[i] == '&' && i+2 < len(raw) && raw[i+1] == '#' {
+			if n, cp, ok := parseCharRef(raw[i:]); ok {
+				if isXMLChar(cp) {
+					out = append(out, raw[i:i+n]...)
+				} else {
+					out = append(out, "&#xFFFD;"...)
+				}
+				i += n
+				continue
+			}
+		}
+		r, size := utf8.DecodeRune(raw[i:])
+		if (r == utf8.RuneError && size <= 1) || !isXMLChar(r) {
+			out = utf8.AppendRune(out, utf8.RuneError)
+		} else {
+			out = append(out, raw[i:i+size]...)
+		}
+		i += size
+	}
+	return out
+}
+
+// needsSanitize is the allocation-free fast path: true when raw contains
+// invalid UTF-8, a raw non-XML character, or a numeric character reference
+// (which must be inspected).
+func needsSanitize(raw []byte) bool {
+	if !utf8.Valid(raw) {
+		return true
+	}
+	for i := 0; i < len(raw); {
+		c := raw[i]
+		if c < utf8.RuneSelf {
+			if c < 0x20 && c != '\t' && c != '\n' && c != '\r' {
+				return true
+			}
+			if c == '&' && i+1 < len(raw) && raw[i+1] == '#' {
+				return true
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRune(raw[i:])
+		if !isXMLChar(r) {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
+// parseCharRef parses a numeric character reference at the start of b
+// ("&#x1F;" or "&#31;"). Returns its byte length and code point; ok=false when
+// b does not start with a well-formed reference (left for encoding/xml to judge).
+func parseCharRef(b []byte) (n int, cp rune, ok bool) {
+	end := bytes.IndexByte(b, ';')
+	if end < 3 || end > 12 { // "&#" + 1..10 digits/x+hex + ";"
+		return 0, 0, false
+	}
+	body := string(b[2:end])
+	base := 10
+	if body[0] == 'x' {
+		base, body = 16, body[1:]
+	}
+	if body == "" {
+		return 0, 0, false
+	}
+	v, err := strconv.ParseUint(body, base, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	if v > utf8.MaxRune {
+		v = 0 // out of range: treat as illegal so it is replaced
+	}
+	return end + 1, rune(v), true
+}
+
+// isXMLChar reports whether r is in the XML 1.0 Char production.
+func isXMLChar(r rune) bool {
+	return r == 0x09 || r == 0x0A || r == 0x0D ||
+		(r >= 0x20 && r <= 0xD7FF) ||
+		(r >= 0xE000 && r <= 0xFFFD) ||
+		(r >= 0x10000 && r <= utf8.MaxRune)
 }
 
 // parseTime prefers the SystemTime attr (RFC3339-ish), falls back to Sysmon's
