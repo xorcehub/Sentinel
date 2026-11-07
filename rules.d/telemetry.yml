@@ -17,19 +17,26 @@ x-sentinel:
   alert: [toast, log, eventlog]
   note: "Fires on every legitimate `sysmon64 -c <config>` update too — severity stays suspicious (not critical) for that reason. Realistic value is catching ACCIDENTS (bad script overwrites config) + forensic record of when/what changed; deliberate tampering requires admin = out of scope per THREAT-MODEL."
 ---
-title: Sysmon log cleared or channel recreated (RecordId rewound)
+title: Sysmon log cleared (System EID 104) or channel RecordIds rewound
 id: 3c9b2e71-5d0a-4f8e-9b16-7a4e2d81c5f0
 status: experimental
 logsource: { product: sentinel-telemetry }
 detection:
   selection:
     Source: sentinel
-    Details|startswith: 'sysmon-recordid-rewound'
+    Details|startswith:
+      - 'sysmon-log-cleared'
+      - 'sysmon-recordid-rewound'
   condition: selection
 level: critical
 tags: [attack.defense_evasion, attack.t1070.001]
 x-sentinel:
   id: TELEMETRY-002
   severity: critical
-  dedup: 1m
-  note: "Synthetic event from the Sysmon poller (internal/ingest/sysmon_rt_windows.go): the channel's newest RecordId fell below the high-water already consumed, i.e. the Sysmon Operational log was cleared (wevtutil cl / Clear-EventLog, a classic anti-forensics step) or the channel was recreated (Sysmon reinstall). The poller resets its high-water and keeps ingesting, so detection recovers on its own; this alert records that the history before the clear is gone. Events written between the clear and the next poll are still read."
+  # Details carries the System RecordId of the clear (or the rewind numbers),
+  # so each clear is its own dedup key. 25h > the poller's 24h look-back: a
+  # daemon restart re-reads recent clears, and the persisted dedup keeps an
+  # already-alerted clear from firing again.
+  target_key: "{{.ID}}|{{.Details}}"
+  dedup: 25h
+  note: "Synthetic events from the Sysmon poller (internal/ingest/logclear.go, sysmon_rt_windows.go). Main signal: System log EID 104 (Microsoft-Windows-Eventlog, 'log file was cleared') naming the Sysmon channel, i.e. wevtutil cl / Clear-EventLog / Event Viewer 'Clear Log' on Microsoft-Windows-Sysmon/Operational, a classic anti-forensics step. Details names the clearing account and the backup path. Read with a 24h look-back, so clears made while Sentinel was stopped also alert at the next start. A clear does NOT restart RecordIds (measured 2026-11-07), so ingestion is unaffected; history before the clear is gone from the live log (only in the backup file, if one was made). Fallback signal: the channel's newest RecordId fell below the consumed high-water (channel recreated); the poller then resets and re-reads."

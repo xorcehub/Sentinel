@@ -120,7 +120,10 @@ var vectorCases = []vectorCase{
 	// --- G. Telemetry integrity (docs/hardening-plan_2308.md H2) ---
 	{"TELEMETRY-001", "Sysmon config changed (EID 16): fires on legit -c updates too, hence suspicious",
 		event.Event{EID: 16, Image: `C:\Windows\Sysmon64.exe`}, event.SevSuspicious},
-	{"TELEMETRY-002", "wevtutil cl Microsoft-Windows-Sysmon/Operational: poller sees RecordIds rewind and emits the synthetic sentinel event",
+	{"TELEMETRY-002", "wevtutil cl Microsoft-Windows-Sysmon/Operational: System EID 104 names the channel, poller emits the synthetic sentinel event",
+		event.Event{Source: event.SrcSentinel, Image: "Microsoft-Windows-Sysmon/Operational", User: `DESKTOP-TEST\jurij`,
+			Details: event.DetailsSysmonCleared + ` channel=Microsoft-Windows-Sysmon/Operational cleared_at=2026-11-07T23:02:40+01:00 by=DESKTOP-TEST\jurij client_pid=20496 backup=C:\SysmonBackup\sysmon.evtx system_record_id=76219`}, event.SevCritical},
+	{"TELEMETRY-002", "Sysmon channel recreated: poller sees RecordIds rewind and emits the synthetic sentinel event",
 		event.Event{Source: event.SrcSentinel, Image: "Microsoft-Windows-Sysmon/Operational",
 			Details: event.DetailsSysmonRewound + " channel=Microsoft-Windows-Sysmon/Operational newest_record_id=12 previous_high_water=884213"}, event.SevCritical},
 }

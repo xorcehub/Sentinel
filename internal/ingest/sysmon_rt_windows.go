@@ -13,12 +13,18 @@
 //     Get-WinEvent -FilterHashtable @{LogName=<ch>; ID=<eids>} -MaxEvents 2000
 //     -ErrorAction SilentlyContinue
 //     | Where-Object { $_.RecordId -gt <highWater> }
-//     | ForEach-Object { base64(UTF16LE($_.ToXml())) }
+//     | ForEach-Object { base64(UTF16LE($_.ToXml())) }   (or "TOXMLFAIL:<id>")
 //  2. For each base64 line: decode -> UTF-16LE bytes -> decodeUTF16LE -> sysmonxml.Parse.
 //  3. Advance highWater to the max RecordId seen so the next poll is incremental.
 //  4. The script also prints "CHANMAX:<newest RecordId>". If that is BELOW
-//     highWater the log was cleared / recreated: emit the synthetic event
-//     TELEMETRY-002 matches, reset highWater and re-read (pollAndEmit).
+//     highWater the channel's ids went backwards (e.g. channel recreated):
+//     emit the synthetic event TELEMETRY-002 matches, reset highWater and
+//     re-read (pollAndEmit).
+//  5. Every clearCheckEvery polls the script also prints System log EID 104
+//     records ("log file was cleared") from the last 24h as
+//     "LOGCLEARED:<base64>"; one naming our channel raises TELEMETRY-002
+//     (logclear.go). A clear does NOT restart RecordIds, so step 4 alone
+//     never sees one.
 //
 // maxPerPoll (default 2000) must exceed the worst-case per-interval event count.
 // Cursor peaks at ~100 events/sec, so 2000 covers ~20s of burst — well beyond
@@ -98,6 +104,11 @@ type sysmonRT struct {
 	// limited by dropWarnEvery) instead of being skipped silently.
 	dropped      uint64
 	lastDropWarn time.Time
+
+	// polls counts pollAndEmit calls; every clearCheckEvery-th one (starting
+	// with the first) also queries System EID 104 for Sysmon log clears.
+	polls  uint64
+	clears clearTracker
 }
 
 // dropWarnEvery bounds the "event dropped" WARN to one line per window (with
@@ -270,16 +281,30 @@ func (s *sysmonRT) pollLoop(ctx context.Context, out chan<- event.Event) {
 }
 
 func (s *sysmonRT) pollAndEmit(ctx context.Context, highWater *int64, out chan<- event.Event) {
-	events, newMax, chanMax, err := s.poll(*highWater)
+	checkClears := s.polls%clearCheckEvery == 0
+	s.polls++
+	events, newMax, chanMax, clears, err := s.poll(*highWater, checkClears)
 	if err != nil {
 		s.log.Warn("poll failed", "err", err)
 		return
 	}
-	// Log-clear / channel-recreate recovery. RecordIds restart at 1 after
-	// `wevtutil cl` (or a Sysmon reinstall), so the high-water filter would
-	// drop every new event forever — the daemon stays blind until restart and
-	// HEALTH-001 fires only once. Detect the rewind, raise TELEMETRY-002 via a
-	// synthetic event, reset the high-water and re-read the new log at once.
+	// Sysmon log cleared (System EID 104), including clears from while the
+	// daemon was down (24h look-back). Each clear is emitted once per run.
+	for _, lc := range s.clears.fresh(clears, s.channel, time.Now()) {
+		s.log.Warn("sysmon log was cleared (System log EID 104)",
+			"channel", lc.Channel, "by", lc.User, "cleared_at", lc.Time.Local(),
+			"backup", lc.Backup, "client_pid", lc.ClientPID, "system_record_id", lc.RecordID)
+		select {
+		case <-ctx.Done():
+			return
+		case out <- logClearedEvent(lc):
+		}
+	}
+	// RecordId rewind recovery. A plain log clear does NOT restart RecordIds
+	// (measured; the EID 104 path above catches clears), but if the channel's
+	// ids ever do go backwards (e.g. channel recreated) the high-water filter
+	// would drop every new event until restart. Detect it, raise TELEMETRY-002
+	// via a synthetic event, reset the high-water and re-read at once.
 	if recordIDsRewound(chanMax, *highWater) {
 		s.log.Warn("sysmon channel RecordId rewound (log cleared or channel recreated); resetting high-water and re-reading",
 			"channel", s.channel, "channel_max", chanMax, "high_water", *highWater)
@@ -290,7 +315,7 @@ func (s *sysmonRT) pollAndEmit(ctx context.Context, highWater *int64, out chan<-
 		case out <- rewind:
 		}
 		*highWater = -1
-		events, newMax, _, err = s.poll(*highWater)
+		events, newMax, _, _, err = s.poll(*highWater, false)
 		if err != nil {
 			s.log.Warn("poll failed (after rewind)", "err", err)
 			return
@@ -346,15 +371,11 @@ func (s *sysmonRT) isSelfChild(ev event.Event) bool {
 // chanMax is the newest RecordId currently in the channel (for the EID filter),
 // independent of afterID, or -1 when the channel returned nothing. It is what
 // lets pollAndEmit notice a log clear (see recordIDsRewound).
-func (s *sysmonRT) poll(afterID int64) (events []event.Event, maxID, chanMax int64, err error) {
-	script := fmt.Sprintf(
-		`$ErrorActionPreference='SilentlyContinue'; `+
-			`$all = @(Get-WinEvent -FilterHashtable @{LogName='%s'; ID=%s} -MaxEvents %d); `+
-			`if ($all.Count -gt 0) { '%s' + $all[0].RecordId }; `+
-			`$all | Where-Object { $_.RecordId -gt %d } | `+
-			`ForEach-Object { try { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_.ToXml())) } catch {} }`,
-		s.channel, eidList(s.eids), s.maxPerPoll, chanMaxPrefix, afterID,
-	)
+//
+// clears holds the System EID 104 records the script printed (only when
+// checkClears is set).
+func (s *sysmonRT) poll(afterID int64, checkClears bool) (events []event.Event, maxID, chanMax int64, clears []logClear, err error) {
+	script := s.pollScript(afterID, checkClears)
 	chanMax = -1
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 	var stdout, stderr bytes.Buffer
@@ -376,6 +397,26 @@ func (s *sysmonRT) poll(afterID int64) (events []event.Event, maxID, chanMax int
 		// The channel-max marker line (see the script) is not an event.
 		if id, ok := parseChanMax(line); ok {
 			chanMax = id
+			continue
+		}
+		// A System EID 104 "log file was cleared" record (see logclear.go).
+		if b64, ok := strings.CutPrefix(line, logClearedPrefix); ok {
+			if lc, cerr := decodeLogCleared(b64); cerr != nil {
+				s.log.Warn("could not decode System EID 104 (log cleared) record", "err", cerr)
+			} else {
+				clears = append(clears, lc)
+			}
+			continue
+		}
+		// A record whose ToXml() threw in PowerShell: no XML to parse, but it
+		// is still an event no rule saw, so count it like any other drop.
+		// Its RecordId advances maxID so the next poll does not fetch (and
+		// count) the same broken record again.
+		if id, ok := parseMarker(line, toXMLFailPrefix); ok {
+			s.noteDropped(fmt.Errorf("ToXml failed in PowerShell for RecordId %d", id))
+			if id > maxID {
+				maxID = id
+			}
 			continue
 		}
 		// Per-line recover: a panic in base64 decode, UTF-16 decode, or
@@ -434,13 +475,13 @@ func (s *sysmonRT) poll(afterID int64) (events []event.Event, maxID, chanMax int
 	// channel, there were just no NEW events. That is exactly the state right
 	// after a log clear (every record is below the high-water), so it must
 	// reach pollAndEmit's rewind check instead of being reported as a failure.
-	if runErr != nil && len(events) == 0 && chanMax < 0 {
+	if runErr != nil && len(events) == 0 && chanMax < 0 && len(clears) == 0 {
 		// Genuinely broken: nonzero exit AND no usable output. Include raw
 		// stdout byte/line count so we can distinguish "powershell produced
 		// nothing" (pipe/cmdlet failure) from "produced lines we couldn't
 		// parse" (XML/base64 failure on specific events).
 		rawLines := len(strings.Split(strings.TrimSpace(stdout.String()), "\n"))
-		return nil, 0, -1, fmt.Errorf("powershell: %w (stderr: %s; stdout %d bytes/%d lines)",
+		return nil, 0, -1, nil, fmt.Errorf("powershell: %w (stderr: %s; stdout %d bytes/%d lines)",
 			runErr, strings.TrimSpace(stderr.String()), stdout.Len(), rawLines)
 	}
 	if runErr != nil {
@@ -449,16 +490,64 @@ func (s *sysmonRT) poll(afterID int64) (events []event.Event, maxID, chanMax int
 		s.log.Debug("powershell exited nonzero but produced output; ignoring exit code",
 			"exit_err", runErr, "events", len(events), "channel_max", chanMax)
 	}
-	return events, maxID, chanMax, nil
+	return events, maxID, chanMax, clears, nil
+}
+
+// decodeLogCleared decodes one LOGCLEARED payload: base64 of the UTF-16LE
+// ToXml() of a System EID 104 record.
+func decodeLogCleared(b64 string) (logClear, error) {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return logClear{}, err
+	}
+	x, err := decodeUTF16LE(raw)
+	if err != nil {
+		return logClear{}, err
+	}
+	return parseLogCleared([]byte(x))
+}
+
+// pollScript is the PowerShell one-liner poll runs: newest maxPerPoll records
+// for the EID set, a CHANMAX marker, then one base64 line per record newer
+// than afterID (or a TOXMLFAIL marker when ToXml throws). With checkClears it
+// first prints System EID 104 records from the last clearLookback as
+// LOGCLEARED lines.
+func (s *sysmonRT) pollScript(afterID int64, checkClears bool) string {
+	clearQuery := ""
+	if checkClears {
+		// Single-quoted XPath with doubled inner quotes: the whole script is
+		// one -Command argument, so no double quotes are used anywhere.
+		clearQuery = fmt.Sprintf(
+			`@(Get-WinEvent -LogName System -MaxEvents 50 -FilterXPath '*[System[Provider[@Name=''Microsoft-Windows-Eventlog''] and EventID=104 and TimeCreated[timediff(@SystemTime) <= %d]]]') | `+
+				`ForEach-Object { try { '%s' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_.ToXml())) } catch {} }; `,
+			clearLookback.Milliseconds(), logClearedPrefix)
+	}
+	return `$ErrorActionPreference='SilentlyContinue'; ` + clearQuery + fmt.Sprintf(
+		`$all = @(Get-WinEvent -FilterHashtable @{LogName='%s'; ID=%s} -MaxEvents %d); `+
+			`if ($all.Count -gt 0) { '%s' + $all[0].RecordId }; `+
+			`$all | Where-Object { $_.RecordId -gt %d } | `+
+			`ForEach-Object { $r = $_; try { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($r.ToXml())) } catch { '%s' + $r.RecordId } }`,
+		s.channel, eidList(s.eids), s.maxPerPoll, chanMaxPrefix, afterID, toXMLFailPrefix,
+	)
 }
 
 // chanMaxPrefix marks the poll script's "newest RecordId in the channel" line.
 // ':' is not in the base64 alphabet, so it can never collide with an event line.
 const chanMaxPrefix = "CHANMAX:"
 
+// toXMLFailPrefix marks a record whose $_.ToXml() threw inside the poll
+// script (the catch block prints it with the RecordId). Like chanMaxPrefix,
+// ':' keeps it out of the base64 alphabet.
+const toXMLFailPrefix = "TOXMLFAIL:"
+
 // parseChanMax recognizes the channel-max marker line.
 func parseChanMax(line string) (int64, bool) {
-	rest, ok := strings.CutPrefix(line, chanMaxPrefix)
+	return parseMarker(line, chanMaxPrefix)
+}
+
+// parseMarker parses a "<prefix><non-negative RecordId>" marker line.
+func parseMarker(line, prefix string) (int64, bool) {
+	rest, ok := strings.CutPrefix(line, prefix)
 	if !ok {
 		return 0, false
 	}

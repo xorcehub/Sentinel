@@ -34,6 +34,11 @@ const (
 // (log cleared / channel recreated). Matched by TELEMETRY-002.
 const DetailsSysmonRewound = "sysmon-recordid-rewound"
 
+// DetailsSysmonCleared is the Details prefix of the synthetic SrcSentinel
+// event raised for a System log EID 104 ("log file was cleared") that names
+// the Sysmon channel. Matched by TELEMETRY-002.
+const DetailsSysmonCleared = "sysmon-log-cleared"
+
 type Severity string
 
 const (

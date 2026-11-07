@@ -50,8 +50,11 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
   critical `HEALTH-001` hit per stale episode
   and flags `sysmon=STALE` in the heartbeat — a dead feed can no longer look
   like a quiet machine. Sysmon config changes (EID 16) raise `TELEMETRY-001`;
-  a cleared or recreated Sysmon log (RecordIds rewind) raises critical
-  `TELEMETRY-002` and the poller resets its high-water and keeps ingesting.
+  clearing the Sysmon log raises critical `TELEMETRY-002` (from System log
+  EID 104, which names the channel, the account and the backup path; read
+  with a 24h look-back, so a clear made while Sentinel was stopped alerts at
+  the next start). A recreated channel whose RecordIds go backwards raises
+  it too, and the poller resets its high-water and keeps ingesting.
 - On a hit, fans out to four alert channels: **popup, toast, Windows Event
   Log, and `ALERTS.log`**. Every severity toasts except `info` (log-only by
   default) — suspicious silently, no banner sound. A rule's own `alert:` list
