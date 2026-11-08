@@ -1,12 +1,12 @@
 package rules
 
 import (
-	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
 	"sentinel/internal/allowlist"
+	"sentinel/internal/catalog"
 	"sentinel/internal/event"
 	"sentinel/internal/sigmaeval"
 )
@@ -33,28 +33,11 @@ func repoRoot(t *testing.T) string {
 func loadRealCatalog(t *testing.T) []*sigmaeval.Rule {
 	t.Helper()
 	dir := filepath.Join(repoRoot(t), "rules.d")
-	entries, err := os.ReadDir(dir)
+	// Tuned box = shipped catalog + the worked-example overlays
+	// (rules.d/local.example/), paired with allowlist.json.example below.
+	concat, _, err := catalog.Read(dir, filepath.Join(dir, catalog.ExampleDir))
 	if err != nil {
-		t.Skipf("rules.d not present (%v); skipping real-catalog regression", err)
-	}
-	var concat []byte
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		ext := filepath.Ext(e.Name())
-		if ext != ".yml" && ext != ".yaml" {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		concat = append(concat, b...)
-		if len(b) > 0 && b[len(b)-1] != '\n' {
-			concat = append(concat, '\n')
-		}
-		concat = append(concat, "---\n"...)
+		t.Skipf("rules.d not present (%v)", err)
 	}
 	rs, err := sigmaeval.Load(concat)
 	if err != nil {

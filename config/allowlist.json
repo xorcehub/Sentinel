@@ -6,9 +6,9 @@
   // How to tune for YOUR machine:
   //
   //   1. config/allowlist.json.local (gitignored) — copy from
-  //      config/allowlist.json.example, prune for your box. install-task.ps1
-  //      auto-detects the file and registers the task with -allowlist for it.
-  //      Manual daemon runs: pass -allowlist config\allowlist.json.local.
+  //      config/allowlist.json.example, prune for your box. The daemon uses
+  //      it automatically whenever it exists and no -allowlist flag is given
+  //      (same as rule overlays in rules.d/local/).
   //   2. Fork-style: edit THIS file directly if you maintain your own fork
   //      (git will show it modified; upstream keeps it empty).
   //

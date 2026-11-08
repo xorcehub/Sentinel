@@ -74,101 +74,7 @@ detection:
       - 'WriteProcessMemory'
       - 'amsi.dll'
       - 'AmsiUtils'
-  filter_cursor_agent:
-    # Cursor IDE's agent shell bridge: cursor.exe writes <Temp>\ps-script-<GUID>.ps1
-    # and immediately runs `powershell -ExecutionPolicy Bypass -NonInteractive
-    # -File <that path>` (then deletes it; file_capture.patterns snapshots it first,
-    # so suppressed launches stay forensically inspectable in the vault). This
-    # shape was the single largest recurring noise source (~33 EXEC-001 + ~33
-    # PERSIST-001 alerts / 2wk; the Aug-10 self-test storm reuses it too but is
-    # sentinel-tray-parented and stays armed). Suppression requires ALL of:
-    # the AppData install-path parent (a directory merely NAMED cursor no
-    # longer qualifies), the cmdline left-anchored at the powershell.exe
-    # token with the exact flag sequence (any prefix arg re-arms), and a
-    # GUID-named ps-script under the USER's AppData\Local\Temp with
-    # nothing after it (any trailing arg, non-GUID name, or a Temp dir
-    # elsewhere re-arms). Residual, deliberately kept and pinned by
-    # TestCursorPathMimicResidualIsBounded: a binary planted AT the real
-    # install path (path-only parent trust - EID 1 carries no parent SHA256
-    # for Tier-2 gating) running this exact shape is quiet for THIS rule,
-    # while its follow-on behavior (NET-002/005, PERSIST-003/004, CRED,
-    # INJECT) still fires and file_capture snapshots the script.
-    # 2026-09-02 redteam: these anchors were SUFFIX-only ($ end-anchored, no
-    # start anchor), so ANY tree ending in the install path (repo subfolder,
-    # USB, D:\stuff\appdata\) got the same trust - live-confirmed quiet.
-    # Both sides now require a real ^<drive>:\users\<profile> prefix.
-    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\cursor\\(?:_\\)?cursor\.exe$'
-    CommandLine|re: '(?i)^\s*"?[^\s"]*powershell\.exe"?\s+-ExecutionPolicy Bypass -NonInteractive -File "?c:\\users\\[^\\]+\\AppData\\Local\\Temp\\ps-script-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ps1"?\s*$'
-  filter_python_sigverify:
-    # python-parented `powershell -NoProfile -EncodedCommand <b64>` whose
-    # payload verifiably decodes to `Get-AuthenticodeSignature -LiteralPath @('`
-    # — the operator's tier-2 signer-discovery helper (internal/sigverify
-    # discovery via python tooling; 6 EXEC-001 hits 09-03→09-08, all parented
-    # by appdata\local\programs\python\pythonNNN\python.exe). Same form as
-    # filter_cursor_agent (451bce4): parent anchored to the real per-profile
-    # python install path, cmdline left-anchored at the powershell token with
-    # the exact flag pair. The 112-char base64 anchor is the UTF-16LE encoding
-    # of exactly 'Get-AuthenticodeSignature -LiteralPath @(' (84 bytes = 28x3,
-    # a base64 block boundary), so the prefix is FULLY determined by that
-    # fixed, benign, read-only plaintext and independent of the file list
-    # that follows (decoded + re-encoded with a tool, not guessed). Any other
-    # encoded payload produces a different prefix and stays armed; any parent
-    # outside the python install path stays armed.
-    # RESIDUAL (irreducible at the regex layer; probe redteam/2026-09-22/
-    # sigverify_filter_probe.py): the cmdline after the anchor is MORE BASE64
-    # (encoded continuation, not decoded text), so a trailing '; IEX(...)' in
-    # the DECODED payload is invisible here — no end-anchor or tail charset can
-    # separate the benign file list from a smuggled statement (char-class fix
-    # candidate DISPROVEN by the probe; both tails are [A-Za-z0-9+/=]). Accepted
-    # because the gate is the PARENT: exploiting it requires spawning this shape
-    # from the real per-profile python.exe (code exec under that path or PPID
-    # spoof), and any child/persistence/network action still fires downstream
-    # rules. Pinned as expected-quiet in TestPythonSigverifyEncodedQuiet.
-    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\python\\python[0-9]+\\python\.exe$'
-    CommandLine|re: '(?i)^\s*"?[^\s"]*powershell(\.exe)?"?\s+-noprofile\s+-encodedcommand\s+RwBlAHQALQBBAHUAdABoAGUAbgB0AGkAYwBvAGQAZQBTAGkAZwBuAGEAdAB1AHIAZQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAQAAoACcA'
-  filter_claude_launcher_cmd:
-    # Claude Code CLI shell launcher, outer layer (2026-11 tuning: 49 EXEC-001
-    # + 49 PERSIST-001 in 10-07 -> 11-07, the largest EXEC-001 source). Every
-    # PowerShell tool call of the CLI spawns
-    #   cmd /d /s /c ""chcp.com" 65001 >nul & "powershell.exe" -NoProfile
-    #   -NonInteractive -ExecutionPolicy Bypass -Command "<fixed IEX of
-    #   $env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT>" > "<Temp>\claude\<hex>\<guid>\tasks\<id>.output" 2>&1"
-    # (captured live from the running process tree; foreground and background
-    # calls both carry the redirect). The cmdline is a FIXED string: the
-    # script itself travels in the env var, so the only variable part is the
-    # redirect target, pinned to hex / GUID / alnum components (no space, no
-    # '&', no quote = no room for a second command). Requires ALL of: the real
-    # system32 cmd.exe image, the per-profile ~\.local\bin\claude.exe parent
-    # (start-anchored, same doctrine as filter_cursor_agent), the exact string
-    # end-anchored. Same accepted residual class as the cursor bridge: a binary
-    # planted AT ~\.local\bin\claude.exe running this exact shape is quiet
-    # here (EID 1 has no parent hash for Tier-2 gating); anything that script
-    # then does (child processes, network, persistence, cred access) still
-    # fires its own rules. The same cmd spawned by any OTHER parent fires.
-    Image|re: '(?i)^c:\\windows\\system32\\cmd\.exe$'
-    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\\.local\\bin\\claude\.exe$'
-    CommandLine|re: '(?i)^c:\\windows\\system32\\cmd\.exe /d /s /c ""c:\\windows\\system32\\chcp\.com" 65001 >nul & "c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$__claudeCodeScript = \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = \$null; Invoke-Expression -Command \$__claudeCodeScript" > "c:\\users\\[^\\" ]+\\appdata\\local\\temp\\claude\\[0-9a-f]+\\[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\tasks\\[a-z0-9]+\.output" 2>&1"$'
-  filter_claude_launcher_ps:
-    # Claude Code CLI shell launcher, inner layer (14 EXEC-001 in the same
-    # window): the powershell.exe the launcher cmd above starts. Its parent is
-    # cmd.exe, not claude.exe, so it is gated on the PARENT CMDLINE being the
-    # exact launcher string instead. Chain logic: if anything other than the
-    # real claude.exe path spawns that cmd, the cmd layer itself fires
-    # EXEC-001, so every non-Claude chain still raises one alert. Payload-less
-    # by construction (end-anchored fixed string, script in the env var).
-    Image|re: '(?i)^c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe$'
-    ParentImage|re: '(?i)^c:\\windows\\system32\\cmd\.exe$'
-    ParentCommandLine|re: '(?i)^c:\\windows\\system32\\cmd\.exe /d /s /c ""c:\\windows\\system32\\chcp\.com" 65001 >nul & "c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$__claudeCodeScript = \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = \$null; Invoke-Expression -Command \$__claudeCodeScript" > "c:\\users\\[^\\" ]+\\appdata\\local\\temp\\claude\\[0-9a-f]+\\[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\tasks\\[a-z0-9]+\.output" 2>&1"$'
-    CommandLine|re: '(?i)^"c:\\windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$__claudeCodeScript = \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT; \$env:CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT = \$null; Invoke-Expression -Command \$__claudeCodeScript"$'
-  filter_untrusted_profile_tree:
-    # 2026-09-02 review: \users\public (WORLD-WRITABLE), \default
-    # and \all users are not per-user profiles - a plant there must not
-    # inherit bridge trust. RE2 has no lookahead, so this is a separate
-    # filter the condition ANDs into the trust decision. ParentImage is
-    # pathnorm'd (resolved) - Win32 trailing-dot spellings do not survive.
-    # Guard shared by filter_cursor_agent AND filter_python_sigverify.
-    ParentImage|startswith: ['c:\users\public\', 'c:\users\default\', 'c:\users\all users\']
-  condition: selection_cli and (selection_image or selection_broker) and not (filter_cursor_agent and not filter_untrusted_profile_tree) and not (filter_python_sigverify and not filter_untrusted_profile_tree) and not (filter_claude_launcher_cmd and not filter_untrusted_profile_tree) and not filter_claude_launcher_ps
+  condition: selection_cli and (selection_image or selection_broker)
 level: high
 tags: [attack.execution, attack.t1059.001, attack.defense_evasion]
 x-sentinel:
@@ -201,33 +107,11 @@ detection:
     # hits in the window were the round-5 verification fires) spawns Windows'
     # own console host as `conhost --headless [--inheritcursor] --width N
     # --height N --signal 0xN --server 0xN`. Quieted via filter_cursor_pty
-    # below in the 451bce4 form (parent + shape anchored); the incident
+    # (per-box overlay, rules.d/local.example/) in the 451bce4 form (parent + shape anchored); the incident
     # shape (`--headless powershell -ep bypass ...`) matches neither the
     # fixed ConPTY flag sequence nor the $-anchor and stays armed.
     CommandLine|contains: '--headless'
-  filter_cursor_pty:
-    # Cursor IDE's ConPTY pseudoconsole hosts: cursor.exe allocates a PTY for
-    # every terminal/utility session and Windows spawns its own console host
-    # with the fixed handshake flags. Requires ALL of: the AppData
-    # install-path parent (a directory merely NAMED cursor does not qualify),
-    # the cmdline anchored at the conhost token, the exact flag sequence in
-    # the fixed order (optional --inheritcursor directly after --headless,
-    # then width/height/signal/server) and NOTHING after --server (any
-    # trailing token = a child binary/command = re-arms, same $-anchor
-    # doctrine as filter_cursor_agent). The flag set is CreatePseudoConsole's
-    # own handshake — a headless conhost LAUNCHING a child (the incident
-    # vector) cannot carry it. Residual, same accepted class as the cursor
-    # agent bridge: a binary planted AT the real install path spawning this
-    # exact shape is quiet HERE, but any child it hosts fires EXEC-001 /
-    # PERSIST-003 / NET rules; pinned by TestCursorConPTYHostSuppressed.
-    ParentImage|re: '(?i)^c:\\users\\[^\\]+\\appdata\\local\\programs\\cursor\\(?:_\\)?cursor\.exe$'
-    CommandLine|re: '(?i)^\s*"?[^\s"]*conhost\.exe"?\s+--headless(?:\s+--inheritcursor)?\s+--width [0-9]+ --height [0-9]+ --signal 0x[0-9a-f]+ --server 0x[0-9a-f]+\s*$'
-  filter_untrusted_profile_tree:
-    # Same guard as EXEC-001's (see that rule): \users\public (world-
-    # writable), \default and \all users are not per-user profiles — a
-    # plant there must not inherit PTY-host quiet. RE2 has no lookahead.
-    ParentImage|startswith: ['c:\users\public\', 'c:\users\default\', 'c:\users\all users\']
-  condition: selection and not (filter_cursor_pty and not filter_untrusted_profile_tree)
+  condition: selection
 level: high
 tags: [attack.execution, attack.t1059.001, attack.defense_evasion]
 x-sentinel:

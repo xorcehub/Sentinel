@@ -33,6 +33,7 @@ import (
 	"sentinel/internal/allowlist"
 	"sentinel/internal/app"
 	"sentinel/internal/baseline"
+	"sentinel/internal/catalog"
 	"sentinel/internal/event"
 	"sentinel/internal/ingest"
 	"sentinel/internal/ingest/mock"
@@ -151,6 +152,7 @@ func run(args []string) error {
 	// absolute paths from the CLI pass through unchanged. Must run before
 	// --self-test (which also uses fl.rulesDir).
 	resolveExeRelative(fl)
+	preferLocalAllowlist(fl, flagSet(fs, "allowlist"))
 
 	// --self-test: run the incident-coverage regression against the catalog and
 	// exit. No mutex, no ingestion, no alerters — pure engine check. Portable.
@@ -637,13 +639,25 @@ func buildEngine(fl *flags, st *state.State, logger *slog.Logger) (*rules.Engine
 	if err != nil {
 		return nil, fmt.Errorf("compile rules: %w", err)
 	}
-	logger.Info("rules loaded", "count", len(compiled))
+	overlays := 0
+	for _, r := range compiled {
+		overlays += r.OverlayCount()
+	}
+	// overlays=0 is the fresh-clone posture (no rules.d/local): every rule
+	// fully armed. A non-zero count is this box's opt-in tuning.
+	logger.Info("rules loaded", "count", len(compiled), "overlays", overlays,
+		"overlay_dir", filepath.Join(fl.rulesDir, catalog.LocalDir))
 
 	al, alErr := loadAllowlist(fl.allowlistPath)
 	if alErr != nil {
 		logger.Warn("allowlist load failed; engine runs with nothing trusted (expect noise)",
 			"path", fl.allowlistPath, "err", alErr)
 		al = nil
+	} else {
+		// A path ending in .local is this box's tuning; the plain
+		// config/allowlist.json is the empty fresh-clone default.
+		logger.Info("allowlist loaded", "path", fl.allowlistPath,
+			"local", strings.HasSuffix(fl.allowlistPath, localAllowlistSuffix))
 	}
 	// Inject the Tier-2 (hash_gated_path) signature verifier. On Windows this is
 	// native WinVerifyTrust run under ONE pinning open (Pinned: rename/replace/
@@ -680,39 +694,12 @@ func buildIngester(fl *flags, logger *slog.Logger) (ingest.Ingester, error) {
 	return ingest.NewSysmonRT(fl.sysmonChannel, fl.sysmonQuery, logger)
 }
 
-// loadRulesDir concatenates every *.yml/*.yaml file in dir (sorted) into one
-// multi-document YAML blob the Sigma loader can parse.
+// loadRulesDir returns the shipped catalog in dir plus this box's overlays in
+// dir/local (gitignored; absent on a fresh clone, which then runs every rule
+// fully armed). See internal/catalog.
 func loadRulesDir(dir string) ([]byte, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	var out []byte
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		ext := filepath.Ext(e.Name())
-		if ext != ".yml" && ext != ".yaml" {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, b...)
-		// Ensure the file ends with a newline, then a YAML document separator
-		// (---) before the next file's content. Without this, concatenating two
-		// multi-doc files merges the last doc of one with the first of the next
-		// into a single mapping with duplicate keys (the yaml.v3 loader sees
-		// them as one document). Each file is itself a valid multi-doc stream;
-		// the inter-file separator keeps that property across concatenation.
-		if len(b) > 0 && b[len(b)-1] != '\n' {
-			out = append(out, '\n')
-		}
-		out = append(out, "---\n"...)
-	}
-	return out, nil
+	data, _, err := catalog.ReadLive(dir)
+	return data, err
 }
 
 // loadAllowlist returns an error (with a nil Allowlist) if the file is
@@ -783,6 +770,39 @@ func resolveExeRelative(fl *flags) {
 	// every other path flag.
 	resolve(&fl.snapshotDir)
 	resolve(&fl.sysmonArchiveDir)
+}
+
+// localAllowlistSuffix names the per-box allowlist that sits next to the
+// default one (config/allowlist.json -> config/allowlist.json.local). It is
+// gitignored, so a fresh clone never has it.
+const localAllowlistSuffix = ".local"
+
+// preferLocalAllowlist switches to <allowlist>.local when the operator did not
+// pass -allowlist and that file exists. Same posture as rules.d/local/: the
+// per-box tuning is picked up by presence alone, so a manual run or a task
+// registered without install-task.ps1 no longer falls back to the empty
+// default. An explicit -allowlist always wins, and without the .local file
+// nothing changes (fresh clone = empty default, every rule armed).
+func preferLocalAllowlist(fl *flags, explicit bool) {
+	if explicit || fl.allowlistPath == "" {
+		return
+	}
+	candidate := fl.allowlistPath + localAllowlistSuffix
+	if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+		fl.allowlistPath = candidate
+	}
+}
+
+// flagSet reports whether name was given on the command line (as opposed to
+// holding its default).
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 func defaultMutexName() string {

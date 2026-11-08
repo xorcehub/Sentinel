@@ -43,6 +43,11 @@ type Rule struct {
 
 	condition matcher                            // compiled condition over selMatchers
 	selMatch  map[string]func(*event.Event) bool // compiled selections, by name
+
+	// overlays are per-box suppression filters attached by overlay documents
+	// (see Load). The rule matches only if its own condition matches AND no
+	// overlay matches.
+	overlays []matcher
 }
 
 // Match reports whether the Sigma detection+condition match the event.
@@ -51,29 +56,130 @@ func (r *Rule) Match(e *event.Event) bool {
 	if r.condition == nil {
 		return false
 	}
-	return r.condition(e)
+	if !r.condition(e) {
+		return false
+	}
+	for _, o := range r.overlays {
+		if o(e) {
+			return false
+		}
+	}
+	return true
 }
+
+// OverlayCount is how many overlay documents were attached to this rule.
+func (r *Rule) OverlayCount() int { return len(r.overlays) }
+
+// overlayKey marks a document as an overlay instead of a rule.
+const overlayKey = "x-sentinel-overlay"
 
 // Load parses one or more YAML documents (--- separated, standard Sigma
 // multi-doc) into compiled Rules. A single mapping or a list of mappings are
 // both accepted.
+//
+// Overlay documents carry `x-sentinel-overlay: {rule: <x-sentinel id>}` and a
+// `detection` block (named selections + condition) instead of being rules of
+// their own. Each one is attached to the rule it names: that rule then fires
+// only when its own condition matches and the overlay condition does NOT.
+// An overlay can therefore only SUPPRESS within one existing rule — it can
+// never add a rule, widen a selection, or change severity/alerting/except.
+// This is how per-box tuning (rules.d/local/, gitignored) stays out of the
+// shipped catalog. An overlay that names no loaded rule is a load error, so a
+// typo or a renamed rule fails loudly instead of silently tuning nothing.
 func Load(data []byte) ([]*Rule, error) {
 	docs, err := decodeDocs(data)
 	if err != nil {
 		return nil, err
 	}
 	var rules []*Rule
+	type pending struct {
+		title, target string
+		m             matcher
+	}
+	var overlays []pending
 	for _, d := range docs {
+		title, _ := d["title"].(string)
+		if _, isOverlay := d[overlayKey]; isOverlay {
+			target, m, err := compileOverlay(d)
+			if err != nil {
+				return nil, fmt.Errorf("overlay %q: %w", title, err)
+			}
+			overlays = append(overlays, pending{title, target, m})
+			continue
+		}
 		r, err := compileRule(d)
 		if err != nil {
-			title, _ := d["title"].(string)
 			return nil, fmt.Errorf("rule %q: %w", title, err)
 		}
 		if r != nil {
 			rules = append(rules, r)
 		}
 	}
+	byID := make(map[string]*Rule, len(rules))
+	for _, r := range rules {
+		if r.XID != "" {
+			byID[r.XID] = r
+		}
+	}
+	for _, o := range overlays {
+		r, ok := byID[o.target]
+		if !ok {
+			return nil, fmt.Errorf("overlay %q: targets rule %q, which is not loaded", o.title, o.target)
+		}
+		r.overlays = append(r.overlays, o.m)
+	}
 	return rules, nil
+}
+
+// compileOverlay validates and compiles one overlay document. It may carry
+// only title/description, the overlay header and a detection block: any
+// rule-level key (x-sentinel, level, logsource, id, ...) is rejected so an
+// overlay cannot be mistaken for, or smuggle in, rule behavior.
+func compileOverlay(d map[string]interface{}) (string, matcher, error) {
+	for k := range d {
+		switch k {
+		case "title", "description", overlayKey, "detection":
+		default:
+			return "", nil, fmt.Errorf("key %q is not allowed in an overlay (allowed: title, description, %s, detection)", k, overlayKey)
+		}
+	}
+	hdr, ok := d[overlayKey].(map[string]interface{})
+	if !ok {
+		return "", nil, fmt.Errorf("%s must be a mapping with a 'rule' key", overlayKey)
+	}
+	for k := range hdr {
+		if k != "rule" {
+			return "", nil, fmt.Errorf("%s: unknown key %q (only 'rule')", overlayKey, k)
+		}
+	}
+	target, _ := hdr["rule"].(string)
+	if target == "" {
+		return "", nil, fmt.Errorf("%s.rule must name a rule's x-sentinel id", overlayKey)
+	}
+	det, ok := d["detection"].(map[string]interface{})
+	if !ok {
+		return "", nil, fmt.Errorf("missing detection")
+	}
+	condStr, _ := det["condition"].(string)
+	if condStr == "" {
+		return "", nil, fmt.Errorf("missing condition")
+	}
+	sel := map[string]func(*event.Event) bool{}
+	for name, raw := range det {
+		if name == "condition" {
+			continue
+		}
+		m, err := buildSelection(raw)
+		if err != nil {
+			return "", nil, fmt.Errorf("selection %q: %w", name, err)
+		}
+		sel[name] = m
+	}
+	cond, err := parseCondition(condStr, sel)
+	if err != nil {
+		return "", nil, fmt.Errorf("condition %q: %w", condStr, err)
+	}
+	return target, cond, nil
 }
 
 func decodeDocs(data []byte) ([]map[string]interface{}, error) {

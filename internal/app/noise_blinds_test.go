@@ -3,13 +3,13 @@ package app
 import (
 	"context"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
 	"sentinel/internal/allowlist"
+	"sentinel/internal/catalog"
 	"sentinel/internal/event"
 	"sentinel/internal/ingest/mock"
 	"sentinel/internal/rules"
@@ -36,25 +36,11 @@ func realEngineFromDisk(t *testing.T) *rules.Engine {
 	t.Helper()
 	root := appRepoRoot(t)
 	dir := filepath.Join(root, "rules.d")
-	entries, err := os.ReadDir(dir)
+	// Tuned box = shipped catalog + the worked-example overlays
+	// (rules.d/local.example/), paired with allowlist.json.example below.
+	concat, _, err := catalog.Read(dir, filepath.Join(dir, catalog.ExampleDir))
 	if err != nil {
-		t.Skipf("rules.d not present (%v); skipping", err)
-	}
-	var concat []byte
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		ext := filepath.Ext(e.Name())
-		if ext != ".yml" && ext != ".yaml" {
-			continue
-		}
-		b, _ := os.ReadFile(filepath.Join(dir, e.Name()))
-		concat = append(concat, b...)
-		if len(b) > 0 && b[len(b)-1] != '\n' {
-			concat = append(concat, '\n')
-		}
-		concat = append(concat, "---\n"...)
+		t.Skipf("rules.d not present (%v)", err)
 	}
 	rs, err := sigmaeval.Load(concat)
 	if err != nil {

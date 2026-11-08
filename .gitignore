@@ -33,3 +33,6 @@ redteam/lab/
 # install-task.ps1 auto-passes -allowlist for it; the tracked
 # config/allowlist.json stays an empty default (tripwire-tested).
 config/allowlist.json.local
+
+# Per-box rule overlays (rules.d/local.example/ is the tracked worked example)
+rules.d/local/

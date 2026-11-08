@@ -69,3 +69,53 @@ func TestWriteReportWritesFileNextToExe(t *testing.T) {
 		t.Errorf("path = %q", path)
 	}
 }
+
+// The per-box allowlist is picked up by presence, like rules.d/local/.
+func TestPreferLocalAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	def := filepath.Join(dir, "allowlist.json")
+	if err := os.WriteFile(def, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh clone: no .local file -> the default stays.
+	fl := flags{allowlistPath: def}
+	preferLocalAllowlist(&fl, false)
+	if fl.allowlistPath != def {
+		t.Fatalf("no .local present: path changed to %q", fl.allowlistPath)
+	}
+
+	local := def + ".local"
+	if err := os.WriteFile(local, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Tuned box, no flag: the .local file wins.
+	fl = flags{allowlistPath: def}
+	preferLocalAllowlist(&fl, false)
+	if fl.allowlistPath != local {
+		t.Fatalf(".local present, no flag: got %q, want %q", fl.allowlistPath, local)
+	}
+	// Explicit -allowlist always wins, even when .local exists.
+	fl = flags{allowlistPath: def}
+	preferLocalAllowlist(&fl, true)
+	if fl.allowlistPath != def {
+		t.Fatalf("explicit -allowlist overridden: got %q", fl.allowlistPath)
+	}
+}
+
+func TestFlagSetDetectsExplicitAllowlist(t *testing.T) {
+	_, fs := parseFlags(nil)
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if flagSet(fs, "allowlist") {
+		t.Error("no args: allowlist reported as set")
+	}
+	_, fs = parseFlags(nil)
+	if err := fs.Parse([]string{"-allowlist", `C:\x\a.json`}); err != nil {
+		t.Fatal(err)
+	}
+	if !flagSet(fs, "allowlist") {
+		t.Error("-allowlist given: not reported as set")
+	}
+}

@@ -269,10 +269,19 @@ Before step 3: `copy config\allowlist.json.example config\allowlist.json.local`
 and prune it for your box. The example is the tuning manual for the somewhat
 unusual syntax — a real allowlist where every entry says which noise it kills
 and why the regex looks like that — so copy from it rather than writing entries
-from scratch. `install-task.ps1` auto-detects that file and registers the task
-with `-allowlist`, so re-installing never reverts your tuning.
+from scratch. The daemon uses that file automatically whenever it exists and no
+`-allowlist` flag is given (an explicit flag always wins), so manual runs and
+re-installs never revert your tuning.
 
-Skip that step and Sentinel runs with the empty default: every rule armed,
+Rule tuning works the same way. The shipped rules in `rules.d/*.yml` carry no
+filters for any particular machine's software; the tuning of the box they were
+developed on (Cursor IDE, Claude Code CLI, a python helper, the Nahimic audio
+stack) lives in `rules.d/local.example/` as suppress-only overlays. To use it:
+`mkdir rules.d\local` and `copy rules.d\local.example\tuning.yml rules.d\local\`,
+then delete the overlays for software you don't run. The daemon loads
+`rules.d/local/` (gitignored) automatically.
+
+Skip both steps and Sentinel runs with the plain defaults: every rule armed,
 nothing trusted — expect noise until you tune (the heartbeat's `allowlist=ok`
 just means the empty policy loaded fine), forensic file-capture stays off (no
 patterns set) and DEBUG logging runs unfiltered.
@@ -357,15 +366,17 @@ not touch the Sysmon config. Revert those manually if needed.
 
 ## Configuration
 
-Three knobs, all file-based (loaded at daemon startup — restart the task to
+All file-based (loaded at daemon startup — restart the task to
 apply changes):
 
 | File | Purpose |
 |------|---------|
-| `rules.d/*.yml` | Sigma rules + `x-sentinel:` extension. Edit to add/tune detection. |
+| `rules.d/*.yml` | Sigma rules + `x-sentinel:` extension, as shipped: generic, no filters for any particular machine's software, so a fresh clone runs every rule fully armed. Edit to add detection; put per-box noise filters in `rules.d/local/` instead. |
+| `rules.d/local.example/` | **Your rule-tuning reference.** Overlays from the development box, each documenting the noise it quiets and the mimics that must still fire. Never loaded by the daemon. |
+| `rules.d/local/` | **Your live rule overlays** (gitignored, optional). Each document names one rule (`x-sentinel-overlay: {rule: EXEC-001}`) plus its own `detection` block; that rule then fires only when its condition matches and the overlay's does not. Overlays can only suppress: they cannot add rules, widen selections, or change severity, alerting or `except`, and one naming an unknown rule fails the load. Startup logs `rules loaded … overlays=N`. Stays under `rules.d\`, so the config-tamper rule watches it. |
 | `config/allowlist.json` | What Sentinel runs with out of the box: empty — every rule armed, nothing trusted, so expect noise until you tune. This file stays empty on purpose; make your tuning in `allowlist.json.local` (below) instead of editing it. |
 | `config/allowlist.json.example` | **Your tuning reference.** A real allowlist, annotated by the tuning that went into it: every entry documents which noise class it kills and why its regex is shaped that way (the syntax is unusual — JSONC comments, `\`-escaped path regexes, patterns anchored to the drive root). Copy it to `allowlist.json.local` as your starting point. |
-| `config/allowlist.json.local` | **Your live allowlist** — the file Sentinel actually runs with once you create it. Keep the name (the config-tamper alarm watches for `allowlist.json` in it). `install-task.ps1` auto-detects it and registers the task with `-allowlist`; for manual runs, pass `-allowlist config\allowlist.json.local`. JSONC (comments allowed). |
+| `config/allowlist.json.local` | **Your live allowlist** — the file Sentinel actually runs with once you create it. Keep the name (the config-tamper alarm watches for `allowlist.json` in it). Gitignored; picked up by presence, like `rules.d/local/`: the daemon prefers it over `allowlist.json` whenever no `-allowlist` flag is given (an explicit flag always wins). Startup logs `allowlist loaded … local=true`. JSONC (comments allowed). |
 | `config/sentinel.conf.example` | Documents the runtime knobs and defaults. The daemon currently reads CLI flags (see `sentinel -h`); this file is the spec for the Phase 2 config-file loader. |
 
 ### Adding a rule

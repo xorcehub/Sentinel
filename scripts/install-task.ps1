@@ -69,15 +69,23 @@ if ($AsSystem) {
     $actionArg = "-popup=false -snapshot-dir `"$SnapshotDir`" -sysmon-archive-dir `"$ArchiveDir`""
 }
 
-# Per-box allowlist override: file presence IS the machine distinction. If
-# config/allowlist.json.local exists next to the exe (gitignored, copied from
-# allowlist.json.example and pruned), run with it; a fresh clone ships only the
-# EMPTY config/allowlist.json default and never has this file. Re-running this
-# script therefore preserves per-box tuning instead of silently reverting it.
+# Per-box allowlist: file presence IS the machine distinction. The daemon
+# itself prefers config\allowlist.json.local (gitignored, copied from
+# allowlist.json.example and pruned) over the EMPTY default whenever no
+# -allowlist flag is given, exactly like rules.d\local\. Passing the flag here
+# is belt-and-braces: it pins the task to the file even if the default path
+# logic ever changes. A fresh clone never has the file and runs the default.
 $localAllowlist = Join-Path (Split-Path $ExePath -Parent) "config\allowlist.json.local"
 if (Test-Path $localAllowlist) {
     $actionArg += " -allowlist `"$localAllowlist`""
     Write-Host "Allowlist override detected: $localAllowlist" -ForegroundColor Yellow
+}
+# Per-box rule overlays need no flag: the daemon loads rules.d\local\ next to
+# the exe on its own. Reported here so the install output shows which posture
+# (plain catalog or tuned) the task will run with.
+$localRules = Join-Path (Split-Path $ExePath -Parent) "rules.d\local"
+if (Test-Path $localRules) {
+    Write-Host "Rule overlays detected: $localRules" -ForegroundColor Yellow
 }
 $action    = New-ScheduledTaskAction -Execute $ExePath -Argument $actionArg -WorkingDirectory (Split-Path $ExePath -Parent)
 $trigger   = New-ScheduledTaskTrigger -AtLogOn
