@@ -3,7 +3,7 @@
 // firewall). Implementations:
 //
 //   - mock.MockIngester: deterministic replay, for tests + first-run smoke
-//   - sysmon_rt (windows): native EvtSubscribe pull-subscription (production)
+//   - sysmon_rt (windows): native EvtSubscribe pull subscription (production)
 //
 // Every Ingester returns a single channel of event.Event and is driven by a
 // context: cancel the context to stop the feed. The Ingester closes the channel

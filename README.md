@@ -26,7 +26,7 @@ Deliberately scoped to one operator, one box — see [Boundaries](#boundaries).
 | **Role** | Single-host behavior detector + forensic capture |
 | **Language** | Go (module `sentinel`, Go 1.26) — ~8.0k LOC core + ~8.8k tests, 82 files, 40 test files, 3 fuzz targets |
 | **Platform** | Windows 10 1607+ / Windows 11 (latest Sysmon from Sysinternals; installer pulls the current release, no version is pinned) |
-| **Telemetry source** | Sysmon (real-time, 1s poll) + Sysinternals Autoruns (daily persistence diff) |
+| **Telemetry source** | Sysmon (real-time `EvtSubscribe` subscription) + Sysinternals Autoruns (daily persistence diff) |
 | **Detection paradigms** | Catch-by-act behavior rules + catch-by-result baseline diff |
 | **Coverage** | **27 hand-curated rules** across 9 categories, mapping to ~20 MITRE ATT&CK techniques |
 | **License** | MIT — [`LICENSE`](LICENSE); deps MIT/BSD/Apache only — [`THIRDPARTY.md`](THIRDPARTY.md) |
@@ -39,8 +39,10 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
 
 ## What it does
 
-- Reads `Microsoft-Windows-Sysmon/Operational` in real time (1s poll; a native
-  `EvtSubscribe` path exists but is broken — see `-sysmon-native`).
+- Reads `Microsoft-Windows-Sysmon/Operational` in real time through a native
+  `EvtSubscribe` pull subscription (sub-second latency, no child processes).
+  On start it re-reads the newest 2,000 events, so anything logged while it
+  was down is still evaluated.
 - Evaluates **27 Sigma-style rules** (in-house evaluator, no external Sigma
   library) across persistence, execution, network, credential, injection,
   evasion, baseline, config-tamper, and telemetry-integrity. Rules live in [`rules.d/`](rules.d)
@@ -54,7 +56,7 @@ SYSTEM) and `sentinel-tray.exe` (a user-session toast relay).
   EID 104, which names the channel, the account and the backup path; read
   with a 24h look-back, so a clear made while Sentinel was stopped alerts at
   the next start). A recreated channel whose RecordIds go backwards raises
-  it too, and the poller resets its high-water and keeps ingesting.
+  it too, and the ingester resets its high-water and keeps ingesting.
 - On a hit, fans out to four alert channels: **popup, toast, Windows Event
   Log, and `ALERTS.log`**. Every severity toasts except `info` (log-only by
   default) — suspicious silently, no banner sound. A rule's own `alert:` list
@@ -500,8 +502,6 @@ more work than an update needs.
   droppers against YARA rules (they're stored with sha256 + full content).
 - **Continuous fuzzing in CI** — the three parser fuzzers exist
   (`internal/*/fuzz_test.go`); wiring them into CI is the remaining step.
-- **Native `EvtSubscribe` ingestion** — replace the 1s poller once the
-  subscription bug is fixed.
 
 ---
 

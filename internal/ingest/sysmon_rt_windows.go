@@ -1,613 +1,578 @@
 //go:build windows
 
-// Windows DEFAULT real-time Sysmon ingester: a PowerShell Get-WinEvent poller.
+// Real-time Sysmon ingester: a native EvtSubscribe pull subscription to
+// Microsoft-Windows-Sysmon/Operational (the only production ingester).
 //
-// Rationale: the native EvtSubscribe binding (sysmon_native_windows.go) fails
-// with ERROR_INVALID_PARAMETER on a channel that Get-WinEvent reads cleanly from
-// the same elevated process. Rather than block Phase 1 on debugging wevtapi
-// marshalling, we shell out to powershell.exe Get-WinEvent — the exact cmdlet
-// the operator already uses for IR, proven to read this channel.
+// EvtSubscribe takes exactly one delivery mechanism: a callback (push model)
+// or an event handle the service signals when new records arrive (pull model).
+// Passing NULL for both fails with ERROR_INVALID_PARAMETER (87), which is what
+// sank the first binding. This ingester uses the pull model.
 //
 // Flow:
-//  1. Every `interval` (default 1s), run:
-//     Get-WinEvent -FilterHashtable @{LogName=<ch>; ID=<eids>} -MaxEvents 2000
-//     -ErrorAction SilentlyContinue
-//     | Where-Object { $_.RecordId -gt <highWater> }
-//     | ForEach-Object { base64(UTF16LE($_.ToXml())) }   (or "TOXMLFAIL:<id>")
-//  2. For each base64 line: decode -> UTF-16LE bytes -> decodeUTF16LE -> sysmonxml.Parse.
-//  3. Advance highWater to the max RecordId seen so the next poll is incremental.
-//  4. The script also prints "CHANMAX:<newest RecordId>". If that is BELOW
-//     highWater the channel's ids went backwards (e.g. channel recreated):
-//     emit the synthetic event TELEMETRY-002 matches, reset highWater and
-//     re-read (pollAndEmit).
-//  5. Every clearCheckEvery polls the script also prints System log EID 104
-//     records ("log file was cleared") from the last 24h as
-//     "LOGCLEARED:<base64>"; one naming our channel raises TELEMETRY-002
-//     (logclear.go). A clear does NOT restart RecordIds, so step 4 alone
-//     never sees one.
+//  1. Backlog: EvtQuery the channel newest-first and render up to backlogMax
+//     records. They are emitted oldest-first: after a restart the daemon
+//     re-evaluates recent events, so anything that fired while it was down is
+//     still alerted (fail open to duplicates, never to silence; per-rule dedup
+//     is persisted in state.db). This is deliberate — do not replace it with a
+//     persisted "last seen" position that skips the downtime.
+//  2. A bookmark is set on the newest backlog record and the subscription
+//     starts after it, so nothing logged between the query and the subscribe
+//     is lost. With an empty channel it subscribes to future events.
+//  3. Read loop: wait on the signal event (1s timeout so ctx and the log-clear
+//     check stay responsive), reset it, then drain EvtNext until
+//     ERROR_NO_MORE_ITEMS. EvtNext on a subscription never blocks, so waiting
+//     on the event is what keeps the loop from spinning.
+//  4. The bookmark follows every delivered record. If EvtNext fails (channel
+//     recreated, eventlog service restart), the subscription is reopened after
+//     the bookmark with backoff.
+//  5. Every clearCheckInterval the System log is queried for EID 104 (log
+//     cleared, logclear.go); a clear of our channel raises TELEMETRY-002. A
+//     clear does NOT restart RecordIds, so the rewind check alone never sees
+//     one. A RecordId going backwards (channel recreated) raises it too.
+//  6. Helper processes of sentinel's own binaries are filtered (selfParents)
+//     and undecodable records are counted and WARNed (dropCounter).
 //
-// maxPerPoll (default 2000) must exceed the worst-case per-interval event count.
-// Cursor peaks at ~100 events/sec, so 2000 covers ~20s of burst — well beyond
-// the 1s poll interval. If a burst ever exceeds maxPerPoll, older events in the
-// gap are skipped (rare, acceptable for a behavior engine).
-//
-// NOTE: -Oldest + StartTime was attempted to eliminate stranding entirely, but
-// caused Get-WinEvent to exit with code 1 on sysmon 15.21/PS 5.1 (every poll
-// after the first). Reverted to newest-first + large maxPerPoll.
-//
-// Trade-offs vs native EvtSubscribe (02-ARCHITECTURE.md §4.1 latency target):
-//   - latency ~1-3s (powershell.exe spawn + parse) vs <1s native. Acceptable
-//     for a behavior engine whose rules are not sub-second time-critical.
-//   - one powershell.exe process per poll (cheap but not free). At 1s interval
-//     that's ~60 proc-min/hour; negligible on this machine.
-//
-// The native binding stays available via `sentinel -sysmon-native` for when the
-// EvtSubscribe bug is fixed.
+// Reading the Sysmon channel requires an elevated token; the installed task
+// runs as SYSTEM.
 package ingest
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
-	"unicode/utf16"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 
 	"sentinel/internal/event"
-	"sentinel/internal/pathnorm"
-	"sentinel/internal/sysmonxml"
 )
+
+// --- wevtapi.dll bindings (the Event Log API; not in x/sys/windows) ---
+
+var (
+	wevtapi = windows.NewLazyDLL("wevtapi.dll")
+
+	procEvtSubscribe      = wevtapi.NewProc("EvtSubscribe")
+	procEvtQuery          = wevtapi.NewProc("EvtQuery")
+	procEvtNext           = wevtapi.NewProc("EvtNext")
+	procEvtRender         = wevtapi.NewProc("EvtRender")
+	procEvtClose          = wevtapi.NewProc("EvtClose")
+	procEvtCreateBookmark = wevtapi.NewProc("EvtCreateBookmark")
+	procEvtUpdateBookmark = wevtapi.NewProc("EvtUpdateBookmark")
+)
+
+// EvtHandle is the opaque subscription/query/event/bookmark handle.
+type EvtHandle uintptr
 
 const (
-	defaultPollInterval = 1 * time.Second
-	// defaultMaxPerPoll caps the events fetched per Get-WinEvent call. Must be
-	// large enough to absorb bursts (Cursor can generate hundreds of events per
-	// second). At 1s poll interval, 2000 covers ~20s of peak burst — well beyond
-	// the interval. If a burst ever exceeds this, older events in the gap are
-	// skipped (rare, acceptable for a behavior engine).
-	defaultMaxPerPoll = 2000
+	evtSubscribeToFutureEvents     = 1
+	evtSubscribeStartAfterBookmark = 3
+
+	evtQueryChannelPath      = 0x1
+	evtQueryReverseDirection = 0x200
+
+	evtRenderEventXml = 1
+
+	// evtQueryTimeoutMs bounds one EvtNext on a query result set (synchronous
+	// read of records already on disk).
+	evtQueryTimeoutMs = 10_000
+	// evtWaitMs is the longest the read loop sleeps on the signal event.
+	evtWaitMs = 1000
+	// evtBatch is how many handles one EvtNext may return.
+	evtBatch = 64
+	// resubscribeBackoff is the wait between attempts to reopen a failed
+	// subscription.
+	resubscribeBackoff = 5 * time.Second
+	// backlogMax caps the records re-read at start (newest first).
+	backlogMax = 2000
 )
 
-// defaultEIDs is the Sysmon EID set our rules use (03-RULES.md / 04-TELEMETRY §1).
-// 16 (Sysmon config change) is included: it's the event that says "your
-// telemetry rules just changed" — see rules.d/telemetry.yml TELEMETRY-001.
-// At most 23 IDs: -FilterHashtable silently returns nothing (exit 0) above
-// that (TestDefaultEIDsFitFilterHashtableLimit).
-var defaultEIDs = []int{1, 3, 7, 8, 10, 11, 12, 13, 16, 19, 20, 21, 22, 23, 25}
-
-// sysmonRT is the production (PowerShell poller) ingester.
+// sysmonRT is the EvtSubscribe-based Sysmon ingester.
 type sysmonRT struct {
-	channel    string
-	eids       []int
-	log        *slog.Logger
-	interval   time.Duration
-	maxPerPoll int
-	// parents silences helper processes spawned by sentinel's own binaries
-	// (poller/toast/eventlog powershell.exe, sentinel-tray's relay children).
-	// Hash-gated (see selfParents) so an imposter dropped into our user-writable
-	// install dir is detected rather than silenced.
-	parents *selfParents
+	channel  string
+	query    string
+	maxBack  int
+	log      *slog.Logger
+	parents  *selfParents
+	clears   clearTracker
+	lastScan time.Time // last System EID 104 query
 
-	// dropped counts events the poller received but could not decode/parse.
-	// Each one is an event no rule saw, so it is surfaced at WARN (rate
-	// limited by dropWarnEvery) instead of being skipped silently.
-	dropped      uint64
-	lastDropWarn time.Time
+	dropCounter
 
-	// polls counts pollAndEmit calls; every clearCheckEvery-th one (starting
-	// with the first) also queries System EID 104 for Sysmon log clears.
-	polls  uint64
-	clears clearTracker
+	signal   windows.Handle
+	sub      EvtHandle
+	bookmark EvtHandle
+	marked   bool     // bookmark points at a real record
+	highID   int64    // newest RecordId delivered (-1 = none yet)
+	backlog  [][]byte // rendered by Start, handed to readLoop
+	backlogN int      // len(backlog) at Start (for logs and tests)
+	handles  []EvtHandle
 }
 
-// dropWarnEvery bounds the "event dropped" WARN to one line per window (with
-// the running total), so a flood of malformed records cannot flood the log.
-const dropWarnEvery = time.Minute
-
-// noteDropped records one undecodable event and logs at WARN at most once per
-// dropWarnEvery. Called only from the single poll goroutine (no locking).
-func (s *sysmonRT) noteDropped(err error) {
-	s.dropped++
-	now := time.Now()
-	if now.Sub(s.lastDropWarn) < dropWarnEvery {
-		return
+// NewSysmonRT constructs the Sysmon ingester. query overrides the default
+// EID filter (an XPath expression, or a structured XML query); "" uses
+// defaultEIDQuery.
+func NewSysmonRT(channel, query string, log *slog.Logger) (Ingester, error) {
+	if query == "" {
+		query = defaultEIDQuery()
 	}
-	s.lastDropWarn = now
-	s.log.Warn("sysmon event dropped: could not decode/parse (no rule saw it)",
-		"err", err, "dropped_total", s.dropped)
-}
-
-// NewSysmonRT constructs the default Sysmon ingester (PowerShell poller).
-func NewSysmonRT(channel, _query string, log *slog.Logger) (Ingester, error) {
-	// _query is accepted for API parity with the native constructor + the
-	// -sysmon-query flag, but the poller filters EIDs server-side via
-	// FilterHashtable instead of an XPath query, so it's intentionally unused.
 	return &sysmonRT{
-		channel:    channel,
-		eids:       defaultEIDs,
-		log:        log,
-		interval:   defaultPollInterval,
-		maxPerPoll: defaultMaxPerPoll,
-		parents:    newSelfParents(),
+		channel: channel,
+		query:   query,
+		maxBack: backlogMax,
+		log:     log,
+		parents: newSelfParents(),
+		highID:  -1,
+		handles: make([]EvtHandle, evtBatch),
 	}, nil
 }
 
-// ownExeDir returns the directory of the running sentinel.exe (the install
-// dir, where sentinel-tray.exe also lives), or "" if undeterminable.
-func ownExeDir() string {
-	p, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	// No EvalSymlinks: we match whatever path form Sysmon reports as ParentImage
-	// (same NormalizePath on both stored and lookup side, as the old ownExePath
-	// did), and os.Executable() already resolves the real path on Windows.
-	// Resolving here but not on the lookup side would make a symlink-launched
-	// binary fail to match (safe but noisy).
-	return filepath.Dir(p)
-}
+// noteDropped records one undecodable event (see dropCounter).
+func (s *sysmonRT) noteDropped(err error) { s.dropCounter.note(s.log, err) }
 
-// selfRecheck bounds how often a self-parent binary is re-hashed: at most one
-// SHA256 of sentinel.exe / sentinel-tray.exe per path per window. Large enough
-// that verify cost is negligible under toast bursts (~12ms for a 6MB binary,
-// once per 5s); small enough that a post-startup binary swap is caught soon.
-// A swapped-but-cached binary leaves a blind window up to selfRecheck wide —
-// acceptable given the foothold needed (write our dir + replace a running exe +
-// time the spawn inside the window).
-const selfRecheck = 5 * time.Second
+// isSelfChild reports whether ev is a helper process of sentinel's own
+// binaries (see selfParents.isSelfChild).
+func (s *sysmonRT) isSelfChild(ev event.Event) bool { return s.parents.isSelfChild(ev) }
 
-// selfParents maps the normalized paths of sentinel's own binaries to the
-// SHA256 recorded at startup. A process whose ParentImage matches one is
-// silenced ONLY if the on-disk binary still hashes to the recorded value, so a
-// same-named imposter swapped into our (user-writable) install dir is detected
-// instead of given a free pass to spawn -ep bypass powershell. Verification is
-// cached per path for selfRecheck to bound cost; a verify failure (missing /
-// changed / unreadable) returns false = the event is NOT silenced (fail-open
-// for detection). A nil or empty selfParents disables filtering (safe, noisier).
-type selfParents struct {
-	want map[string]string // normalized parent path -> lowercase hex SHA256
-	mu   sync.Mutex
-	ok   map[string]time.Time // normalized parent path -> last successful verify
-}
-
-// newSelfParents hashes sentinel.exe and sentinel-tray.exe in the install dir.
-// An unreadable or unbuilt sibling is skipped (not added) so its children are
-// detected rather than silenced — safe.
-func newSelfParents() *selfParents {
-	sp := &selfParents{want: map[string]string{}, ok: map[string]time.Time{}}
-	dir := ownExeDir()
-	if dir == "" {
-		return sp
-	}
-	for _, name := range []string{"sentinel.exe", "sentinel-tray.exe"} {
-		p := pathnorm.NormalizePath(filepath.Join(dir, name))
-		if h, err := sha256of(p); err == nil {
-			sp.want[p] = h
-		}
-	}
-	return sp
-}
-
-// matches reports whether parentImage is a sentinel-binary whose on-disk hash
-// still matches startup. now is injected so tests control the cache clock.
-func (sp *selfParents) matches(parentImage string, now time.Time) bool {
-	if sp == nil || len(sp.want) == 0 || parentImage == "" {
-		return false
-	}
-	p := pathnorm.NormalizePath(parentImage)
-	want, ok := sp.want[p]
-	if !ok {
-		return false
-	}
-	sp.mu.Lock()
-	last, seen := sp.ok[p]
-	sp.mu.Unlock()
-	if seen && now.Sub(last) < selfRecheck {
-		return true // recently confirmed legit; trust until recheck expires
-	}
-	h, err := sha256of(p)
-	if err != nil || h != want {
-		return false // imposter / swapped / unreadable -> do NOT silence
-	}
-	sp.mu.Lock()
-	sp.ok[p] = now
-	sp.mu.Unlock()
-	return true
-}
-
-// sha256of returns the lowercase hex SHA256 of the file at path.
-func sha256of(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// Start implements Ingester.
+// Start implements Ingester. The backlog query and the subscription happen
+// here, so a bad channel, query or missing privilege fails Start loudly.
 func (s *sysmonRT) Start(ctx context.Context) (<-chan event.Event, error) {
-	if _, err := exec.LookPath("powershell.exe"); err != nil {
-		return nil, fmt.Errorf("powershell.exe not on PATH: %w", err)
+	var err error
+	// Manual-reset, initially signaled: the loop resets it BEFORE draining, so
+	// a record that arrives mid-drain re-signals it and is never stranded.
+	s.signal, err = windows.CreateEvent(nil, 1, 1, nil)
+	if err != nil {
+		return nil, fmt.Errorf("CreateEvent: %w", err)
 	}
-	s.log.Info("sysmon RT (powershell poller) starting",
-		"channel", s.channel, "eids", len(s.eids), "interval", s.interval,
-		"maxPerPoll", s.maxPerPoll)
+	s.bookmark, err = evtCreateBookmark()
+	if err != nil {
+		s.closeAll()
+		return nil, err
+	}
+	if err := s.readBacklog(); err != nil {
+		s.closeAll()
+		return nil, fmt.Errorf("backlog query %s [query=%s]: %w", s.channel, s.query, err)
+	}
+	if err := s.subscribe(); err != nil {
+		s.closeAll()
+		return nil, fmt.Errorf("EvtSubscribe %s [query=%s]: %w", s.channel, s.query, err)
+	}
+	backlog := s.backlog
+	s.backlog, s.backlogN = nil, len(backlog)
+	s.log.Info("sysmon subscription active",
+		"channel", s.channel, "query", s.query, "backlog", s.backlogN)
 	out := make(chan event.Event, 4096)
-	go s.pollLoop(ctx, out)
+	go s.readLoop(ctx, backlog, out)
 	return out, nil
 }
 
-func (s *sysmonRT) pollLoop(ctx context.Context, out chan<- event.Event) {
+// channelArg returns the ChannelPath argument. A structured XML query (from
+// -sysmon-query) names its own channels, and the API then requires a NULL
+// channel path.
+func (s *sysmonRT) channelArg() (*uint16, error) {
+	if strings.HasPrefix(strings.TrimSpace(s.query), "<") {
+		return nil, nil
+	}
+	return windows.UTF16PtrFromString(s.channel)
+}
+
+// readBacklog renders the newest maxBack matching records (newest first) and
+// points the bookmark at the newest one.
+func (s *sysmonRT) readBacklog() error {
+	ch, err := s.channelArg()
+	if err != nil {
+		return err
+	}
+	q, err := windows.UTF16PtrFromString(s.query)
+	if err != nil {
+		return err
+	}
+	flags := uintptr(evtQueryReverseDirection)
+	if ch != nil {
+		flags |= evtQueryChannelPath
+	}
+	rs, err := evtQuery(ch, q, flags)
+	if err != nil {
+		return err
+	}
+	defer evtClose(rs)
+	for len(s.backlog) < s.maxBack {
+		want := min(evtBatch, s.maxBack-len(s.backlog))
+		got, err := evtNext(rs, s.handles[:want], evtQueryTimeoutMs)
+		if errors.Is(err, errEvtNoMore) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		for _, h := range s.handles[:got] {
+			if !s.marked {
+				if err := evtUpdateBookmark(s.bookmark, h); err == nil {
+					s.marked = true
+				}
+			}
+			xml, rerr := evtRenderXML(h)
+			evtClose(h)
+			if rerr != nil {
+				s.noteDropped(rerr)
+				continue
+			}
+			s.backlog = append(s.backlog, xml)
+		}
+	}
+	return nil
+}
+
+// subscribe opens the pull subscription after the bookmark, or at future
+// events when no record has been seen yet.
+func (s *sysmonRT) subscribe() error {
+	ch, err := s.channelArg()
+	if err != nil {
+		return err
+	}
+	q, err := windows.UTF16PtrFromString(s.query)
+	if err != nil {
+		return err
+	}
+	bm, flags := EvtHandle(0), uintptr(evtSubscribeToFutureEvents)
+	if s.marked {
+		bm, flags = s.bookmark, evtSubscribeStartAfterBookmark
+	}
+	sub, err := evtSubscribe(s.signal, ch, q, bm, flags)
+	if err != nil {
+		return err
+	}
+	s.sub = sub
+	return nil
+}
+
+func (s *sysmonRT) closeAll() {
+	if s.sub != 0 {
+		evtClose(s.sub)
+		s.sub = 0
+	}
+	if s.bookmark != 0 {
+		evtClose(s.bookmark)
+		s.bookmark = 0
+	}
+	if s.signal != 0 {
+		_ = windows.CloseHandle(s.signal)
+		s.signal = 0
+	}
+}
+
+func (s *sysmonRT) readLoop(ctx context.Context, backlog [][]byte, out chan<- event.Event) {
 	defer close(out)
-	// highWater tracks the max RecordId we've already emitted. Seeded at -1
-	// so the first poll fetches the newest batch REGARDLESS of persisted state —
-	// this is a DELIBERATE design decision (owner-approved), not an oversight:
-	// after a restart the daemon re-evaluates recent events so anything that
-	// fired while it was down is still alerted (fail open to duplicates, never
-	// to silence). Per-rule dedup windows are persisted in state.db, so the
-	// re-fed events only re-fire rules whose dedup entry has expired. Do NOT
-	// seed this from state.MaxRecordID — that would silently skip everything
-	// that happened while the daemon was not running.
-	highWater := int64(-1)
-	t := time.NewTicker(s.interval)
-	defer t.Stop()
-	// one immediate poll so events appear without waiting a full interval
-	s.pollAndEmit(ctx, &highWater, out)
-	for {
-		select {
-		case <-ctx.Done():
-			s.log.Info("sysmon RT poller stopping (context cancelled)")
+	defer s.closeAll()
+
+	// Backlog oldest-first, like the poller's first poll.
+	for i := len(backlog) - 1; i >= 0; i-- {
+		if !s.emitXML(ctx, backlog[i], out) {
 			return
-		case <-t.C:
-			s.pollAndEmit(ctx, &highWater, out)
+		}
+	}
+
+	for {
+		if ctx.Err() != nil {
+			s.log.Info("sysmon ingester stopping (context cancelled)")
+			return
+		}
+		if !s.checkClears(ctx, out) {
+			return
+		}
+		if s.sub == 0 {
+			if err := s.subscribe(); err != nil {
+				s.log.Warn("sysmon resubscribe failed; retrying", "err", err, "in", resubscribeBackoff)
+				if !sleepCtx(ctx, resubscribeBackoff) {
+					return
+				}
+				continue
+			}
+			s.log.Info("sysmon subscription reopened", "after_bookmark", s.marked)
+		}
+		if _, err := windows.WaitForSingleObject(s.signal, evtWaitMs); err != nil {
+			s.log.Warn("WaitForSingleObject failed", "err", err)
+			if !sleepCtx(ctx, time.Second) {
+				return
+			}
+		}
+		// Drain on a signal AND on a timeout: draining an empty subscription is
+		// one cheap call, and it guarantees nothing waits on a missed signal.
+		_ = windows.ResetEvent(s.signal)
+		if !s.drain(ctx, out) {
+			return
 		}
 	}
 }
 
-func (s *sysmonRT) pollAndEmit(ctx context.Context, highWater *int64, out chan<- event.Event) {
-	checkClears := s.polls%clearCheckEvery == 0
-	s.polls++
-	events, newMax, chanMax, clears, err := s.poll(*highWater, checkClears)
-	if err != nil {
-		s.log.Warn("poll failed", "err", err)
-		return
+// drain reads every record the subscription has queued. It returns false only
+// when ctx was cancelled.
+func (s *sysmonRT) drain(ctx context.Context, out chan<- event.Event) bool {
+	for {
+		got, err := evtNext(s.sub, s.handles, 0)
+		if errors.Is(err, errEvtNoMore) || errors.Is(err, errEvtTimeout) {
+			return true
+		}
+		if err != nil {
+			// Subscription is broken (channel recreated, eventlog service
+			// restarted, ...). Reopen it after the bookmark on the next pass.
+			s.log.Warn("sysmon EvtNext failed; reopening subscription", "err", err)
+			evtClose(s.sub)
+			s.sub = 0
+			return sleepCtx(ctx, time.Second)
+		}
+		for i := uint32(0); i < got; i++ {
+			h := s.handles[i]
+			if err := evtUpdateBookmark(s.bookmark, h); err == nil {
+				s.marked = true
+			}
+			xml, rerr := evtRenderXML(h)
+			evtClose(h)
+			if rerr != nil {
+				s.noteDropped(rerr)
+				continue
+			}
+			if !s.emitXML(ctx, xml, out) {
+				// Close the rest of this batch before leaving.
+				for _, rest := range s.handles[i+1 : got] {
+					evtClose(rest)
+				}
+				return false
+			}
+		}
 	}
-	// Sysmon log cleared (System EID 104), including clears from while the
-	// daemon was down (24h look-back). Each clear is emitted once per run.
-	for _, lc := range s.clears.fresh(clears, s.channel, time.Now()) {
+}
+
+// emitXML parses one rendered record, runs the rewind check and the
+// self-ingestion filter, and sends it. It returns false only when ctx was
+// cancelled.
+func (s *sysmonRT) emitXML(ctx context.Context, xml []byte, out chan<- event.Event) bool {
+	ev, err := parseRenderedXML(s.log, xml)
+	if err != nil {
+		s.noteDropped(err)
+		return true
+	}
+	id := int64(ev.RecordID)
+	// A subscription delivers in RecordId order, so an id below the newest one
+	// already delivered means the channel was recreated (RecordIds restarted).
+	if recordIDsRewound(id, s.highID) {
+		s.log.Warn("sysmon channel RecordId rewound (channel recreated)",
+			"channel", s.channel, "record_id", id, "high_water", s.highID)
+		if !send(ctx, out, rewoundEvent(s.channel, id, s.highID)) {
+			return false
+		}
+		s.highID = -1
+	}
+	if id > s.highID {
+		s.highID = id
+	}
+	if s.isSelfChild(ev) {
+		return true
+	}
+	return send(ctx, out, ev)
+}
+
+// checkClears queries System EID 104 (log cleared) on the first pass and then
+// every clearCheckInterval, emitting each clear of our channel once.
+func (s *sysmonRT) checkClears(ctx context.Context, out chan<- event.Event) bool {
+	now := time.Now()
+	if !s.lastScan.IsZero() && now.Sub(s.lastScan) < clearCheckInterval {
+		return true
+	}
+	s.lastScan = now
+	clears, err := queryLogClears()
+	if err != nil {
+		s.log.Warn("System EID 104 (log cleared) query failed", "err", err)
+		return true
+	}
+	for _, lc := range s.clears.fresh(clears, s.channel, now) {
 		s.log.Warn("sysmon log was cleared (System log EID 104)",
 			"channel", lc.Channel, "by", lc.User, "cleared_at", lc.Time.Local(),
 			"backup", lc.Backup, "client_pid", lc.ClientPID, "system_record_id", lc.RecordID)
-		select {
-		case <-ctx.Done():
-			return
-		case out <- logClearedEvent(lc):
+		if !send(ctx, out, logClearedEvent(lc)) {
+			return false
 		}
 	}
-	// RecordId rewind recovery. A plain log clear does NOT restart RecordIds
-	// (measured; the EID 104 path above catches clears), but if the channel's
-	// ids ever do go backwards (e.g. channel recreated) the high-water filter
-	// would drop every new event until restart. Detect it, raise TELEMETRY-002
-	// via a synthetic event, reset the high-water and re-read at once.
-	if recordIDsRewound(chanMax, *highWater) {
-		s.log.Warn("sysmon channel RecordId rewound (log cleared or channel recreated); resetting high-water and re-reading",
-			"channel", s.channel, "channel_max", chanMax, "high_water", *highWater)
-		rewind := rewoundEvent(s.channel, chanMax, *highWater)
-		select {
-		case <-ctx.Done():
-			return
-		case out <- rewind:
-		}
-		*highWater = -1
-		events, newMax, _, _, err = s.poll(*highWater, false)
-		if err != nil {
-			s.log.Warn("poll failed (after rewind)", "err", err)
-			return
-		}
-	}
-	// Saturation detection: if we got exactly maxPerPoll events, a burst exceeded
-	// our fetch cap and some older events may have been skipped. This shouldn't
-	// happen in steady state (2000 cap vs ~100 events/sec peak), but if it does,
-	// the operator needs to know to investigate.
-	if len(events) == s.maxPerPoll {
-		s.log.Warn("sysmon poll saturated at maxPerPoll cap; events may be delayed",
-			"fetched", len(events), "maxPerPoll", s.maxPerPoll)
-	}
-	if newMax > *highWater {
-		*highWater = newMax
-	}
-	for _, ev := range events {
-		// Self-ingestion filter (see isSelfChild).
-		if s.isSelfChild(ev) {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case out <- ev:
-		}
-	}
+	return true
 }
 
-// isSelfChild reports whether ev is a process spawned by a sentinel binary
-// (sentinel.exe / sentinel-tray.exe) whose on-disk hash still matches startup
-// — the poller's powershell.exe child (every poll), the toast/eventlog
-// alerters' powershell.exe children (every alert), the tray relay's children.
-// Together ~1 EID 1/sec of self-noise. Hash-gating means an imposter swapped
-// into our user-writable install dir is NOT silenced (detected instead).
-// ParentImage is only meaningful for EID 1, so we gate on EID.
-func (s *sysmonRT) isSelfChild(ev event.Event) bool {
-	return ev.EID == 1 && s.parents.matches(ev.ParentImage, time.Now())
+// logClearsQuery selects System EID 104 records from the last clearLookback.
+func logClearsQuery() string {
+	return fmt.Sprintf(
+		"*[System[Provider[@Name='Microsoft-Windows-Eventlog'] and EventID=104 and TimeCreated[timediff(@SystemTime) <= %d]]]",
+		clearLookback.Milliseconds())
 }
 
-// poll runs one Get-WinEvent query and returns the parsed new events (RecordId
-// > afterID) plus the max RecordId observed (for the next call's afterID).
-//
-// NOTE: we intentionally do NOT use -Oldest or StartTime here. Testing on
-// sysmon 15.21 / PowerShell 5.1 showed Get-WinEvent -FilterHashtable with
-// StartTime + -Oldest exits with code 1 (empty stderr, suppressed by
-// SilentlyContinue) on every poll after the first, breaking ingestion entirely.
-// The newest-first default + a large maxPerPoll (2000) handles bursts safely:
-// Cursor peaks at ~100 events/sec, so 2000 covers ~20s of burst — well beyond
-// the 1s poll interval. Rare stranding under extreme load is acceptable for a
-// behavior engine; total ingestion failure is not.
-//
-// chanMax is the newest RecordId currently in the channel (for the EID filter),
-// independent of afterID, or -1 when the channel returned nothing. It is what
-// lets pollAndEmit notice a log clear (see recordIDsRewound).
-//
-// clears holds the System EID 104 records the script printed (only when
-// checkClears is set).
-func (s *sysmonRT) poll(afterID int64, checkClears bool) (events []event.Event, maxID, chanMax int64, clears []logClear, err error) {
-	script := s.pollScript(afterID, checkClears)
-	chanMax = -1
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	// CREATE_NO_WINDOW (0x08000000): when launched by Task Scheduler there is no
-	// inherited console, so Windows would allocate a fresh one for powershell.exe
-	// each poll cycle — flashing a window on the desktop every 1-3s (annoying +
-	// an OPSEC tell). This allocates NO console instead of a hidden one, which is
-	// the correct semantic for a headless child with captured stdout/stderr.
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
-	runErr := cmd.Run()
-
-	for _, line := range strings.Split(stdout.String(), "\n") {
-		line := strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// The channel-max marker line (see the script) is not an event.
-		if id, ok := parseChanMax(line); ok {
-			chanMax = id
-			continue
-		}
-		// A System EID 104 "log file was cleared" record (see logclear.go).
-		if b64, ok := strings.CutPrefix(line, logClearedPrefix); ok {
-			if lc, cerr := decodeLogCleared(b64); cerr != nil {
-				s.log.Warn("could not decode System EID 104 (log cleared) record", "err", cerr)
-			} else {
-				clears = append(clears, lc)
-			}
-			continue
-		}
-		// A record whose ToXml() threw in PowerShell: no XML to parse, but it
-		// is still an event no rule saw, so count it like any other drop.
-		// Its RecordId advances maxID so the next poll does not fetch (and
-		// count) the same broken record again.
-		if id, ok := parseMarker(line, toXMLFailPrefix); ok {
-			s.noteDropped(fmt.Errorf("ToXml failed in PowerShell for RecordId %d", id))
-			if id > maxID {
-				maxID = id
-			}
-			continue
-		}
-		// Per-line recover: a panic in base64 decode, UTF-16 decode, or
-		// sysmonxml.Parse on an attacker-shaped event value must skip ONE
-		// event, not kill the poller goroutine (and with it the SYSTEM daemon
-		// = detection blinded). Mirrors dispatcher.go's callAlerter recover.
-		var (
-			xmlUTF16 []byte
-			xmlStr   string
-			ev       event.Event
-			err      error
-		)
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					s.log.Warn("parse panic contained; event skipped",
-						"record_id", ev.RecordID, "panic", r)
-					err = fmt.Errorf("panic: %v", r)
-				}
-			}()
-			xmlUTF16, err = base64.StdEncoding.DecodeString(line)
-			if err != nil {
-				s.log.Debug("base64 decode skipped", "err", err)
-				return
-			}
-			xmlStr, err = decodeUTF16LE(xmlUTF16)
-			if err != nil {
-				s.log.Debug("utf16 decode skipped", "err", err)
-				return
-			}
-			ev, err = sysmonxml.Parse([]byte(xmlStr), event.SrcSysmonRT)
-		}()
-		if err != nil {
-			// A dropped event is a detection gap: never skip silently.
-			s.noteDropped(err)
-			continue
-		}
-		if int64(ev.RecordID) > maxID {
-			maxID = int64(ev.RecordID)
-		}
-		events = append(events, ev)
-	}
-	// PowerShell exit codes are unreliable for our purposes. Two things can set
-	// a nonzero exit: (1) Get-WinEvent's non-terminating "No events found"
-	// error, which SilentlyContinue suppresses (and which doesn't actually set a
-	// nonzero exit on its own in PS 5.1), and (2) a TERMINATING error from a .NET
-	// method call inside the pipeline — specifically $_.ToXml() throwing on a
-	// malformed event record. SilentlyContinue does NOT stop terminating errors,
-	// so one bad event aborts the entire ForEach-Object and powershell.exe exits
-	// code 1. The try/catch in the script (above) catches that, but we keep this
-	// Go-side guard as a belt-and-suspenders: if stdout nonetheless has valid
-	// base64 lines we already parsed them — discarding data over an exit code
-	// would blind ingestion. Only treat the nonzero exit as real when we got
-	// nothing usable out of it.
-	// A channel-max line counts as usable output: Get-WinEvent read the
-	// channel, there were just no NEW events. That is exactly the state right
-	// after a log clear (every record is below the high-water), so it must
-	// reach pollAndEmit's rewind check instead of being reported as a failure.
-	if runErr != nil && len(events) == 0 && chanMax < 0 && len(clears) == 0 {
-		// Genuinely broken: nonzero exit AND no usable output. Include raw
-		// stdout byte/line count so we can distinguish "powershell produced
-		// nothing" (pipe/cmdlet failure) from "produced lines we couldn't
-		// parse" (XML/base64 failure on specific events).
-		rawLines := len(strings.Split(strings.TrimSpace(stdout.String()), "\n"))
-		return nil, 0, -1, nil, fmt.Errorf("powershell: %w (stderr: %s; stdout %d bytes/%d lines)",
-			runErr, strings.TrimSpace(stderr.String()), stdout.Len(), rawLines)
-	}
-	if runErr != nil {
-		// nonzero exit but we still got events: a suppressed non-fatal error
-		// (the common PowerShell gotcha). Log at debug, keep the data.
-		s.log.Debug("powershell exited nonzero but produced output; ignoring exit code",
-			"exit_err", runErr, "events", len(events), "channel_max", chanMax)
-	}
-	return events, maxID, chanMax, clears, nil
-}
-
-// decodeLogCleared decodes one LOGCLEARED payload: base64 of the UTF-16LE
-// ToXml() of a System EID 104 record.
-func decodeLogCleared(b64 string) (logClear, error) {
-	raw, err := base64.StdEncoding.DecodeString(b64)
+// queryLogClears reads up to 50 recent System EID 104 records.
+func queryLogClears() ([]logClear, error) {
+	ch, _ := windows.UTF16PtrFromString("System")
+	q, err := windows.UTF16PtrFromString(logClearsQuery())
 	if err != nil {
-		return logClear{}, err
+		return nil, err
 	}
-	x, err := decodeUTF16LE(raw)
+	rs, err := evtQuery(ch, q, evtQueryChannelPath|evtQueryReverseDirection)
 	if err != nil {
-		return logClear{}, err
+		return nil, err
 	}
-	return parseLogCleared([]byte(x))
+	defer evtClose(rs)
+	handles := make([]EvtHandle, 50)
+	got, err := evtNext(rs, handles, evtQueryTimeoutMs)
+	if errors.Is(err, errEvtNoMore) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var clears []logClear
+	for _, h := range handles[:got] {
+		raw, rerr := evtRenderXML(h)
+		evtClose(h)
+		if rerr != nil {
+			continue
+		}
+		x, derr := decodeUTF16LE(raw)
+		if derr != nil {
+			continue
+		}
+		if lc, perr := parseLogCleared([]byte(x)); perr == nil {
+			clears = append(clears, lc)
+		}
+	}
+	return clears, nil
 }
 
-// pollScript is the PowerShell one-liner poll runs: newest maxPerPoll records
-// for the EID set, a CHANMAX marker, then one base64 line per record newer
-// than afterID (or a TOXMLFAIL marker when ToXml throws). With checkClears it
-// first prints System EID 104 records from the last clearLookback as
-// LOGCLEARED lines.
-func (s *sysmonRT) pollScript(afterID int64, checkClears bool) string {
-	clearQuery := ""
-	if checkClears {
-		// Single-quoted XPath with doubled inner quotes: the whole script is
-		// one -Command argument, so no double quotes are used anywhere.
-		clearQuery = fmt.Sprintf(
-			`@(Get-WinEvent -LogName System -MaxEvents 50 -FilterXPath '*[System[Provider[@Name=''Microsoft-Windows-Eventlog''] and EventID=104 and TimeCreated[timediff(@SystemTime) <= %d]]]') | `+
-				`ForEach-Object { try { '%s' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_.ToXml())) } catch {} }; `,
-			clearLookback.Milliseconds(), logClearedPrefix)
+func send(ctx context.Context, out chan<- event.Event, ev event.Event) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case out <- ev:
+		return true
 	}
-	return `$ErrorActionPreference='SilentlyContinue'; ` + clearQuery + fmt.Sprintf(
-		`$all = @(Get-WinEvent -FilterHashtable @{LogName='%s'; ID=%s} -MaxEvents %d); `+
-			`if ($all.Count -gt 0) { '%s' + $all[0].RecordId }; `+
-			`$all | Where-Object { $_.RecordId -gt %d } | `+
-			`ForEach-Object { $r = $_; try { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($r.ToXml())) } catch { '%s' + $r.RecordId } }`,
-		s.channel, eidList(s.eids), s.maxPerPoll, chanMaxPrefix, afterID, toXMLFailPrefix,
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// --- thin wevtapi wrappers ---
+
+func evtSubscribe(signal windows.Handle, channel, query *uint16, bookmark EvtHandle, flags uintptr) (EvtHandle, error) {
+	// Session, SignalEvent, ChannelPath, Query, Bookmark, Context, Callback, Flags.
+	// Pull model: SignalEvent set, Callback NULL (exactly one must be set).
+	r1, _, lastErr := procEvtSubscribe.Call(
+		0, uintptr(signal),
+		uintptr(unsafe.Pointer(channel)),
+		uintptr(unsafe.Pointer(query)),
+		uintptr(bookmark), 0, 0,
+		flags,
 	)
-}
-
-// chanMaxPrefix marks the poll script's "newest RecordId in the channel" line.
-// ':' is not in the base64 alphabet, so it can never collide with an event line.
-const chanMaxPrefix = "CHANMAX:"
-
-// toXMLFailPrefix marks a record whose $_.ToXml() threw inside the poll
-// script (the catch block prints it with the RecordId). Like chanMaxPrefix,
-// ':' keeps it out of the base64 alphabet.
-const toXMLFailPrefix = "TOXMLFAIL:"
-
-// parseChanMax recognizes the channel-max marker line.
-func parseChanMax(line string) (int64, bool) {
-	return parseMarker(line, chanMaxPrefix)
-}
-
-// parseMarker parses a "<prefix><non-negative RecordId>" marker line.
-func parseMarker(line, prefix string) (int64, bool) {
-	rest, ok := strings.CutPrefix(line, prefix)
-	if !ok {
-		return 0, false
+	if r1 == 0 {
+		return 0, fmt.Errorf("EvtSubscribe: %w", lastErr)
 	}
-	id, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
-	if err != nil || id < 0 {
-		return 0, false
-	}
-	return id, true
+	return EvtHandle(r1), nil
 }
 
-// recordIDsRewound reports whether the channel's newest RecordId is below the
-// high-water we already consumed — the signature of a cleared or recreated
-// log (RecordIds restart at 1). chanMax < 0 (channel returned nothing) and
-// highWater < 0 (nothing consumed yet) are never a rewind.
-func recordIDsRewound(chanMax, highWater int64) bool {
-	return chanMax >= 0 && highWater >= 0 && chanMax < highWater
+func evtQuery(channel, query *uint16, flags uintptr) (EvtHandle, error) {
+	r1, _, lastErr := procEvtQuery.Call(
+		0,
+		uintptr(unsafe.Pointer(channel)),
+		uintptr(unsafe.Pointer(query)),
+		flags,
+	)
+	if r1 == 0 {
+		return 0, fmt.Errorf("EvtQuery: %w", lastErr)
+	}
+	return EvtHandle(r1), nil
 }
 
-// rewoundEvent is the synthetic event TELEMETRY-002 matches. Image carries the
-// channel name so alerts and dedup keys say what was rewound; the numbers go
-// in Details for the operator.
-func rewoundEvent(channel string, chanMax, highWater int64) event.Event {
-	return event.Event{
-		Source:  event.SrcSentinel,
-		Time:    time.Now(),
-		Image:   channel,
-		Details: fmt.Sprintf("%s channel=%s newest_record_id=%d previous_high_water=%d", event.DetailsSysmonRewound, channel, chanMax, highWater),
+func evtCreateBookmark() (EvtHandle, error) {
+	r1, _, lastErr := procEvtCreateBookmark.Call(0)
+	if r1 == 0 {
+		return 0, fmt.Errorf("EvtCreateBookmark: %w", lastErr)
 	}
+	return EvtHandle(r1), nil
 }
 
-// eidList renders the EID slice as a PowerShell array literal "1,3,7,...".
-func eidList(ids []int) string {
-	parts := make([]string, len(ids))
-	for i, id := range ids {
-		parts[i] = strconv.Itoa(id)
+func evtUpdateBookmark(bookmark, ev EvtHandle) error {
+	r1, _, lastErr := procEvtUpdateBookmark.Call(uintptr(bookmark), uintptr(ev))
+	if r1 == 0 {
+		return fmt.Errorf("EvtUpdateBookmark: %w", lastErr)
 	}
-	return strings.Join(parts, ",")
+	return nil
 }
 
-// decodeUTF16LE converts little-endian UTF-16 bytes to a Go string. Shared with
-// the experimental native ingester (sysmon_native_windows.go).
-func decodeUTF16LE(b []byte) (string, error) {
-	if len(b)%2 != 0 {
-		return "", fmt.Errorf("odd-length UTF-16 (%d bytes)", len(b))
-	}
-	u := make([]uint16, len(b)/2)
-	for i := range u {
-		u[i] = uint16(b[2*i]) | uint16(b[2*i+1])<<8
-	}
-	return string(utf16.Decode(u)), nil
-}
+var (
+	errEvtNoMore  = errors.New("EvtNext: ERROR_NO_MORE_ITEMS")
+	errEvtTimeout = errors.New("EvtNext: ERROR_TIMEOUT")
 
-// defaultEIDQuery is retained for the experimental native ingester's XPath query.
-func defaultEIDQuery() string {
-	var ors string
-	for i, id := range defaultEIDs {
-		if i > 0 {
-			ors += " or "
+	// errInvalidOperation is ERROR_INVALID_OPERATION (4317, "The operation
+	// identifier is not valid.").
+	errInvalidOperation = syscall.Errno(4317)
+)
+
+func evtNext(rs EvtHandle, handles []EvtHandle, timeoutMs uint32) (uint32, error) {
+	var got uint32
+	r1, _, lastErr := procEvtNext.Call(
+		uintptr(rs), uintptr(len(handles)),
+		uintptr(unsafe.Pointer(&handles[0])),
+		uintptr(timeoutMs), 0,
+		uintptr(unsafe.Pointer(&got)),
+	)
+	if r1 == 0 {
+		switch {
+		case errors.Is(lastErr, windows.ERROR_NO_MORE_ITEMS):
+			return 0, errEvtNoMore
+		case errors.Is(lastErr, errInvalidOperation) && got == 0:
+			// A pull subscription that already reported ERROR_NO_MORE_ITEMS
+			// and has nothing new answers the next EvtNext with
+			// ERROR_INVALID_OPERATION, not ERROR_NO_MORE_ITEMS. It is idle,
+			// not broken; treating it as broken tore the subscription down
+			// and reopened it every few seconds.
+			return 0, errEvtNoMore
+		case errors.Is(lastErr, windows.ERROR_TIMEOUT):
+			return 0, errEvtTimeout
+		default:
+			return 0, fmt.Errorf("EvtNext: %w", lastErr)
 		}
-		ors += fmt.Sprintf("EventID=%d", id)
 	}
-	return fmt.Sprintf("*[System[%s]]", ors)
+	return got, nil
 }
+
+func evtRenderXML(h EvtHandle) ([]byte, error) {
+	var used, count uint32
+	// First call sizes the buffer (fails with ERROR_INSUFFICIENT_BUFFER).
+	_, _, _ = procEvtRender.Call(
+		0, uintptr(h), evtRenderEventXml, 0, 0,
+		uintptr(unsafe.Pointer(&used)), uintptr(unsafe.Pointer(&count)),
+	)
+	if used == 0 {
+		return nil, errors.New("EvtRender zero-length")
+	}
+	buf := make([]byte, used)
+	r1, _, lastErr := procEvtRender.Call(
+		0, uintptr(h), evtRenderEventXml, uintptr(used),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&used)), uintptr(unsafe.Pointer(&count)),
+	)
+	if r1 == 0 {
+		return nil, fmt.Errorf("EvtRender: %w", lastErr)
+	}
+	buf = buf[:used]
+	for len(buf) >= 2 && buf[len(buf)-1] == 0 && buf[len(buf)-2] == 0 {
+		buf = buf[:len(buf)-2]
+	}
+	return buf, nil
+}
+
+func evtClose(h EvtHandle) { _, _, _ = procEvtClose.Call(uintptr(h)) }

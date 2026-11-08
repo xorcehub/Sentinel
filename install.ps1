@@ -1,9 +1,10 @@
 # install.ps1 - one-shot Sentinel setup.
 #
-# Builds the binary, installs Sysmon + the FileCreate/FileDelete telemetry
-# config (with ArchiveDirectory), registers the event source, and installs the
-# Scheduled Task running as SYSTEM (so it can read Sysmon's SYSTEM-locked
-# FileDelete archive). Starts the task at the end.
+# Stops a running Sentinel, builds the binaries, installs Sysmon + the
+# FileCreate/FileDelete telemetry config (with ArchiveDirectory), registers the
+# event source, and installs the Scheduled Task running as SYSTEM (so it can
+# read Sysmon's SYSTEM-locked FileDelete archive). Starts the task at the end
+# and verifies the daemon's EvtSubscribe subscription to the Sysmon channel.
 #
 # Every step is idempotent - re-run safely to update.
 #
@@ -28,11 +29,28 @@ $exe    = Join-Path $root "sentinel.exe"
 $scripts = Join-Path $root "scripts"
 Write-Host "Sentinel one-shot install (repo: $root)" -ForegroundColor White
 
+# --- 0. stop a running instance ---
+# An old daemon would hold the single-instance mutex (the new one would exit at
+# once) and its .exe cannot be overwritten while it runs. Same for the tray.
+Step 0 "Stopping a running Sentinel (daemon + tray)"
+if (Get-ScheduledTask -TaskName "Sentinel" -ErrorAction SilentlyContinue) {
+    Stop-ScheduledTask -TaskName "Sentinel" -ErrorAction SilentlyContinue
+}
+$trayExe = Join-Path $root "sentinel-tray.exe"
+foreach ($bin in @($exe, $trayExe)) {
+    Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and ($_.Path -ieq $bin) } |
+        ForEach-Object {
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            $_.WaitForExit(10000) | Out-Null
+        }
+}
+Ok "no Sentinel process running"
+
 # --- 1. build ---
 Step 1 "Building sentinel.exe + sentinel-tray.exe (-H windowsgui)"
 $go = Get-Command go.exe -ErrorAction SilentlyContinue
 if (-not $go) { throw "Go toolchain not on PATH. Install Go, or build the binaries manually first." }
-$trayExe = Join-Path $root "sentinel-tray.exe"
 Push-Location $root
 & go build -ldflags "-H windowsgui" -o $exe ./cmd/sentinel
 $code = $LASTEXITCODE
@@ -63,15 +81,38 @@ Step 5 "Installing Scheduled Task as SYSTEM (at-logon, auto-restart)"
 & (Join-Path $scripts "install-task.ps1") -ExePath $exe -AsSystem
 Ok "Task registered"
 
-# --- 6. start ---
-Step 6 "Starting the task"
+# --- 6. start + verify the Sysmon subscription ---
+Step 6 "Starting the task and verifying the Sysmon subscription"
+$log = Join-Path $root "sentinel.log"
+$logStart = 0
+if (Test-Path $log) { $logStart = (Get-Item $log).Length }
 Start-ScheduledTask -TaskName "Sentinel"
-Start-Sleep -Seconds 3
-$info = Get-ScheduledTaskInfo -TaskName "Sentinel"
-if ($info.LastTaskResult -eq 267009 -or $info.LastTaskResult -eq 0) {
-    Ok "Task running (it holds a mutex if an old instance is still up - stop it first)."
-} else {
-    Write-Host "    WARN: task exited with code $($info.LastTaskResult). Check sentinel.log." -ForegroundColor Yellow
+# Read only what this start appended. The daemon logs
+# msg="sysmon subscription active" once EvtSubscribe succeeds; a failed
+# subscribe ends the process with a "[FATAL] sentinel: start ingester" line.
+$verdict = $null
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $deadline -and -not $verdict) {
+    Start-Sleep -Milliseconds 500
+    if (-not (Test-Path $log)) { continue }
+    $fs = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
+    try {
+        if ($fs.Length -lt $logStart) { $logStart = 0 }
+        [void]$fs.Seek($logStart, 'Begin')
+        $new = (New-Object IO.StreamReader($fs)).ReadToEnd()
+    } finally { $fs.Close() }
+    $lines = $new -split "`r?`n"
+    $ok = $lines | Where-Object { $_ -match 'msg="sysmon subscription active"' } | Select-Object -First 1
+    $bad = $lines | Where-Object { $_ -match '\[FATAL\]' } | Select-Object -First 1
+    if ($ok) { $verdict = "ok"; Ok "Sysmon subscription active: $ok" }
+    elseif ($bad) { $verdict = "fatal"; $fatal = $bad }
+}
+if ($verdict -eq "fatal") {
+    throw "Sentinel failed to start: $fatal"
+} elseif (-not $verdict) {
+    $info = Get-ScheduledTaskInfo -TaskName "Sentinel"
+    Write-Host "    WARN: no 'sysmon subscription active' line within 30s (task result $($info.LastTaskResult))." -ForegroundColor Yellow
+    Write-Host "    Check: Get-Content $log -Tail 30" -ForegroundColor Yellow
 }
 
 Write-Host "`n=== DONE ===" -ForegroundColor Green
@@ -81,7 +122,7 @@ Write-Host "  vault:   $root\forensics\sentinel-vault"
 Write-Host "  archive: C:\SentinelArchive"
 Write-Host ""
 Write-Host "Verify (elevated):"
-Write-Host "  Get-Content $root\sentinel.log -Tail 8 | Select-String 'archive capture enabled'"
+Write-Host "  Get-Content $root\sentinel.log -Tail 50 | Select-String 'sysmon subscription|archive capture enabled'"
 Write-Host "  Get-ScheduledTaskInfo Sentinel | Select-Object LastRunTime, LastTaskResult, NumberOfMissedRuns"
 
 # --- 7. toast relay (user-session, autostart at logon) ---

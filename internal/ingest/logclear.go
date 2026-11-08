@@ -4,7 +4,7 @@ package ingest
 //
 // Clearing an event log does NOT restart its RecordIds (measured 2026-11-07,
 // Windows 11 26200: after `wevtutil cl Microsoft-Windows-Sysmon/Operational`
-// the newest RecordId carried on from ~10.8M), so the poller's rewind check
+// the newest RecordId carried on from ~10.8M), so the ingester's rewind check
 // never sees a clear. What every clear does leave is System log EID 104
 // (provider Microsoft-Windows-Eventlog, "The <channel> log file was cleared"),
 // which names the channel, the clearing user and the backup path. It cannot
@@ -22,15 +22,9 @@ import (
 )
 
 const (
-	// logClearedPrefix marks a System EID 104 record in the poll output:
-	// "LOGCLEARED:<base64(UTF-16LE ToXml())>". ':' is not in the base64
-	// alphabet, so it cannot collide with an event line.
-	logClearedPrefix = "LOGCLEARED:"
-
-	// clearCheckEvery: the System-log query costs ~50 ms, so it runs on the
-	// first poll and then every Nth poll (~10 s at the default 1 s interval)
-	// instead of every second.
-	clearCheckEvery = 10
+	// clearCheckInterval: the System-log query runs at start and then this
+	// often, not on every read-loop pass.
+	clearCheckInterval = 10 * time.Second
 
 	// clearLookback is how far back the EID 104 query reaches. 24h covers a
 	// daemon that was stopped overnight; TELEMETRY-002's 25h dedup (keyed on
@@ -61,7 +55,7 @@ type logClearXML struct {
 	ClientPID   string `xml:"UserData>LogFileCleared>ClientProcessId"`
 }
 
-// parseLogCleared decodes the ToXml() of a System EID 104 record.
+// parseLogCleared decodes the rendered XML of a System EID 104 record.
 func parseLogCleared(raw []byte) (logClear, error) {
 	var x logClearXML
 	if err := xml.Unmarshal(sysmonxml.SanitizeXML(raw), &x); err != nil {
@@ -117,7 +111,7 @@ func logClearedEvent(lc logClear) event.Event {
 }
 
 // clearTracker remembers which EID 104 records were already emitted in this
-// run, so the look-back query (re-read every clearCheckEvery polls) emits each
+// run, so the look-back query (re-read every clearCheckInterval) emits each
 // clear once. Restarts are covered by the rule's persisted dedup instead.
 type clearTracker struct {
 	seen map[string]time.Time // clearKey -> clear time

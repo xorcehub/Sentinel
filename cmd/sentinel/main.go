@@ -92,7 +92,6 @@ type flags struct {
 	mutexName         string
 	sysmonChannel     string
 	sysmonQuery       string
-	sysmonNative      bool
 	selfTest          bool
 	baselineSnapshot  bool
 	baselineNow       bool
@@ -123,7 +122,6 @@ func parseFlags(args []string) (*flags, *flag.FlagSet) {
 	f.StringVar(&out.mutexName, "mutex", "", "single-instance mutex name (default: Global\\Sentinel-Running-<current-user>)")
 	f.StringVar(&out.sysmonChannel, "sysmon-channel", "Microsoft-Windows-Sysmon/Operational", "Sysmon event channel")
 	f.StringVar(&out.sysmonQuery, "sysmon-query", "", "override the Sysmon XPath filter (diagnostic; use \"*\" to subscribe to all events)")
-	f.BoolVar(&out.sysmonNative, "sysmon-native", false, "use the experimental native EvtSubscribe ingester (known broken: ERROR_INVALID_PARAMETER)")
 	f.BoolVar(&out.selfTest, "self-test", false, "run the incident-coverage regression against the catalog and exit")
 	f.BoolVar(&out.baselineSnapshot, "baseline-snapshot", false, "capture an autorunsc baseline to --baseline-clean and exit")
 	f.BoolVar(&out.baselineNow, "baseline-now", false, "diff current autorunsc state vs --baseline-clean; print new entries; exit")
@@ -276,8 +274,8 @@ func run(args []string) error {
 	//     worker's channel FIRST makes Run drain all buffered work and return
 	//     via the closed-channel path; the joins guarantee quiescence BEFORE
 	//     the deferred logCleanup/st.Close run. Queued alerts ARE delivered.
-	//     (Production-reachable only via -mock/tests: the RT poller closes its
-	//     feed only on cancel, i.e. the interrupt path below.)
+	//     (Production-reachable only via -mock/tests: the RT ingester closes
+	//     its feed only on cancel, i.e. the interrupt path below.)
 	//
 	//   • Signal/cancel path (Ctrl+C — only during manual runs; the scheduled
 	//     task has no console and is hard-terminated): ctx is already cancelled
@@ -291,7 +289,7 @@ func run(args []string) error {
 	//     This is accepted best-effort, and the ONLY
 	//     guaranteed backstop is that every hit is logged to sentinel.log (HIT
 	//     line) BEFORE Submit. Recovery is partial, not guaranteed: the RT
-	//     poller re-feeds recent events on the next start (sysmon_rt_windows.go),
+	//     ingester re-feeds recent events on the next start (sysmon_rt_windows.go),
 	//     but (a) a rule whose dedup entry is still fresh (15 min, persisted,
 	//     stamped at Evaluate time — before Submit) replays as suppressed, and
 	//     (b) a baseline hit Submit-ACCEPTED into the buffer and then dropped
@@ -683,13 +681,6 @@ func buildIngester(fl *flags, logger *slog.Logger) (ingest.Ingester, error) {
 	if fl.mock {
 		logger.Info("using MOCK ingester", "events", fl.mockEvents)
 		return mock.New(makeMockEvents(fl.mockEvents)...), nil
-	}
-	// Experimental: the native EvtSubscribe binding (currently fails with
-	// ERROR_INVALID_PARAMETER; kept for future debugging). Default is the
-	// PowerShell Get-WinEvent poller, which is proven to read the channel.
-	if fl.sysmonNative {
-		logger.Warn("using EXPERIMENTAL native EvtSubscribe ingester (known broken)")
-		return ingest.NewSysmonRTNative(fl.sysmonChannel, fl.sysmonQuery, logger)
 	}
 	return ingest.NewSysmonRT(fl.sysmonChannel, fl.sysmonQuery, logger)
 }
